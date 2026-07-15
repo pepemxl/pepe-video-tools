@@ -12,6 +12,18 @@ Rectangle {
     // El imán real vive en el modelo (afecta al arrastre/recorte).
     readonly property bool snap: TimelineModel.snapEnabled
 
+    // Mapea una coordenada Y de escena al índice de pista (para arrastre vertical).
+    function trackIndexAtSceneY(sceneY) {
+        var y = tracksCol.mapFromItem(null, 0, sceneY).y
+        var tr = TimelineModel.tracks
+        var acc = 0
+        for (var i = 0; i < tr.length; i++) {
+            acc += tr[i].height
+            if (y < acc) return i
+        }
+        return tr.length - 1
+    }
+
     Rectangle { anchors.top: parent.top; width: parent.width; height: 1; color: Theme.line3 }
 
     ColumnLayout {
@@ -189,13 +201,17 @@ Rectangle {
                                             readonly property bool isTitle: modelData.kind === "title"
                                             readonly property bool isAudio: modelData.kind === "audio"
                                             // Desplazamientos en vivo mientras se arrastra (px):
-                                            property real mvDx: 0   // mover clip
+                                            property real mvDx: 0   // mover clip (horizontal)
+                                            property real mvDy: 0   // mover clip (vertical, entre pistas)
                                             property real tlDx: 0   // recortar borde izquierdo
                                             property real trDx: 0   // recortar borde derecho
                                             readonly property bool moveTool: tlRoot.currentTool === 0
                                             readonly property bool trimTool: tlRoot.currentTool === 6
+                                            readonly property bool rollTool: tlRoot.currentTool === 4
+                                            readonly property bool rippleTool: tlRoot.currentTool === 3
                                             x: lane.width * modelData.x + 1 + mvDx + tlDx
-                                            y: 5
+                                            y: 5 + (moveDrag.active ? mvDy : 0)
+                                            z: moveDrag.active ? 20 : 0
                                             width: Math.max(6, lane.width * modelData.w - 2 - tlDx + trDx)
                                             height: parent.height - 10
                                             radius: 3; color: modelData.fill
@@ -203,18 +219,29 @@ Rectangle {
                                             border.width: modelData.selected ? 2 : 1
                                             clip: true
 
-                                            // Arrastrar para mover (herramienta Selección · A)
+                                            // Aplica la edición de un borde según la herramienta activa.
+                                            function commitEdge(leftEdge, dpx) {
+                                                var d = dpx / lane.width
+                                                if (clip.trimTool) TimelineModel.trimClip(clip.modelData.id, leftEdge, d)
+                                                else if (clip.rollTool) TimelineModel.rollEdit(clip.modelData.id, leftEdge, d)
+                                                else if (clip.rippleTool && !leftEdge) TimelineModel.rippleTrimRight(clip.modelData.id, d)
+                                            }
+
+                                            // Arrastrar para mover (herramienta Selección · A); vertical = cambiar de pista
                                             DragHandler {
                                                 id: moveDrag
                                                 target: null
                                                 enabled: clip.moveTool
                                                 onActiveChanged: {
-                                                    if (active) { clip.mvDx = 0; TimelineModel.selectClip(clip.modelData.id); return }
+                                                    if (active) { clip.mvDx = 0; clip.mvDy = 0; TimelineModel.selectClip(clip.modelData.id); return }
                                                     var frac = clip.modelData.x + clip.mvDx / lane.width
-                                                    clip.mvDx = 0
-                                                    TimelineModel.moveClipToFraction(clip.modelData.id, trackRow.trackIndex, frac)
+                                                    var track = tlRoot.trackIndexAtSceneY(centroid.scenePosition.y)
+                                                    clip.mvDx = 0; clip.mvDy = 0
+                                                    TimelineModel.moveClipToFraction(clip.modelData.id, track, frac)
                                                 }
-                                                onActiveTranslationChanged: if (active) clip.mvDx = activeTranslation.x
+                                                onActiveTranslationChanged: {
+                                                    if (active) { clip.mvDx = activeTranslation.x; clip.mvDy = activeTranslation.y }
+                                                }
                                             }
                                             // Franja superior (vídeo)
                                             Rectangle { visible: !clip.isAudio && !clip.isTitle; width: parent.width; height: Math.min(24, parent.height*0.45); color: "#10ffffff" }
@@ -232,34 +259,35 @@ Rectangle {
                                                    color: clip.modelData.selected ? "#ffffff" : (clip.isTitle ? "#e0d8f0" : "#cfe0ec")
                                                    font.pixelSize: clip.isTitle ? 10 : 9; font.family: Theme.sans; elide: Text.ElideRight
                                                    width: parent.width - 12 }
-                                            // Tirador de recorte izquierdo (herramienta Trim · W)
+                                            // Tirador de borde izquierdo (Trim · W / Roll · N)
                                             Rectangle {
                                                 width: 7; height: parent.height; anchors.left: parent.left
-                                                visible: clip.trimTool
+                                                visible: clip.trimTool || clip.rollTool
                                                 color: trimLeft.active ? Theme.amber : "#33ffffff"
                                                 DragHandler {
-                                                    id: trimLeft; target: null; enabled: clip.trimTool
+                                                    id: trimLeft; target: null; enabled: clip.trimTool || clip.rollTool
                                                     onActiveChanged: {
                                                         if (active) { clip.tlDx = 0; TimelineModel.selectClip(clip.modelData.id); return }
-                                                        var d = clip.tlDx / lane.width
+                                                        var dpx = clip.tlDx
                                                         clip.tlDx = 0
-                                                        TimelineModel.trimClip(clip.modelData.id, true, d)
+                                                        clip.commitEdge(true, dpx)
                                                     }
                                                     onActiveTranslationChanged: if (active) clip.tlDx = activeTranslation.x
                                                 }
                                             }
-                                            // Tirador de recorte derecho (herramienta Trim · W)
+                                            // Tirador de borde derecho (Trim · W / Roll · N / Ripple · RR)
                                             Rectangle {
                                                 width: 7; height: parent.height; anchors.right: parent.right
-                                                visible: clip.trimTool
+                                                visible: clip.trimTool || clip.rollTool || clip.rippleTool
                                                 color: trimRight.active ? Theme.amber : "#33ffffff"
                                                 DragHandler {
-                                                    id: trimRight; target: null; enabled: clip.trimTool
+                                                    id: trimRight; target: null
+                                                    enabled: clip.trimTool || clip.rollTool || clip.rippleTool
                                                     onActiveChanged: {
                                                         if (active) { clip.trDx = 0; TimelineModel.selectClip(clip.modelData.id); return }
-                                                        var d = clip.trDx / lane.width
+                                                        var dpx = clip.trDx
                                                         clip.trDx = 0
-                                                        TimelineModel.trimClip(clip.modelData.id, false, d)
+                                                        clip.commitEdge(false, dpx)
                                                     }
                                                     onActiveTranslationChanged: if (active) clip.trDx = activeTranslation.x
                                                 }

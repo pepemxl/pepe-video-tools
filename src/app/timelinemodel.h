@@ -66,6 +66,12 @@ public:
     // Recorta el clip arrastrando un borde. leftEdge = borde izquierdo (entrada);
     // deltaFraction es el desplazamiento del borde en fracción de la ventana total.
     Q_INVOKABLE void trimClip(quint64 id, bool leftEdge, double deltaFraction);
+    // Ripple: recorta el borde de salida (derecho) y desplaza los clips posteriores de
+    // la misma pista para cerrar/abrir el hueco.
+    Q_INVOKABLE void rippleTrimRight(quint64 id, double deltaFraction);
+    // Roll: mueve la frontera entre este clip y su vecino adyacente (uno cede lo que el
+    // otro gana), sin mover el resto de clips ni alterar la duración total.
+    Q_INVOKABLE void rollEdit(quint64 id, bool leftEdge, double deltaFraction);
     Q_INVOKABLE void undo();
     Q_INVOKABLE void redo();
 

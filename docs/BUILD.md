@@ -134,9 +134,14 @@ npm start
   `PepeVideo.TimelineModel`). Edición no destructiva con **undo/redo** (`QUndoStack`).
 - Ya funciona:
   - **Seleccionar** clip (clic) y **cuchilla** (herramienta B → clic sobre el clip).
-  - **Arrastrar / mover** clip dentro de la pista (herramienta Selección · A).
-  - **Recorte fino / trim** arrastrando los bordes del clip (herramienta Trim · W); aparecen
-    tiradores en los extremos.
+  - **Arrastrar / mover** clip dentro de la pista y **entre pistas** (arrastre vertical)
+    con la herramienta Selección · A. Solo se admite soltar en una pista del mismo tipo
+    (audio↔audio, vídeo/título↔vídeo).
+  - **Recorte fino / trim** arrastrando los bordes del clip (herramienta Trim · W).
+  - **Ripple** (herramienta RR): al recortar la salida, los clips posteriores de la pista se
+    desplazan para cerrar/abrir el hueco. Tirador en el borde derecho.
+  - **Roll** (herramienta N): arrastra la frontera entre dos clips adyacentes; uno cede lo que
+    el otro gana, sin mover el resto ni cambiar la duración total.
   - **Imán (snap) real**: al mover o recortar, el borde se ajusta a bordes de otros clips,
     al playhead y a los marcadores (toggle en la barra o tecla **S**).
   - **Marcadores**: añadir en el playhead (botón de la barra o tecla **M**), eliminar con clic
@@ -144,14 +149,16 @@ npm start
   - **Playhead** por clic en la regla; borrar clip con Supr / Retroceso.
 - Atajos: A/T/B/N/Y/W/P/Z (herramientas), S (imán), M (marcador), Supr/Retroceso (borrar),
   Ctrl+Z / Ctrl+Shift+Z (undo/redo).
-- Pendiente: arrastre **entre pistas** (vertical), **ripple**/**roll**, y el **compositor
-  multicapa** hacia el monitor de PROGRAMA.
+- **Autotest del modelo** (sin UI): `PVS_TL_SELFTEST=1 ./PepeVideoStudio.exe` valida las
+  invariantes de mover/ripple/roll/undo y las imprime por stderr (`[TL selftest] … OK/FALLO`).
+- Pendiente: **slip/slide**, migración opcional a `QAbstractItemModel`, y el **compositor
+  multicapa** hacia el monitor de PROGRAMA (depende de la textura RHI, Fase 1).
 
 ### Resumen de estado (2026-07-15)
 | Fase | Estado |
 |------|--------|
 | 0 — Shell QML | ✅ completa |
 | 1 — Medios y reproducción | 🟢 casi completa (falta audio y textura RHI) |
-| 2 — Timeline | 🟡 en curso (undo/redo, cuchilla, mover, trim, snap, marcadores) |
+| 2 — Timeline | 🟢 avanzada (mover entre pistas, trim, ripple, roll, snap, marcadores) |
 | 3–6 — Color, audio, títulos, export | ⬜ pendientes |
 ```

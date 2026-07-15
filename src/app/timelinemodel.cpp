@@ -237,6 +237,10 @@ void TimelineModel::moveClipToFraction(quint64 id, int trackIndex, double startF
     const qint64 oldStart = m_clips[idx].startUs;
     const qint64 dur = m_clips[idx].durationUs;
     int newTrack = qBound(0, trackIndex, int(m_tracks.size()) - 1);
+    // Solo se puede soltar en una pista del mismo tipo (audio↔audio, vídeo/título↔vídeo).
+    const bool clipIsAudio = (m_clips[idx].kind == QLatin1String("audio"));
+    if (newTrack != oldTrack && (m_tracks[newTrack].kind == QLatin1String("audio")) != clipIsAudio)
+        newTrack = oldTrack;
     qint64 newStart = qMax<qint64>(0, qint64(startFraction * m_totalUs));
 
     // Imán: ajusta el borde (entrada o salida) que quede más cerca de un punto de anclaje.
@@ -317,6 +321,127 @@ void TimelineModel::trimClip(quint64 id, bool leftEdge, double deltaFraction)
         }));
 }
 
+void TimelineModel::rippleTrimRight(quint64 id, double deltaFraction)
+{
+    const int idx = indexOfClip(id);
+    if (idx < 0)
+        return;
+    const Clip orig = m_clips.at(idx);
+    const qint64 deltaUs = qint64(deltaFraction * m_totalUs);
+    if (deltaUs == 0)
+        return;
+
+    qint64 edge = snapUs(orig.startUs + orig.durationUs + deltaUs, id);
+    edge = qMax<qint64>(orig.startUs + kMinClipUs, edge);
+    const qint64 newDur = edge - orig.startUs;
+    const qint64 durChange = newDur - orig.durationUs;
+    if (durChange == 0)
+        return;
+
+    // Clips posteriores en la misma pista: se desplazan para mantener el hueco.
+    const int track = orig.trackIndex;
+    const qint64 origEnd = orig.startUs + orig.durationUs;
+    QVector<quint64> shiftIds;
+    for (const Clip &c : m_clips)
+        if (c.trackIndex == track && c.id != id && c.startUs >= origEnd)
+            shiftIds.push_back(c.id);
+
+    m_undo.push(new TimelineCommand(
+        QStringLiteral("Ripple"),
+        [this, id, newDur, durChange, shiftIds]() {
+            const int i = indexOfClip(id);
+            if (i >= 0) m_clips[i].durationUs = newDur;
+            for (quint64 sid : shiftIds) { const int j = indexOfClip(sid); if (j >= 0) m_clips[j].startUs += durChange; }
+            emit changed();
+        },
+        [this, id, od = orig.durationUs, durChange, shiftIds]() {
+            const int i = indexOfClip(id);
+            if (i >= 0) m_clips[i].durationUs = od;
+            for (quint64 sid : shiftIds) { const int j = indexOfClip(sid); if (j >= 0) m_clips[j].startUs -= durChange; }
+            emit changed();
+        }));
+}
+
+void TimelineModel::rollEdit(quint64 id, bool leftEdge, double deltaFraction)
+{
+    const int idx = indexOfClip(id);
+    if (idx < 0)
+        return;
+    const Clip cur = m_clips.at(idx);
+    const qint64 deltaUs = qint64(deltaFraction * m_totalUs);
+    if (deltaUs == 0)
+        return;
+
+    const int track = cur.trackIndex;
+    const qint64 boundary = leftEdge ? cur.startUs : (cur.startUs + cur.durationUs);
+    const qint64 tol = qint64(m_totalUs * 0.002);
+
+    // Busca el vecino que comparte la frontera.
+    int nb = -1;
+    for (int i = 0; i < m_clips.size(); ++i) {
+        if (m_clips[i].id == id || m_clips[i].trackIndex != track)
+            continue;
+        if (leftEdge) {
+            if (qAbs((m_clips[i].startUs + m_clips[i].durationUs) - boundary) <= tol) { nb = i; break; }
+        } else {
+            if (qAbs(m_clips[i].startUs - boundary) <= tol) { nb = i; break; }
+        }
+    }
+    if (nb < 0)
+        return; // roll necesita un clip adyacente
+
+    const Clip neighbor = m_clips.at(nb);
+    qint64 target = snapUs(boundary + deltaUs, id);
+
+    // Límites: ambos clips conservan duración mínima y no exponen fotogramas fuera del origen.
+    qint64 lo, hi;
+    if (!leftEdge) {
+        // frontera = fin de cur = inicio de neighbor (siguiente)
+        lo = qMax<qint64>(cur.startUs + kMinClipUs, boundary - neighbor.inUs);
+        hi = (neighbor.startUs + neighbor.durationUs) - kMinClipUs;
+    } else {
+        // frontera = inicio de cur = fin de neighbor (anterior)
+        lo = qMax<qint64>(neighbor.startUs + kMinClipUs, boundary - cur.inUs);
+        hi = (cur.startUs + cur.durationUs) - kMinClipUs;
+    }
+    target = qBound(lo, target, hi);
+    const qint64 delta = target - boundary;
+    if (delta == 0)
+        return;
+
+    const quint64 curId = cur.id;
+    const quint64 nbId = neighbor.id;
+
+    m_undo.push(new TimelineCommand(
+        QStringLiteral("Roll"),
+        [this, curId, nbId, leftEdge, delta]() {
+            const int i = indexOfClip(curId);
+            const int j = indexOfClip(nbId);
+            if (i < 0 || j < 0) return;
+            if (!leftEdge) {
+                m_clips[i].durationUs += delta;                       // cur crece/mengua por la derecha
+                m_clips[j].startUs += delta; m_clips[j].inUs += delta; m_clips[j].durationUs -= delta;
+            } else {
+                m_clips[j].durationUs += delta;                       // neighbor (anterior) mueve su salida
+                m_clips[i].startUs += delta; m_clips[i].inUs += delta; m_clips[i].durationUs -= delta;
+            }
+            emit changed();
+        },
+        [this, curId, nbId, leftEdge, delta]() {
+            const int i = indexOfClip(curId);
+            const int j = indexOfClip(nbId);
+            if (i < 0 || j < 0) return;
+            if (!leftEdge) {
+                m_clips[i].durationUs -= delta;
+                m_clips[j].startUs -= delta; m_clips[j].inUs -= delta; m_clips[j].durationUs += delta;
+            } else {
+                m_clips[j].durationUs -= delta;
+                m_clips[i].startUs -= delta; m_clips[i].inUs -= delta; m_clips[i].durationUs += delta;
+            }
+            emit changed();
+        }));
+}
+
 qint64 TimelineModel::snapUs(qint64 us, quint64 excludeId) const
 {
     if (!m_snap)
@@ -372,6 +497,74 @@ void TimelineModel::runSelfTestIfRequested()
 {
     if (qEnvironmentVariableIsEmpty("PVS_TL_SELFTEST"))
         return;
+
+    // ---- Invariantes de edición: mover entre pistas, ripple y roll ----
+    auto clipById = [this](quint64 id) -> Clip {
+        const int i = indexOfClip(id);
+        return i >= 0 ? m_clips[i] : Clip{};
+    };
+    auto v1sorted = [this]() {
+        QVector<Clip> v;
+        for (const Clip &c : m_clips) if (c.trackIndex == 2) v.push_back(c);
+        std::sort(v.begin(), v.end(), [](const Clip &a, const Clip &b) { return a.startUs < b.startUs; });
+        return v;
+    };
+    int pass = 0, fail = 0;
+    auto check = [&](bool ok, const char *what) {
+        if (ok) ++pass; else { ++fail; qWarning("[TL selftest] FALLO: %s", what); }
+    };
+    const bool snapWas = m_snap;
+    setSnapEnabled(false); // resultados exactos, sin imán
+
+    // 1) Mover a pista de vídeo compatible; rechazo hacia pista de audio.
+    {
+        const quint64 cid = v1sorted().first().id;
+        const int t0 = clipById(cid).trackIndex;
+        moveClipToFraction(cid, 1, 0.30);   // V2 (vídeo) → permitido
+        check(clipById(cid).trackIndex == 1, "mover a pista de vídeo compatible");
+        moveClipToFraction(cid, 3, 0.30);   // A1 (audio) → rechazado (misma pista/inicio, no-op)
+        check(clipById(cid).trackIndex == 1, "rechazo de vídeo hacia pista de audio");
+        undo();
+        check(clipById(cid).trackIndex == t0, "undo restaura la pista original");
+    }
+
+    // 2) Ripple: recorta salida y desplaza los clips posteriores de la pista.
+    {
+        const auto v = v1sorted();
+        const quint64 c0 = v[0].id, c1 = v[1].id;
+        const qint64 d0 = clipById(c0).durationUs;
+        const qint64 s1 = clipById(c1).startUs;
+        const double df = 0.03;
+        const qint64 ap = qint64(df * m_totalUs);
+        rippleTrimRight(c0, df);
+        check(clipById(c0).durationUs == d0 + ap, "ripple ajusta la duración");
+        check(clipById(c1).startUs == s1 + ap, "ripple desplaza el clip posterior");
+        undo();
+        check(clipById(c0).durationUs == d0 && clipById(c1).startUs == s1, "undo de ripple restaura");
+    }
+
+    // 3) Roll: mueve la frontera entre dos clips adyacentes sin tocar el resto.
+    {
+        const auto v = v1sorted();
+        const quint64 c0 = v[0].id, c1 = v[1].id, c2 = v[2].id;
+        const qint64 c0dur = clipById(c0).durationUs;
+        const qint64 c1start = clipById(c1).startUs, c1dur = clipById(c1).durationUs, c1in = clipById(c1).inUs;
+        const qint64 c1end = c1start + c1dur;
+        const qint64 c2start = clipById(c2).startUs;
+        const double df = 0.02;
+        const qint64 ap = qint64(df * m_totalUs);
+        rollEdit(c0, false, df); // borde derecho de c0
+        check(clipById(c0).durationUs == c0dur + ap, "roll extiende el clip actual");
+        check(clipById(c1).startUs == c1start + ap && clipById(c1).inUs == c1in + ap, "roll mueve inicio/entrada del vecino");
+        check(clipById(c1).startUs + clipById(c1).durationUs == c1end, "roll mantiene el fin del vecino");
+        check(clipById(c2).startUs == c2start, "roll no mueve otros clips");
+        undo();
+        check(clipById(c0).durationUs == c0dur && clipById(c1).startUs == c1start, "undo de roll restaura");
+    }
+
+    setSnapEnabled(snapWas);
+    qWarning("[TL selftest] invariantes edición: %d OK, %d FALLO", pass, fail);
+
     const int n0 = clipCount();
     const quint64 firstV1 = [this]() -> quint64 {
         for (const Clip &c : m_clips) if (c.trackIndex == 2) return c.id;
