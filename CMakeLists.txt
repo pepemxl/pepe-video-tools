@@ -38,6 +38,11 @@ set_source_files_properties(src/qml/theme/Theme.qml
 
 target_link_libraries(PepeVideoStudio PRIVATE Qt6::Quick Qt6::Gui)
 
+# Diálogo nativo de archivos en Windows (GetOpenFileNameW)
+if (WIN32)
+    target_link_libraries(PepeVideoStudio PRIVATE comdlg32)
+endif()
+
 # En Windows, app GUI sin consola
 set_target_properties(PepeVideoStudio PROPERTIES
     WIN32_EXECUTABLE ON

@@ -1,0 +1,123 @@
+# Compilar y ejecutar — PepeVideo Studio
+
+Aplicación de escritorio en **Qt 6 / C++** (UI en Qt Quick/QML). Estas instrucciones son
+para Windows con el kit **MinGW** que trae Qt.
+
+---
+
+## 1. Requisitos
+
+| Herramienta | Versión probada | Notas |
+|-------------|-----------------|-------|
+| Qt 6 (mingw_64) | 6.11.0 | `C:/Qt/6.11.0/mingw_64` |
+| MinGW | 13.1.0 | `C:/Qt/Tools/mingw1310_64` |
+| CMake | ≥ 3.21 (probado 4.3) | `C:/Qt/Tools/CMake_64` |
+| Ninja | — | `C:/Qt/Tools/Ninja` |
+| FFmpeg (`ffmpeg`, `ffprobe`) | build reciente | Necesario en el **PATH** para importar medios (Fase 1). |
+
+> Si tus rutas de Qt/MinGW difieren, edita `CMakePresets.json` (sección `configurePresets → cacheVariables`).
+
+---
+
+## 2. Compilar (línea de comandos)
+
+Desde la raíz del repositorio:
+
+```bash
+# 1) Configurar (genera build/mingw con el preset MinGW)
+cmake --preset mingw
+
+# 2) Compilar
+cmake --build build/mingw
+```
+
+El ejecutable queda en `build/mingw/PepeVideoStudio.exe`.
+
+Si `cmake`, `ninja` o el compilador no están en el PATH, añádelos temporalmente:
+
+```bash
+export PATH="/c/Qt/Tools/mingw1310_64/bin:/c/Qt/Tools/Ninja:/c/Qt/6.11.0/mingw_64/bin:$PATH"
+```
+
+(En PowerShell: `$env:Path = "C:\Qt\Tools\mingw1310_64\bin;C:\Qt\Tools\Ninja;C:\Qt\6.11.0\mingw_64\bin;" + $env:Path`)
+
+---
+
+## 3. Ejecutar
+
+```bash
+# Necesita las DLL de Qt en el PATH (bin de Qt)
+export PATH="/c/Qt/6.11.0/mingw_64/bin:$PATH"
+./build/mingw/PepeVideoStudio.exe
+```
+
+Desde Qt Creator: abre `CMakeLists.txt` como proyecto, elige el kit *Desktop Qt 6.11.0 MinGW 64-bit* y pulsa **Run** (▶). Qt Creator resuelve las DLL automáticamente.
+
+---
+
+## 4. Distribuir (empaquetar dependencias)
+
+Para ejecutar fuera del entorno de Qt, copia las dependencias junto al `.exe`:
+
+```bash
+C:/Qt/6.11.0/mingw_64/bin/windeployqt.exe --qmldir src/qml build/mingw/PepeVideoStudio.exe
+```
+
+Esto añade la plataforma `platforms/qwindows.dll`, las DLL de Qt y los módulos QML necesarios.
+(Instalador NSIS/Inno Setup: pendiente, Fase 6.)
+
+---
+
+## 5. Solución de problemas
+
+- **La app se cierra al instante sin mensaje.** Es una app GUI (`WIN32_EXECUTABLE`), así que los
+  errores de QML NO salen por stderr. Fuérzalos:
+  ```bash
+  export QT_FORCE_STDERR_LOGGING=1 QT_ASSUME_STDERR_HAS_CONSOLE=1
+  ./build/mingw/PepeVideoStudio.exe
+  ```
+- **`ld returned 1` al compilar.** El `.exe` está bloqueado por una instancia en ejecución.
+  Ciérrala: `Get-Process PepeVideoStudio | Stop-Process -Force` (PowerShell).
+- **No encuentra el _platform plugin_ (`qwindows.dll`).** Ejecuta desde Qt Creator, o añade el
+  `bin` de Qt al PATH, o corre `windeployqt` (paso 4).
+- **Importar medios no hace nada.** Asegúrate de que `ffmpeg` y `ffprobe` están en el PATH
+  (`ffprobe -version`).
+
+### Convenciones de QML aprendidas (para no repetir errores)
+- `font.pixelSize` es **entero**; usa `font.pointSize` si necesitas decimales.
+- El color hex con alfa en QML es **`#AARRGGBB`** (¡no CSS `#RRGGBBAA`!). En cambio, dentro de
+  `Canvas` (`fillStyle`/`strokeStyle`) se usa sintaxis CSS.
+- Los hijos de `RowLayout`/`ColumnLayout` usan `Layout.alignment`, no `anchors.*`.
+
+---
+
+## 6. Maqueta de referencia (prototipo Electron)
+
+El diseño original está reproducido en HTML en `design-reference/` (solo referencia visual):
+
+```bash
+cd design-reference
+npm install
+npm start
+```
+
+---
+
+## 7. Medios y motor de vídeo (estado)
+
+### Importar medios (Fase 1)
+- Botón **`+`** del Media Pool → abre el diálogo **nativo** de Windows (sin dependencias QML extra).
+- Metadatos con `ffprobe`, miniaturas/formas de onda con `ffmpeg` (deben estar en el PATH).
+- Variables de entorno útiles:
+  - `PVS_DEMO_MEDIA=<ruta>` — importa ese archivo al arrancar (para pruebas).
+  - `PVS_FFMPEG` / `PVS_FFPROBE` — rutas a los ejecutables si no están en el PATH.
+- Miniaturas cacheadas en `%LOCALAPPDATA%/Pepe/PepeVideo Studio/cache/thumbs`.
+
+### Nota de estado del motor
+- **Fase 1 (en curso):** importación de medios vía **subproceso `ffmpeg`/`ffprobe`**
+  (metadatos + miniaturas + proxies). No requiere librerías de desarrollo de FFmpeg.
+- **Decodificación en tiempo real → textura RHI** (reproducción en los monitores) requerirá
+  enlazar **libav\*** (`libavcodec`, `libavformat`, `libswscale`, `libswresample`). Para ello hay
+  que instalar la build **shared/dev** de FFmpeg (con `include/` y `lib/`); la build actual solo
+  trae los ejecutables. Ese enlace se añadirá en el siguiente incremento de la Fase 1.
+```
