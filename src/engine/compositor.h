@@ -25,6 +25,9 @@ public:
     explicit CompositorWorker(QSize outSize, QObject *parent = nullptr);
     ~CompositorWorker() override;
 
+    // Compone el fotograma de forma sincrónica (sin emitir). Público para pruebas.
+    QImage renderFrame(const RenderClipList &clips, bool &hasContent);
+
 public slots:
     void composeFrame(const RenderClipList &clips);
 

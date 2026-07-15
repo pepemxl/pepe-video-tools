@@ -2,6 +2,7 @@
 
 #include "framegrabber.h"
 
+#include <QColor>
 #include <QPainter>
 #include <QThread>
 #include <QTimer>
@@ -35,6 +36,13 @@ FrameGrabber *CompositorWorker::grabberFor(const QString &path)
 
 void CompositorWorker::composeFrame(const RenderClipList &clips)
 {
+    bool hasContent = false;
+    QImage img = renderFrame(clips, hasContent);
+    emit frameReady(hasContent ? img : QImage(), hasContent);
+}
+
+QImage CompositorWorker::renderFrame(const RenderClipList &clips, bool &hasContent)
+{
     QImage out(m_outSize, QImage::Format_RGBA8888);
     out.fill(Qt::black);
 
@@ -42,17 +50,32 @@ void CompositorWorker::composeFrame(const RenderClipList &clips)
     QPainter p(&out);
     p.setRenderHint(QPainter::SmoothPixmapTransform, true);
     for (const TimelineModel::RenderClip &rc : clips) {
+        const TimelineModel::Transform &t = rc.transform;
         QImage frame;
         if (!rc.mediaPath.isEmpty()) {
             if (FrameGrabber *g = grabberFor(rc.mediaPath))
                 frame = g->frameAt(rc.sourceUs / 1000);
         }
-        p.setOpacity(rc.opacity);
+        p.setOpacity(t.opacity);
         if (!frame.isNull()) {
-            const QSize sz = frame.size().scaled(m_outSize, Qt::KeepAspectRatio);
-            const QRect tgt(QPoint((m_outSize.width() - sz.width()) / 2,
-                                   (m_outSize.height() - sz.height()) / 2), sz);
-            p.drawImage(tgt, frame);
+            const double fw = frame.width(), fh = frame.height();
+            // Recorte del origen (fracciones por borde).
+            const double cw = fw * qMax(0.02, 1.0 - t.cropL - t.cropR);
+            const double ch = fh * qMax(0.02, 1.0 - t.cropT - t.cropB);
+            const QRectF src(t.cropL * fw, t.cropT * fh, cw, ch);
+            // Ajuste (fit) del recorte al lienzo, luego escala del usuario.
+            const QSizeF fit = QSizeF(cw, ch).scaled(m_outSize, Qt::KeepAspectRatio);
+            const QSizeF dst(fit.width() * t.scale, fit.height() * t.scale);
+            // Centro + desplazamiento (fracción del lienzo) + rotación.
+            const QPointF center(m_outSize.width() * (0.5 + t.posX),
+                                 m_outSize.height() * (0.5 + t.posY));
+            p.save();
+            p.translate(center);
+            if (t.rotation != 0.0)
+                p.rotate(t.rotation);
+            p.drawImage(QRectF(-dst.width() / 2, -dst.height() / 2, dst.width(), dst.height()),
+                        frame, src);
+            p.restore();
         } else {
             // Sin media: capa de color (placeholder) para visualizar el apilado.
             p.fillRect(out.rect(), QColor(rc.fill));
@@ -62,7 +85,8 @@ void CompositorWorker::composeFrame(const RenderClipList &clips)
     }
     p.end();
 
-    emit frameReady(painted ? out : QImage(), painted);
+    hasContent = painted;
+    return out;
 }
 
 // ========================= Compositor (hilo de GUI) ===========================
@@ -88,6 +112,30 @@ Compositor::Compositor(QObject *parent) : QObject(parent)
     connect(this, &Compositor::requestCompose, m_worker, &CompositorWorker::composeFrame);
     connect(m_worker, &CompositorWorker::frameReady, this, &Compositor::onWorkerFrame);
     m_thread->start();
+
+    // Autotest de composición (píxeles): opacidad y mezcla de capas por el camino de color.
+    if (qEnvironmentVariableIsSet("PVS_COMP_SELFTEST")) {
+        CompositorWorker tester(QSize(64, 64));
+        int pass = 0, fail = 0;
+        auto chk = [&](bool ok, const char *w) { if (ok) ++pass; else { ++fail; qWarning("[COMP selftest] FALLO: %s", w); } };
+        bool hc = false;
+
+        TimelineModel::Transform op;                 // opaco
+        QColor a = tester.renderFrame({ { 2, "video", "#ff0000", QString(), 0, op } }, hc).pixelColor(32, 32);
+        chk(hc && a.red() > 200 && a.green() < 40 && a.blue() < 40, "color opaco = rojo");
+
+        TimelineModel::Transform o0; o0.opacity = 0.0; // transparente
+        QColor b = tester.renderFrame({ { 2, "video", "#ff0000", QString(), 0, o0 } }, hc).pixelColor(32, 32);
+        chk(b.red() < 20 && b.green() < 20 && b.blue() < 20, "opacidad 0 = negro");
+
+        TimelineModel::Transform tr;                  // rojo abajo (opaco)
+        TimelineModel::Transform tg; tg.opacity = 0.5; // verde arriba al 50%
+        QColor c = tester.renderFrame({ { 2, "video", "#ff0000", QString(), 0, tr },
+                                        { 0, "video", "#00ff00", QString(), 0, tg } }, hc).pixelColor(32, 32);
+        chk(c.red() > 90 && c.red() < 170 && c.green() > 90 && c.green() < 170, "mezcla verde 50% sobre rojo");
+
+        qWarning("[COMP selftest] %d OK, %d FALLO", pass, fail);
+    }
 }
 
 Compositor::~Compositor()
@@ -106,6 +154,7 @@ void Compositor::setTimeline(TimelineModel *timeline)
     if (m_timeline) {
         connect(m_timeline, &TimelineModel::playheadChanged, this, &Compositor::scheduleComposite);
         connect(m_timeline, &TimelineModel::changed, this, &Compositor::scheduleComposite);
+        connect(m_timeline, &TimelineModel::selectionChanged, this, &Compositor::scheduleComposite);
         scheduleComposite();
 
         // Hook de prueba: autoarranque de la reproducción del PROGRAMA tras cargar la UI.

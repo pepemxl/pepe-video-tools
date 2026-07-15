@@ -7,6 +7,32 @@ Rectangle {
     width: 322
     color: Theme.panel
 
+    // Campo numérico editable por arrastre horizontal (relativo al valor al pulsar).
+    component NumRow: RowLayout {
+        id: nr
+        property string label
+        property string display
+        property real value: 0
+        property real sensitivity: 0.01
+        signal edited(real v)
+        Layout.fillWidth: true; spacing: 8
+        Rectangle { width: 8; height: 8; rotation: 45; color: "transparent"; border.color: Theme.textFaint; border.width: 1.5 }
+        Text { text: nr.label; color: Theme.textMid; font.pixelSize: 11; font.family: Theme.sans; Layout.preferredWidth: 64 }
+        Rectangle {
+            Layout.fillWidth: true; height: 24; radius: 4; color: Theme.sunken
+            border.color: dragArea.pressed ? Theme.amber : Theme.line; border.width: 1
+            Text { anchors.left: parent.left; anchors.leftMargin: 7; anchors.verticalCenter: parent.verticalCenter
+                   text: nr.display; font.pixelSize: 11; font.family: Theme.mono; color: Theme.blue }
+            MouseArea {
+                id: dragArea; anchors.fill: parent; cursorShape: Qt.SizeHorCursor
+                property real base
+                property real px
+                onPressed: (m) => { base = nr.value; px = m.x }
+                onPositionChanged: (m) => nr.edited(base + (m.x - px) * nr.sensitivity)
+            }
+        }
+    }
+
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
@@ -46,57 +72,38 @@ Rectangle {
                 // ---- Transformar ----
                 ColumnLayout {
                     Layout.fillWidth: true; Layout.margins: 12; spacing: 9
+                    enabled: TimelineModel.hasSelection
+                    opacity: TimelineModel.hasSelection ? 1.0 : 0.4
                     RowLayout { Layout.fillWidth: true
                         Text { text: "Transformar"; color: Theme.textHi; font.pixelSize: 11; font.weight: Font.DemiBold; font.family: Theme.sans }
                         Item { Layout.fillWidth: true }
-                        Text { text: "B009_puesto"; color: Theme.textDim; font.pixelSize: 10; font.family: Theme.sans } }
+                        Text { text: TimelineModel.hasSelection ? TimelineModel.selectedName : "Sin selección"
+                               color: Theme.textDim; font.pixelSize: 10; font.family: Theme.sans; elide: Text.ElideMiddle; Layout.maximumWidth: 150 } }
 
-                    Repeater {
-                        model: [
-                            { l: "Posición", kf: true,  v: "960.0",       v2: "540.0", blue: true },
-                            { l: "Escala",   kf: true,  v: "118.5 %",     v2: "",      blue: true },
-                            { l: "Rotación", kf: false, v: "0.0°",        v2: "",      blue: false },
-                            { l: "Recorte",  kf: false, v: "0 · 0 · 0 · 0", v2: "",    blue: false }
-                        ]
-                        delegate: RowLayout {
-                            required property var modelData
-                            Layout.fillWidth: true; spacing: 8
-                            Rectangle { width: 8; height: 8; rotation: 45; color: modelData.kf ? Theme.amber : "transparent"
-                                        border.color: modelData.kf ? "transparent" : Theme.textFaint; border.width: 1.5 }
-                            Text { text: modelData.l; color: Theme.textMid; font.pixelSize: 11; font.family: Theme.sans; Layout.preferredWidth: 64 }
-                            Rectangle { Layout.fillWidth: true; height: 24; radius: 4; color: Theme.sunken; border.color: Theme.line; border.width: 1
-                                Text { anchors.left: parent.left; anchors.leftMargin: 7; anchors.verticalCenter: parent.verticalCenter
-                                       text: modelData.v; font.pixelSize: 11; font.family: Theme.mono; color: modelData.blue ? Theme.blue : Theme.text } }
-                            Rectangle { visible: modelData.v2 !== ""; Layout.fillWidth: true; height: 24; radius: 4; color: Theme.sunken; border.color: Theme.line; border.width: 1
-                                Text { anchors.left: parent.left; anchors.leftMargin: 7; anchors.verticalCenter: parent.verticalCenter
-                                       text: modelData.v2; font.pixelSize: 11; font.family: Theme.mono; color: Theme.blue } }
-                        }
-                    }
-                    // Opacidad
+                    NumRow { label: "Posición X"; value: TimelineModel.selPosX; sensitivity: 0.002
+                             display: (TimelineModel.selPosX * 1280).toFixed(0) + " px"
+                             onEdited: (v) => TimelineModel.setSelPosX(v) }
+                    NumRow { label: "Posición Y"; value: TimelineModel.selPosY; sensitivity: 0.002
+                             display: (TimelineModel.selPosY * 720).toFixed(0) + " px"
+                             onEdited: (v) => TimelineModel.setSelPosY(v) }
+                    NumRow { label: "Escala"; value: TimelineModel.selScale; sensitivity: 0.01
+                             display: (TimelineModel.selScale * 100).toFixed(1) + " %"
+                             onEdited: (v) => TimelineModel.setSelScale(v) }
+                    NumRow { label: "Rotación"; value: TimelineModel.selRotation; sensitivity: 0.5
+                             display: TimelineModel.selRotation.toFixed(1) + "°"
+                             onEdited: (v) => TimelineModel.setSelRotation(v) }
+
+                    // Opacidad (deslizador)
                     RowLayout { Layout.fillWidth: true; spacing: 8
                         Rectangle { width: 8; height: 8; rotation: 45; color: "transparent"; border.color: Theme.textFaint; border.width: 1.5 }
                         Text { text: "Opacidad"; color: Theme.textMid; font.pixelSize: 11; font.family: Theme.sans; Layout.preferredWidth: 64 }
-                        Rectangle { Layout.fillWidth: true; height: 6; radius: 3; color: Theme.sunken
-                            Rectangle { height: parent.height; radius: 3; color: "#4a4d55"; width: parent.width }
-                            Rectangle { width: 12; height: 12; radius: 6; color: Theme.text; x: parent.width - 6; y: -3 } }
-                    }
-                    // Curva
-                    Rectangle {
-                        Layout.fillWidth: true; height: 52; radius: 4; color: Theme.sunken; border.color: Theme.line; border.width: 1
-                        clip: true
-                        Text { text: "Curva · Escala"; color: Theme.textFaint; font.pixelSize: 8; font.family: Theme.mono; x: 8; y: 6 }
-                        Canvas {
-                            anchors.fill: parent
-                            onPaint: {
-                                var c = getContext("2d"); c.clearRect(0,0,width,height)
-                                var sx = width/300, sy = height/52
-                                c.strokeStyle = Theme.amber; c.lineWidth = 1.5; c.beginPath()
-                                c.moveTo(30*sx,40*sy); c.lineTo(130*sx,40*sy); c.lineTo(230*sx,14*sy); c.lineTo(290*sx,14*sy); c.stroke()
-                                c.fillStyle = Theme.amber
-                                var kf = [[30,40],[130,40],[230,14]]
-                                for (var i=0;i<kf.length;i++){ c.save(); c.translate(kf[i][0]*sx,kf[i][1]*sy); c.rotate(Math.PI/4); c.fillRect(-3.5,-3.5,7,7); c.restore() }
-                            }
-                        }
+                        Rectangle { id: opTrack; Layout.fillWidth: true; height: 6; radius: 3; color: Theme.sunken
+                            Rectangle { height: parent.height; radius: 3; color: "#4a4d55"; width: parent.width * TimelineModel.selOpacity }
+                            Rectangle { width: 12; height: 12; radius: 6; color: Theme.text; x: parent.width * TimelineModel.selOpacity - 6; y: -3 }
+                            MouseArea { anchors.fill: parent; anchors.margins: -5
+                                onPressed: (m) => TimelineModel.setSelOpacity(m.x / opTrack.width)
+                                onPositionChanged: (m) => TimelineModel.setSelOpacity(m.x / opTrack.width) } }
+                        Text { text: (TimelineModel.selOpacity * 100).toFixed(0) + "%"; color: Theme.textDim; font.pixelSize: 10; font.family: Theme.mono; Layout.preferredWidth: 30 }
                     }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: Theme.lineSoft }

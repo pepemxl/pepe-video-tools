@@ -176,10 +176,18 @@ npm start
   la secuencia hasta el final del contenido. Transporte: botón ▶/❚❚ del monitor y tecla
   **Espacio**. Un seek manual durante la reproducción se respeta (el reloj es incremental).
 - El scrubber del monitor de PROGRAMA refleja el playhead y permite moverlo (clic).
+- **Transform/opacidad por clip:** cada clip lleva una `Transform` (posición, escala, rotación,
+  opacidad, recorte) que el worker aplica con `QPainter`. Selecciona un clip en la timeline y
+  edítalo en el **Inspector** (sección *Transformar*): arrastra horizontalmente los campos
+  Posición/Escala/Rotación y usa el deslizador de opacidad. El monitor de PROGRAMA se recompón
+  al instante.
 - **Prueba con vídeo real:** `PVS_TL_MEDIA=<ruta>` asigna ese archivo a los clips de V1 al
   arrancar; `PVS_PROGRAM_AUTOPLAY=1` arranca la reproducción del PROGRAMA al cargar. Clips sin
   media se dibujan con su color (para visualizar el apilado).
-- Pendiente: **transform/opacidad** por clip y transiciones entre clips.
+- **Autotest del compositor** (sin UI): `PVS_COMP_SELFTEST=1 ./PepeVideoStudio.exe` compone
+  fotogramas de color en memoria y comprueba opacidad y mezcla de capas por píxel
+  (`[COMP selftest] … OK/FALLO`).
+- Pendiente: **keyframes** de transform y **transiciones** entre clips.
 
 ### Resumen de estado (2026-07-15)
 | Fase | Estado |

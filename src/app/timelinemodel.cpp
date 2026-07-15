@@ -83,7 +83,7 @@ QVector<TimelineModel::RenderClip> TimelineModel::clipsAt(qint64 us) const
                 continue;
             if (us < c.startUs || us >= c.startUs + c.durationUs)
                 continue;
-            out.push_back({ t, c.kind, c.fill, c.mediaPath, c.inUs + (us - c.startUs), 1.0 });
+            out.push_back({ t, c.kind, c.fill, c.mediaPath, c.inUs + (us - c.startUs), c.transform });
             break; // un clip por pista
         }
     }
@@ -202,7 +202,87 @@ void TimelineModel::selectClip(quint64 id)
     if (m_selectedId == id)
         return;
     m_selectedId = id;
-    emit changed();
+    emit changed();          // actualiza el resalte de selección en la timeline
+    emit selectionChanged(); // refresca el Inspector
+}
+
+// ---- Transformación del clip seleccionado ----
+QString TimelineModel::selectedName() const
+{
+    const int i = indexOfClip(m_selectedId);
+    return i >= 0 ? m_clips[i].name : QString();
+}
+double TimelineModel::selOpacity() const
+{
+    const int i = indexOfClip(m_selectedId);
+    return i >= 0 ? m_clips[i].transform.opacity : 1.0;
+}
+double TimelineModel::selScale() const
+{
+    const int i = indexOfClip(m_selectedId);
+    return i >= 0 ? m_clips[i].transform.scale : 1.0;
+}
+double TimelineModel::selPosX() const
+{
+    const int i = indexOfClip(m_selectedId);
+    return i >= 0 ? m_clips[i].transform.posX : 0.0;
+}
+double TimelineModel::selPosY() const
+{
+    const int i = indexOfClip(m_selectedId);
+    return i >= 0 ? m_clips[i].transform.posY : 0.0;
+}
+double TimelineModel::selRotation() const
+{
+    const int i = indexOfClip(m_selectedId);
+    return i >= 0 ? m_clips[i].transform.rotation : 0.0;
+}
+
+void TimelineModel::setSelOpacity(double v)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return;
+    v = qBound(0.0, v, 1.0);
+    if (m_clips[i].transform.opacity == v) return;
+    m_clips[i].transform.opacity = v;
+    emit selectionChanged();
+}
+void TimelineModel::setSelScale(double v)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return;
+    v = qBound(0.05, v, 8.0);
+    if (m_clips[i].transform.scale == v) return;
+    m_clips[i].transform.scale = v;
+    emit selectionChanged();
+}
+void TimelineModel::setSelPosX(double v)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return;
+    v = qBound(-2.0, v, 2.0);
+    if (m_clips[i].transform.posX == v) return;
+    m_clips[i].transform.posX = v;
+    emit selectionChanged();
+}
+void TimelineModel::setSelPosY(double v)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return;
+    v = qBound(-2.0, v, 2.0);
+    if (m_clips[i].transform.posY == v) return;
+    m_clips[i].transform.posY = v;
+    emit selectionChanged();
+}
+void TimelineModel::setSelRotation(double v)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return;
+    while (v > 180.0) v -= 360.0;
+    while (v < -180.0) v += 360.0;
+    if (m_clips[i].transform.rotation == v) return;
+    m_clips[i].transform.rotation = v;
+    emit selectionChanged();
 }
 
 void TimelineModel::splitAtFraction(quint64 id, double timelineFraction)

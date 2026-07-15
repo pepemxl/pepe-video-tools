@@ -19,6 +19,14 @@ class TimelineModel : public QObject
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY changed)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY changed)
     Q_PROPERTY(int clipCount READ clipCount NOTIFY changed)
+    // Transformación del clip seleccionado (para el Inspector).
+    Q_PROPERTY(bool hasSelection READ hasSelection NOTIFY selectionChanged)
+    Q_PROPERTY(QString selectedName READ selectedName NOTIFY selectionChanged)
+    Q_PROPERTY(double selOpacity READ selOpacity NOTIFY selectionChanged)
+    Q_PROPERTY(double selScale READ selScale NOTIFY selectionChanged)
+    Q_PROPERTY(double selPosX READ selPosX NOTIFY selectionChanged)
+    Q_PROPERTY(double selPosY READ selPosY NOTIFY selectionChanged)
+    Q_PROPERTY(double selRotation READ selRotation NOTIFY selectionChanged)
 
 public:
     explicit TimelineModel(QObject *parent = nullptr);
@@ -28,6 +36,15 @@ public:
         QString kind;       // "video" | "audio"
         QString idColor;    // color de la etiqueta
         int height;
+    };
+    // Transformación de una capa en el compositor.
+    struct Transform {
+        double posX = 0.0;      // desplazamiento en fracción del ancho de salida (0 = centrado)
+        double posY = 0.0;      // fracción del alto
+        double scale = 1.0;     // 1.0 = ajustar al lienzo (fit)
+        double rotation = 0.0;  // grados
+        double opacity = 1.0;   // 0..1
+        double cropL = 0.0, cropT = 0.0, cropR = 0.0, cropB = 0.0; // recorte por borde (0..1)
     };
     struct Clip {
         quint64 id;
@@ -41,6 +58,7 @@ public:
         qint64 durationUs;
         qint64 inUs;
         QString mediaPath;
+        Transform transform;
     };
     struct Marker {
         qint64 timeUs;
@@ -54,7 +72,7 @@ public:
         QString fill;       // color placeholder si no hay media
         QString mediaPath;  // vacío = sin media (se usa el color)
         qint64 sourceUs;    // tiempo dentro del origen (inUs + offset)
-        double opacity;
+        Transform transform;
     };
 
     QVariantList tracks() const;
@@ -73,10 +91,25 @@ public:
     bool canRedo() const { return m_undo.canRedo(); }
     int clipCount() const { return int(m_clips.size()); }
 
+    bool hasSelection() const { return indexOfClip(m_selectedId) >= 0; }
+    QString selectedName() const;
+    double selOpacity() const;
+    double selScale() const;
+    double selPosX() const;
+    double selPosY() const;
+    double selRotation() const;
+
     // Edición (con undo/redo)
     Q_INVOKABLE void selectClip(quint64 id);
     // Asigna un archivo de medios a un clip (para que el compositor lo decodifique).
     Q_INVOKABLE void setClipMedia(quint64 id, const QString &path);
+
+    // Edición de la transformación del clip seleccionado (recompón sin rehacer la timeline).
+    Q_INVOKABLE void setSelOpacity(double v);
+    Q_INVOKABLE void setSelScale(double v);
+    Q_INVOKABLE void setSelPosX(double v);
+    Q_INVOKABLE void setSelPosY(double v);
+    Q_INVOKABLE void setSelRotation(double v);
     Q_INVOKABLE void splitAtFraction(quint64 id, double timelineFraction);
     Q_INVOKABLE void removeSelected();
     Q_INVOKABLE void moveClipToFraction(quint64 id, int trackIndex, double startFraction);
@@ -106,6 +139,7 @@ signals:
     void playheadChanged();
     void markersChanged();
     void snapChanged();
+    void selectionChanged();
 
 private:
     friend class TimelineCommand;
