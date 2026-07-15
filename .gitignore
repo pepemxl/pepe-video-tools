@@ -1,0 +1,8 @@
+# Build
+/build/
+
+# Prototipo de referencia (Electron)
+design-reference/node_modules/
+
+# Logs / temporales
+*.log
