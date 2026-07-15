@@ -122,12 +122,17 @@ npm start
 - Las DLL de FFmpeg (`avcodec-62`, `avformat-62`, `avutil-60`, `swscale-9`, `swresample-6`, …) se
   **copian automáticamente** junto al `.exe` tras compilar (paso `POST_BUILD` del CMake).
 - Componentes: `src/engine/videodecoder.*` (demux/decode/swscale en hilo de trabajo),
-  `src/engine/videosurface.*` (`QQuickPaintedItem` que pinta el fotograma), `src/app/videocontroller.*`
+  `src/engine/videosurface.*` (**`QQuickItem` con `QSGImageNode`**: sube el fotograma a una
+  textura GPU y lo compone con el Scene Graph / RHI), `src/app/videocontroller.*`
   (fachada QML con play/pausa/seek, posición y timecode).
 - **Uso:** doble clic en un medio del pool → se abre y reproduce en el monitor **ORIGEN**.
   El botón de reproducción y la barra (clic = buscar) del monitor de origen ya funcionan.
-- Pendiente: subir el fotograma a **textura RHI/QSG** (ahora se pinta por CPU), y **audio**
-  (Fase 4). El compositor multicapa del monitor de **PROGRAMA** es de la Fase 2.
+- **Puente decode→RHI:** el fotograma decodificado se sube a `QSGTexture` con
+  `QQuickWindow::createTextureFromImage` y se dibuja con `QSGImageNode` (letterbox centrado).
+  Ya no se pinta por CPU. Diagnóstico opcional: `PVS_RHI_DEBUG=1` registra por stderr cada
+  subida de textura (`[RHI] textura GPU #n subida …`).
+- Pendiente: eliminar la copia intermedia `QImage` (hwaccel → textura D3D11 directa),
+  `FrameCache`, **audio** (Fase 4) y el compositor multicapa del monitor de **PROGRAMA** (Fase 2).
 
 ### Línea de tiempo (Fase 2, en curso)
 - `src/app/timelinemodel.*` alimenta las pistas y clips de `TimelinePanel.qml` (singleton
@@ -147,18 +152,40 @@ npm start
   - **Marcadores**: añadir en el playhead (botón de la barra o tecla **M**), eliminar con clic
     sobre el marcador en la regla.
   - **Playhead** por clic en la regla; borrar clip con Supr / Retroceso.
-- Atajos: A/T/B/N/Y/W/P/Z (herramientas), S (imán), M (marcador), Supr/Retroceso (borrar),
-  Ctrl+Z / Ctrl+Shift+Z (undo/redo).
+- Atajos: A/T/B/N/Y/W/P/Z (herramientas), S (imán), M (marcador), **Espacio** (reproducir/pausar
+  el PROGRAMA), Supr/Retroceso (borrar), Ctrl+Z / Ctrl+Shift+Z (undo/redo).
 - **Autotest del modelo** (sin UI): `PVS_TL_SELFTEST=1 ./PepeVideoStudio.exe` valida las
-  invariantes de mover/ripple/roll/undo y las imprime por stderr (`[TL selftest] … OK/FALLO`).
-- Pendiente: **slip/slide**, migración opcional a `QAbstractItemModel`, y el **compositor
-  multicapa** hacia el monitor de PROGRAMA (depende de la textura RHI, Fase 1).
+  invariantes de mover/ripple/roll/undo y de `clipsAt` (compositor), impresas por stderr
+  (`[TL selftest] … OK/FALLO`).
+- Pendiente: **slip/slide** y migración opcional a `QAbstractItemModel`.
+
+### Compositor multicapa · monitor de PROGRAMA (Fase 2, primera etapa)
+- En el instante del **playhead**, `TimelineModel::clipsAt()` resuelve el clip de vídeo activo
+  en cada pista, ordenados de abajo (V1) a arriba (V3).
+- `src/engine/framegrabber.*` decodifica de forma **sincrónica** un fotograma en el tiempo de
+  origen de cada clip (seek + decode, RGBA con swscale).
+- `src/engine/compositor.*` los **apila** en un fotograma 1280×720 (con `QPainter`) y lo entrega
+  por `frameReady(QImage)` a la superficie RHI del monitor de PROGRAMA (singleton
+  `PepeVideo.Compositor`). Recompón al mover el playhead o editar la timeline (con antirrebote).
+- **Hilo de trabajo:** el decode/composición vive en `CompositorWorker` (un `QThread` propio);
+  el `Compositor` (hilo de GUI) le pasa una instantánea de los clips activos por señal encolada
+  (`RenderClipList`). Con control **busy/pending** (una composición en vuelo, recomposición al
+  día al terminar), así la reproducción **no bloquea la UI** y descarta fotogramas si se retrasa.
+- **Reproducción del PROGRAMA:** el `Compositor` tiene un **reloj** (~30 Hz) que avanza el
+  playhead en **tiempo real** (con descarte de fotogramas si el decode se retrasa) y reproduce
+  la secuencia hasta el final del contenido. Transporte: botón ▶/❚❚ del monitor y tecla
+  **Espacio**. Un seek manual durante la reproducción se respeta (el reloj es incremental).
+- El scrubber del monitor de PROGRAMA refleja el playhead y permite moverlo (clic).
+- **Prueba con vídeo real:** `PVS_TL_MEDIA=<ruta>` asigna ese archivo a los clips de V1 al
+  arrancar; `PVS_PROGRAM_AUTOPLAY=1` arranca la reproducción del PROGRAMA al cargar. Clips sin
+  media se dibujan con su color (para visualizar el apilado).
+- Pendiente: **transform/opacidad** por clip y transiciones entre clips.
 
 ### Resumen de estado (2026-07-15)
 | Fase | Estado |
 |------|--------|
 | 0 — Shell QML | ✅ completa |
-| 1 — Medios y reproducción | 🟢 casi completa (falta audio y textura RHI) |
-| 2 — Timeline | 🟢 avanzada (mover entre pistas, trim, ripple, roll, snap, marcadores) |
+| 1 — Medios y reproducción | 🟢 casi completa (fotograma por GPU/RHI listo; falta audio, hwaccel) |
+| 2 — Timeline | 🟢 avanzada (mover/trim/ripple/roll/snap/marcadores + compositor 1ª etapa) |
 | 3–6 — Color, audio, títulos, export | ⬜ pendientes |
 ```

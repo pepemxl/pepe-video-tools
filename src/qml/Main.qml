@@ -43,6 +43,10 @@ Window {
                 (e.modifiers & Qt.ShiftModifier) ? TimelineModel.redo() : TimelineModel.undo()
                 e.accepted = true; return
             }
+            if (e.key === Qt.Key_Space) {   // reproducir/pausar el monitor de PROGRAMA
+                Compositor.togglePlay()
+                e.accepted = true; return
+            }
             switch (e.key) {
             case Qt.Key_A: timeline.currentTool = 0; break;
             case Qt.Key_T: timeline.currentTool = 1; break;

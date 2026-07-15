@@ -5,6 +5,7 @@
 #include "app/mediapoolmodel.h"
 #include "app/timelinemodel.h"
 #include "app/videocontroller.h"
+#include "engine/compositor.h"
 #include "engine/videosurface.h"
 
 int main(int argc, char *argv[])
@@ -22,6 +23,10 @@ int main(int argc, char *argv[])
 
     TimelineModel timelineModel;
     qmlRegisterSingletonInstance("PepeVideo", 1, 0, "TimelineModel", &timelineModel);
+
+    Compositor compositor;
+    compositor.setTimeline(&timelineModel);
+    qmlRegisterSingletonInstance("PepeVideo", 1, 0, "Compositor", &compositor);
 
     qmlRegisterType<VideoSurface>("PepeVideo", 1, 0, "VideoSurface");
 

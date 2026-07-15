@@ -60,6 +60,43 @@ void TimelineModel::seed()
     add(5, "Ambiente_mercado",   "audio", "#2d5540", "#3c7052", "#4d9970", us(0.06), us(0.88));
 
     m_playheadUs = us(0.52);
+
+    // Hook de prueba: asigna un archivo real a los clips de V1 (pista 2) para
+    // poder verificar el compositor con vídeo real. PVS_TL_MEDIA=<ruta>.
+    const QString demoMedia = qEnvironmentVariable("PVS_TL_MEDIA");
+    if (!demoMedia.isEmpty())
+        for (Clip &c : m_clips)
+            if (c.trackIndex == 2)
+                c.mediaPath = demoMedia;
+}
+
+QVector<TimelineModel::RenderClip> TimelineModel::clipsAt(qint64 us) const
+{
+    QVector<RenderClip> out;
+    // Pistas de vídeo de abajo (índice mayor, V1) hacia arriba (índice menor, V3),
+    // para pintarlas en ese orden (las de arriba tapan a las de abajo).
+    for (int t = m_tracks.size() - 1; t >= 0; --t) {
+        if (m_tracks.at(t).kind != QLatin1String("video"))
+            continue;
+        for (const Clip &c : m_clips) {
+            if (c.trackIndex != t)
+                continue;
+            if (us < c.startUs || us >= c.startUs + c.durationUs)
+                continue;
+            out.push_back({ t, c.kind, c.fill, c.mediaPath, c.inUs + (us - c.startUs), 1.0 });
+            break; // un clip por pista
+        }
+    }
+    return out;
+}
+
+void TimelineModel::setClipMedia(quint64 id, const QString &path)
+{
+    const int i = indexOfClip(id);
+    if (i < 0 || m_clips[i].mediaPath == path)
+        return;
+    m_clips[i].mediaPath = path;
+    emit changed();
 }
 
 int TimelineModel::indexOfClip(quint64 id) const
@@ -486,11 +523,24 @@ void TimelineModel::redo()
 
 void TimelineModel::setPlayheadFraction(double f)
 {
-    const qint64 us = qBound<qint64>(0, qint64(f * m_totalUs), m_totalUs);
-    if (us == m_playheadUs)
+    setPlayheadUs(qint64(f * m_totalUs));
+}
+
+void TimelineModel::setPlayheadUs(qint64 us)
+{
+    const qint64 v = qBound<qint64>(0, us, m_totalUs);
+    if (v == m_playheadUs)
         return;
-    m_playheadUs = us;
+    m_playheadUs = v;
     emit playheadChanged();
+}
+
+qint64 TimelineModel::contentEndUs() const
+{
+    qint64 end = 0;
+    for (const Clip &c : m_clips)
+        end = qMax(end, c.startUs + c.durationUs);
+    return end;
 }
 
 void TimelineModel::runSelfTestIfRequested()
@@ -560,6 +610,20 @@ void TimelineModel::runSelfTestIfRequested()
         check(clipById(c2).startUs == c2start, "roll no mueve otros clips");
         undo();
         check(clipById(c0).durationUs == c0dur && clipById(c1).startUs == c1start, "undo de roll restaura");
+    }
+
+    // 4) clipsAt: resolución de capas de vídeo por pista, en orden abajo→arriba.
+    {
+        auto at = [this](double f) { return clipsAt(qint64(f * m_totalUs)); };
+        const auto a = at(0.10);   // V1 (0.00–0.20) + V2 (0.06–0.22)
+        check(a.size() == 2 && a[0].trackIndex == 2 && a[1].trackIndex == 1,
+              "clipsAt(0.10): V1 abajo + V2 arriba");
+        const auto b = at(0.30);   // V1 (0.20–0.46) + V3 título (0.24–0.44)
+        check(b.size() == 2 && b[0].trackIndex == 2 && b[1].trackIndex == 0,
+              "clipsAt(0.30): V1 abajo + V3 arriba");
+        if (b.size() == 2)
+            check(b[0].sourceUs == qint64(0.30 * m_totalUs) - qint64(0.20 * m_totalUs),
+                  "clipsAt: sourceUs = inUs + (us - inicio)");
     }
 
     setSnapEnabled(snapWas);

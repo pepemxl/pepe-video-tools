@@ -22,6 +22,10 @@ qt_add_executable(PepeVideoStudio
     src/engine/videodecoder.cpp
     src/engine/videosurface.h
     src/engine/videosurface.cpp
+    src/engine/framegrabber.h
+    src/engine/framegrabber.cpp
+    src/engine/compositor.h
+    src/engine/compositor.cpp
 )
 
 qt_add_qml_module(PepeVideoStudio

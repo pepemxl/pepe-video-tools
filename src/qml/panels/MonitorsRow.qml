@@ -25,6 +25,9 @@ Rectangle {
             property color tcLeftColor: Theme.textMid
             property var ctrl: null                         // VideoController o null
             readonly property bool live: ctrl && ctrl.hasMedia
+            // El monitor de PROGRAMA muestra el compositor multicapa de la timeline.
+            readonly property bool progLive: program && Compositor.hasContent
+            readonly property bool showVideo: live || progLive
             spacing: 0
 
             Rectangle {
@@ -51,18 +54,20 @@ Rectangle {
                     color: screenBg; border.color: Theme.line; border.width: 1
                     clip: true
 
-                    // Vídeo real (monitor de origen)
+                    // Fondo negro para las bandas de letterbox
+                    Rectangle { anchors.fill: parent; color: "#000000"; visible: showVideo }
+                    // Vídeo compuesto por GPU (RHI): ORIGEN = VideoController, PROGRAMA = Compositor
                     VideoSurface {
                         anchors.fill: parent
-                        visible: live
-                        controller: ctrl
+                        visible: showVideo
+                        source: program ? Compositor : ctrl
                     }
 
-                    Text { visible: !live; anchors.centerIn: parent; text: caption; color: Theme.textFaint; font.pixelSize: 11; font.family: Theme.mono; font.letterSpacing: 1 }
+                    Text { visible: !showVideo; anchors.centerIn: parent; text: caption; color: Theme.textFaint; font.pixelSize: 11; font.family: Theme.mono; font.letterSpacing: 1 }
 
                     // Caja de transformación (solo programa, sin vídeo)
                     Item {
-                        visible: program && !live
+                        visible: program && !progLive
                         anchors.fill: parent; anchors.margins: parent.width * 0.16
                         Rectangle { anchors.fill: parent; color: "transparent"; border.color: Theme.amber; border.width: 1.5
                             Rectangle { width: 9; height: 9; radius: 5; color: "transparent"; border.color: Theme.amber; border.width: 1.5; anchors.centerIn: parent } }
@@ -77,7 +82,7 @@ Rectangle {
                         }
                     }
                     Rectangle {
-                        visible: program && !live
+                        visible: program && !progLive
                         anchors.left: parent.left; anchors.bottom: parent.bottom
                         anchors.leftMargin: parent.width * 0.16; anchors.bottomMargin: parent.height * 0.14
                         width: lt.width + 20; height: lt.height + 10; color: "#cc000000"
@@ -86,7 +91,7 @@ Rectangle {
                             Text { text: "Mercado de Abastos"; color: "#ffffff"; font.pixelSize: 11; font.weight: Font.Bold; font.family: Theme.sans }
                             Text { text: "OAXACA DE JUÁREZ"; color: "#c6c9d0"; font.pixelSize: 8; font.letterSpacing: 1; font.family: Theme.sans } }
                     }
-                    Rectangle { visible: program && !live; anchors.fill: parent; anchors.margins: parent.width * 0.05; color: "transparent"; border.color: "#14ffffff"; border.width: 1 }
+                    Rectangle { visible: program && !progLive; anchors.fill: parent; anchors.margins: parent.width * 0.05; color: "transparent"; border.color: "#14ffffff"; border.width: 1 }
                 }
             }
 
@@ -101,10 +106,17 @@ Rectangle {
                     Rectangle {
                         id: scrub
                         Layout.fillWidth: true; height: 4; radius: 2; color: Theme.sunken
-                        readonly property real frac: live ? ctrl.fraction : fillW
+                        readonly property real frac: program ? TimelineModel.playheadFraction
+                                                             : (live ? ctrl.fraction : fillW)
                         Rectangle { height: parent.height; radius: 2; color: "#4a4d55"; width: scrub.width * scrub.frac }
                         Rectangle { width: 2; height: 10; color: Theme.amber; x: scrub.width * scrub.frac - 1; y: -3 }
-                        TapHandler { enabled: live; onTapped: (p) => ctrl.seekFraction(p.position.x / scrub.width) }
+                        TapHandler {
+                            enabled: live || program
+                            onTapped: (p) => {
+                                if (program) TimelineModel.setPlayheadFraction(p.position.x / scrub.width)
+                                else ctrl.seekFraction(p.position.x / scrub.width)
+                            }
+                        }
                     }
                     // Timecodes + controles
                     RowLayout {
@@ -116,8 +128,8 @@ Rectangle {
                             Text { text: "◀◀"; color: Theme.text; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
                             Rectangle {
                                 visible: program; width: 24; height: 24; radius: 12; color: Theme.amber; anchors.verticalCenter: parent.verticalCenter
-                                Text { anchors.centerIn: parent; text: (live && ctrl.playing) ? "❚❚" : "▶"; color: Theme.amberInk; font.pixelSize: 12 }
-                                TapHandler { onTapped: if (live) ctrl.togglePlay() }
+                                Text { anchors.centerIn: parent; text: Compositor.playing ? "❚❚" : "▶"; color: Theme.amberInk; font.pixelSize: 12 }
+                                TapHandler { onTapped: Compositor.togglePlay() }
                             }
                             Text { visible: !program; text: (live && ctrl.playing) ? "❚❚" : "▶"; color: Theme.text; font.pixelSize: 15; anchors.verticalCenter: parent.verticalCenter
                                    TapHandler { onTapped: if (live) ctrl.togglePlay() } }

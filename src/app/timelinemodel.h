@@ -47,11 +47,26 @@ public:
         QString color;
         QString note;
     };
+    // Clip resuelto para el compositor en un instante dado.
+    struct RenderClip {
+        int trackIndex;
+        QString kind;       // "video" | "title"
+        QString fill;       // color placeholder si no hay media
+        QString mediaPath;  // vacío = sin media (se usa el color)
+        qint64 sourceUs;    // tiempo dentro del origen (inUs + offset)
+        double opacity;
+    };
 
     QVariantList tracks() const;
     QVariantList markers() const;
+    // Clips de vídeo activos en el tiempo us, ordenados de abajo (V1) a arriba (V3)
+    // para pintarlos en ese orden. Uso del compositor (no expuesto a QML).
+    QVector<RenderClip> clipsAt(qint64 us) const;
     double playheadFraction() const { return m_totalUs > 0 ? double(m_playheadUs) / m_totalUs : 0.0; }
     qint64 playheadUs() const { return m_playheadUs; }
+    qint64 totalUs() const { return m_totalUs; }
+    // Fin del contenido: mayor (inicio + duración) entre todos los clips.
+    qint64 contentEndUs() const;
     bool snapEnabled() const { return m_snap; }
     void setSnapEnabled(bool on);
     bool canUndo() const { return m_undo.canUndo(); }
@@ -60,6 +75,8 @@ public:
 
     // Edición (con undo/redo)
     Q_INVOKABLE void selectClip(quint64 id);
+    // Asigna un archivo de medios a un clip (para que el compositor lo decodifique).
+    Q_INVOKABLE void setClipMedia(quint64 id, const QString &path);
     Q_INVOKABLE void splitAtFraction(quint64 id, double timelineFraction);
     Q_INVOKABLE void removeSelected();
     Q_INVOKABLE void moveClipToFraction(quint64 id, int trackIndex, double startFraction);
@@ -82,6 +99,7 @@ public:
 
     // Playhead
     Q_INVOKABLE void setPlayheadFraction(double f);
+    Q_INVOKABLE void setPlayheadUs(qint64 us);
 
 signals:
     void changed();
@@ -112,3 +130,6 @@ private:
 
     static constexpr qint64 kMinClipUs = 200000; // duración mínima de clip: 0.2 s
 };
+
+// Permite pasar RenderClip (y QVector<RenderClip>) por señales encoladas entre hilos.
+Q_DECLARE_METATYPE(TimelineModel::RenderClip)
