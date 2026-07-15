@@ -8,15 +8,25 @@ Rectangle {
     color: Theme.panel
 
     // Campo numérico editable por arrastre horizontal (relativo al valor al pulsar).
+    // El rombo es un toggle de keyframe en el playhead (relleno si hay uno aquí).
     component NumRow: RowLayout {
         id: nr
         property string label
         property string display
         property real value: 0
         property real sensitivity: 0.01
+        property string prop            // propiedad para keyframes ("posX", ...)
         signal edited(real v)
+        // hasSelection/playheadUs fuerzan la reevaluación (selectionChanged / playheadChanged).
+        readonly property bool animated: { TimelineModel.hasSelection; return nr.prop !== "" && TimelineModel.isKeyframed(nr.prop) }
+        readonly property bool kfHere: { TimelineModel.hasSelection; TimelineModel.playheadUs; return nr.prop !== "" && TimelineModel.hasKeyframeAtPlayhead(nr.prop) }
         Layout.fillWidth: true; spacing: 8
-        Rectangle { width: 8; height: 8; rotation: 45; color: "transparent"; border.color: Theme.textFaint; border.width: 1.5 }
+        Rectangle {
+            width: 8; height: 8; rotation: 45
+            color: nr.animated && nr.kfHere ? Theme.amber : "transparent"
+            border.color: nr.animated ? Theme.amber : Theme.textFaint; border.width: 1.5
+            TapHandler { enabled: nr.prop !== ""; onTapped: TimelineModel.toggleKeyframe(nr.prop) }
+        }
         Text { text: nr.label; color: Theme.textMid; font.pixelSize: 11; font.family: Theme.sans; Layout.preferredWidth: 64 }
         Rectangle {
             Layout.fillWidth: true; height: 24; radius: 4; color: Theme.sunken
@@ -80,30 +90,36 @@ Rectangle {
                         Text { text: TimelineModel.hasSelection ? TimelineModel.selectedName : "Sin selección"
                                color: Theme.textDim; font.pixelSize: 10; font.family: Theme.sans; elide: Text.ElideMiddle; Layout.maximumWidth: 150 } }
 
-                    NumRow { label: "Posición X"; value: TimelineModel.selPosX; sensitivity: 0.002
-                             display: (TimelineModel.selPosX * 1280).toFixed(0) + " px"
+                    NumRow { label: "Posición X"; prop: "posX"; value: TimelineModel.selPosX; sensitivity: 0.002
+                             display: (TimelineModel.playheadUs, (TimelineModel.selPosX * 1280).toFixed(0) + " px")
                              onEdited: (v) => TimelineModel.setSelPosX(v) }
-                    NumRow { label: "Posición Y"; value: TimelineModel.selPosY; sensitivity: 0.002
-                             display: (TimelineModel.selPosY * 720).toFixed(0) + " px"
+                    NumRow { label: "Posición Y"; prop: "posY"; value: TimelineModel.selPosY; sensitivity: 0.002
+                             display: (TimelineModel.playheadUs, (TimelineModel.selPosY * 720).toFixed(0) + " px")
                              onEdited: (v) => TimelineModel.setSelPosY(v) }
-                    NumRow { label: "Escala"; value: TimelineModel.selScale; sensitivity: 0.01
-                             display: (TimelineModel.selScale * 100).toFixed(1) + " %"
+                    NumRow { label: "Escala"; prop: "scale"; value: TimelineModel.selScale; sensitivity: 0.01
+                             display: (TimelineModel.playheadUs, (TimelineModel.selScale * 100).toFixed(1) + " %")
                              onEdited: (v) => TimelineModel.setSelScale(v) }
-                    NumRow { label: "Rotación"; value: TimelineModel.selRotation; sensitivity: 0.5
-                             display: TimelineModel.selRotation.toFixed(1) + "°"
+                    NumRow { label: "Rotación"; prop: "rotation"; value: TimelineModel.selRotation; sensitivity: 0.5
+                             display: (TimelineModel.playheadUs, TimelineModel.selRotation.toFixed(1) + "°")
                              onEdited: (v) => TimelineModel.setSelRotation(v) }
 
-                    // Opacidad (deslizador)
+                    // Opacidad (deslizador) con toggle de keyframe
                     RowLayout { Layout.fillWidth: true; spacing: 8
-                        Rectangle { width: 8; height: 8; rotation: 45; color: "transparent"; border.color: Theme.textFaint; border.width: 1.5 }
+                        readonly property bool opAnimated: { TimelineModel.hasSelection; return TimelineModel.isKeyframed("opacity") }
+                        readonly property bool opKfHere: { TimelineModel.hasSelection; TimelineModel.playheadUs; return TimelineModel.hasKeyframeAtPlayhead("opacity") }
+                        Rectangle { width: 8; height: 8; rotation: 45
+                            color: parent.opAnimated && parent.opKfHere ? Theme.amber : "transparent"
+                            border.color: parent.opAnimated ? Theme.amber : Theme.textFaint; border.width: 1.5
+                            TapHandler { onTapped: TimelineModel.toggleKeyframe("opacity") } }
                         Text { text: "Opacidad"; color: Theme.textMid; font.pixelSize: 11; font.family: Theme.sans; Layout.preferredWidth: 64 }
                         Rectangle { id: opTrack; Layout.fillWidth: true; height: 6; radius: 3; color: Theme.sunken
-                            Rectangle { height: parent.height; radius: 3; color: "#4a4d55"; width: parent.width * TimelineModel.selOpacity }
-                            Rectangle { width: 12; height: 12; radius: 6; color: Theme.text; x: parent.width * TimelineModel.selOpacity - 6; y: -3 }
+                            readonly property real op: (TimelineModel.playheadUs, TimelineModel.selOpacity)
+                            Rectangle { height: parent.height; radius: 3; color: "#4a4d55"; width: parent.width * opTrack.op }
+                            Rectangle { width: 12; height: 12; radius: 6; color: Theme.text; x: parent.width * opTrack.op - 6; y: -3 }
                             MouseArea { anchors.fill: parent; anchors.margins: -5
                                 onPressed: (m) => TimelineModel.setSelOpacity(m.x / opTrack.width)
                                 onPositionChanged: (m) => TimelineModel.setSelOpacity(m.x / opTrack.width) } }
-                        Text { text: (TimelineModel.selOpacity * 100).toFixed(0) + "%"; color: Theme.textDim; font.pixelSize: 10; font.family: Theme.mono; Layout.preferredWidth: 30 }
+                        Text { text: ((TimelineModel.playheadUs, TimelineModel.selOpacity) * 100).toFixed(0) + "%"; color: Theme.textDim; font.pixelSize: 10; font.family: Theme.mono; Layout.preferredWidth: 30 }
                     }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: Theme.lineSoft }

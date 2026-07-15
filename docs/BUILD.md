@@ -181,13 +181,19 @@ npm start
   edítalo en el **Inspector** (sección *Transformar*): arrastra horizontalmente los campos
   Posición/Escala/Rotación y usa el deslizador de opacidad. El monitor de PROGRAMA se recompón
   al instante.
+- **Keyframes:** el rombo junto a cada propiedad **añade/quita** un keyframe en el playhead
+  (se rellena de ámbar cuando hay uno en el playhead; el borde ámbar indica que la propiedad
+  está animada). Con la propiedad animada, arrastrar el valor edita el keyframe del playhead.
+  Los keyframes se anclan al **tiempo de origen** del clip (estables al mover/recortar) e
+  interpolan linealmente; el compositor los evalúa por fotograma, así que el PROGRAMA **anima**
+  al reproducir. Mueve el playhead y los valores del Inspector siguen la animación.
 - **Prueba con vídeo real:** `PVS_TL_MEDIA=<ruta>` asigna ese archivo a los clips de V1 al
   arrancar; `PVS_PROGRAM_AUTOPLAY=1` arranca la reproducción del PROGRAMA al cargar. Clips sin
   media se dibujan con su color (para visualizar el apilado).
 - **Autotest del compositor** (sin UI): `PVS_COMP_SELFTEST=1 ./PepeVideoStudio.exe` compone
   fotogramas de color en memoria y comprueba opacidad y mezcla de capas por píxel
   (`[COMP selftest] … OK/FALLO`).
-- Pendiente: **keyframes** de transform y **transiciones** entre clips.
+- Pendiente: **transiciones** entre clips y curvas de interpolación (bezier/hold) de keyframes.
 
 ### Resumen de estado (2026-07-15)
 | Fase | Estado |

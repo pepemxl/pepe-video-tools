@@ -83,7 +83,18 @@ QVector<TimelineModel::RenderClip> TimelineModel::clipsAt(qint64 us) const
                 continue;
             if (us < c.startUs || us >= c.startUs + c.durationUs)
                 continue;
-            out.push_back({ t, c.kind, c.fill, c.mediaPath, c.inUs + (us - c.startUs), c.transform });
+            const qint64 srcUs = c.inUs + (us - c.startUs);
+            // Transform resuelto: evalúa los keyframes en srcUs y hornea valores escalares
+            // (el worker no necesita las listas de keyframes).
+            Transform rt = c.transform;
+            rt.posX = evalKf(c.transform.kfPosX, c.transform.posX, srcUs);
+            rt.posY = evalKf(c.transform.kfPosY, c.transform.posY, srcUs);
+            rt.scale = evalKf(c.transform.kfScale, c.transform.scale, srcUs);
+            rt.rotation = evalKf(c.transform.kfRotation, c.transform.rotation, srcUs);
+            rt.opacity = evalKf(c.transform.kfOpacity, c.transform.opacity, srcUs);
+            rt.kfPosX.clear(); rt.kfPosY.clear(); rt.kfScale.clear();
+            rt.kfRotation.clear(); rt.kfOpacity.clear();
+            out.push_back({ t, c.kind, c.fill, c.mediaPath, srcUs, rt });
             break; // un clip por pista
         }
     }
@@ -206,7 +217,54 @@ void TimelineModel::selectClip(quint64 id)
     emit selectionChanged(); // refresca el Inspector
 }
 
-// ---- Transformación del clip seleccionado ----
+// ---- Keyframes: helpers ----
+double TimelineModel::evalKf(const QVector<Keyframe> &kf, double staticVal, qint64 sourceUs)
+{
+    if (kf.isEmpty())
+        return staticVal;
+    if (sourceUs <= kf.first().sourceUs)
+        return kf.first().value;
+    if (sourceUs >= kf.last().sourceUs)
+        return kf.last().value;
+    for (int i = 1; i < kf.size(); ++i) {
+        if (sourceUs <= kf[i].sourceUs) {
+            const Keyframe &a = kf[i - 1];
+            const Keyframe &b = kf[i];
+            const double span = double(b.sourceUs - a.sourceUs);
+            const double t = span > 0 ? double(sourceUs - a.sourceUs) / span : 0.0;
+            return a.value + (b.value - a.value) * t;
+        }
+    }
+    return kf.last().value;
+}
+
+QVector<TimelineModel::Keyframe> *TimelineModel::kfVec(Transform &tf, const QString &prop, double *&staticOut)
+{
+    if (prop == QLatin1String("posX"))     { staticOut = &tf.posX;     return &tf.kfPosX; }
+    if (prop == QLatin1String("posY"))     { staticOut = &tf.posY;     return &tf.kfPosY; }
+    if (prop == QLatin1String("scale"))    { staticOut = &tf.scale;    return &tf.kfScale; }
+    if (prop == QLatin1String("rotation")) { staticOut = &tf.rotation; return &tf.kfRotation; }
+    if (prop == QLatin1String("opacity"))  { staticOut = &tf.opacity;  return &tf.kfOpacity; }
+    staticOut = nullptr;
+    return nullptr;
+}
+
+const QVector<TimelineModel::Keyframe> *TimelineModel::kfVec(const Transform &tf, const QString &prop) const
+{
+    if (prop == QLatin1String("posX"))     return &tf.kfPosX;
+    if (prop == QLatin1String("posY"))     return &tf.kfPosY;
+    if (prop == QLatin1String("scale"))    return &tf.kfScale;
+    if (prop == QLatin1String("rotation")) return &tf.kfRotation;
+    if (prop == QLatin1String("opacity"))  return &tf.kfOpacity;
+    return nullptr;
+}
+
+void TimelineModel::bumpSelection()
+{
+    emit selectionChanged();
+}
+
+// ---- Transformación del clip seleccionado (valores evaluados en el playhead) ----
 QString TimelineModel::selectedName() const
 {
     const int i = indexOfClip(m_selectedId);
@@ -215,27 +273,56 @@ QString TimelineModel::selectedName() const
 double TimelineModel::selOpacity() const
 {
     const int i = indexOfClip(m_selectedId);
-    return i >= 0 ? m_clips[i].transform.opacity : 1.0;
+    if (i < 0) return 1.0;
+    const Clip &c = m_clips[i];
+    return evalKf(c.transform.kfOpacity, c.transform.opacity, srcAtPlayhead(c));
 }
 double TimelineModel::selScale() const
 {
     const int i = indexOfClip(m_selectedId);
-    return i >= 0 ? m_clips[i].transform.scale : 1.0;
+    if (i < 0) return 1.0;
+    const Clip &c = m_clips[i];
+    return evalKf(c.transform.kfScale, c.transform.scale, srcAtPlayhead(c));
 }
 double TimelineModel::selPosX() const
 {
     const int i = indexOfClip(m_selectedId);
-    return i >= 0 ? m_clips[i].transform.posX : 0.0;
+    if (i < 0) return 0.0;
+    const Clip &c = m_clips[i];
+    return evalKf(c.transform.kfPosX, c.transform.posX, srcAtPlayhead(c));
 }
 double TimelineModel::selPosY() const
 {
     const int i = indexOfClip(m_selectedId);
-    return i >= 0 ? m_clips[i].transform.posY : 0.0;
+    if (i < 0) return 0.0;
+    const Clip &c = m_clips[i];
+    return evalKf(c.transform.kfPosY, c.transform.posY, srcAtPlayhead(c));
 }
 double TimelineModel::selRotation() const
 {
     const int i = indexOfClip(m_selectedId);
-    return i >= 0 ? m_clips[i].transform.rotation : 0.0;
+    if (i < 0) return 0.0;
+    const Clip &c = m_clips[i];
+    return evalKf(c.transform.kfRotation, c.transform.rotation, srcAtPlayhead(c));
+}
+
+// Aplica un valor a una propiedad: al keyframe del playhead si está animada, o al estático.
+static void applyValue(TimelineModel::Transform &tf, QVector<TimelineModel::Keyframe> *kf,
+                       double *staticVal, qint64 src, double v)
+{
+    Q_UNUSED(tf);
+    if (kf->isEmpty()) {
+        *staticVal = v;
+        return;
+    }
+    // Actualiza el keyframe cercano al playhead o inserta uno nuevo, manteniendo el orden.
+    const qint64 tol = 20000; // 20 ms
+    for (int i = 0; i < kf->size(); ++i) {
+        if (qAbs(kf->at(i).sourceUs - src) < tol) { (*kf)[i].value = v; return; }
+    }
+    kf->push_back({ src, v });
+    std::sort(kf->begin(), kf->end(),
+              [](const TimelineModel::Keyframe &a, const TimelineModel::Keyframe &b) { return a.sourceUs < b.sourceUs; });
 }
 
 void TimelineModel::setSelOpacity(double v)
@@ -243,36 +330,36 @@ void TimelineModel::setSelOpacity(double v)
     const int i = indexOfClip(m_selectedId);
     if (i < 0) return;
     v = qBound(0.0, v, 1.0);
-    if (m_clips[i].transform.opacity == v) return;
-    m_clips[i].transform.opacity = v;
-    emit selectionChanged();
+    double *sv = nullptr; auto *kf = kfVec(m_clips[i].transform, QStringLiteral("opacity"), sv);
+    applyValue(m_clips[i].transform, kf, sv, srcAtPlayhead(m_clips[i]), v);
+    bumpSelection();
 }
 void TimelineModel::setSelScale(double v)
 {
     const int i = indexOfClip(m_selectedId);
     if (i < 0) return;
     v = qBound(0.05, v, 8.0);
-    if (m_clips[i].transform.scale == v) return;
-    m_clips[i].transform.scale = v;
-    emit selectionChanged();
+    double *sv = nullptr; auto *kf = kfVec(m_clips[i].transform, QStringLiteral("scale"), sv);
+    applyValue(m_clips[i].transform, kf, sv, srcAtPlayhead(m_clips[i]), v);
+    bumpSelection();
 }
 void TimelineModel::setSelPosX(double v)
 {
     const int i = indexOfClip(m_selectedId);
     if (i < 0) return;
     v = qBound(-2.0, v, 2.0);
-    if (m_clips[i].transform.posX == v) return;
-    m_clips[i].transform.posX = v;
-    emit selectionChanged();
+    double *sv = nullptr; auto *kf = kfVec(m_clips[i].transform, QStringLiteral("posX"), sv);
+    applyValue(m_clips[i].transform, kf, sv, srcAtPlayhead(m_clips[i]), v);
+    bumpSelection();
 }
 void TimelineModel::setSelPosY(double v)
 {
     const int i = indexOfClip(m_selectedId);
     if (i < 0) return;
     v = qBound(-2.0, v, 2.0);
-    if (m_clips[i].transform.posY == v) return;
-    m_clips[i].transform.posY = v;
-    emit selectionChanged();
+    double *sv = nullptr; auto *kf = kfVec(m_clips[i].transform, QStringLiteral("posY"), sv);
+    applyValue(m_clips[i].transform, kf, sv, srcAtPlayhead(m_clips[i]), v);
+    bumpSelection();
 }
 void TimelineModel::setSelRotation(double v)
 {
@@ -280,9 +367,49 @@ void TimelineModel::setSelRotation(double v)
     if (i < 0) return;
     while (v > 180.0) v -= 360.0;
     while (v < -180.0) v += 360.0;
-    if (m_clips[i].transform.rotation == v) return;
-    m_clips[i].transform.rotation = v;
-    emit selectionChanged();
+    double *sv = nullptr; auto *kf = kfVec(m_clips[i].transform, QStringLiteral("rotation"), sv);
+    applyValue(m_clips[i].transform, kf, sv, srcAtPlayhead(m_clips[i]), v);
+    bumpSelection();
+}
+
+void TimelineModel::toggleKeyframe(const QString &prop)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return;
+    double *sv = nullptr;
+    QVector<Keyframe> *kf = kfVec(m_clips[i].transform, prop, sv);
+    if (!kf) return;
+    const qint64 src = srcAtPlayhead(m_clips[i]);
+    const qint64 tol = 20000;
+    for (int k = 0; k < kf->size(); ++k) {
+        if (qAbs(kf->at(k).sourceUs - src) < tol) { kf->remove(k); bumpSelection(); return; }
+    }
+    // Añade un keyframe con el valor evaluado actual (mantiene la apariencia en el playhead).
+    kf->push_back({ src, evalKf(*kf, *sv, src) });
+    std::sort(kf->begin(), kf->end(),
+              [](const Keyframe &a, const Keyframe &b) { return a.sourceUs < b.sourceUs; });
+    bumpSelection();
+}
+
+bool TimelineModel::isKeyframed(const QString &prop) const
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return false;
+    const QVector<Keyframe> *kf = kfVec(m_clips[i].transform, prop);
+    return kf && !kf->isEmpty();
+}
+
+bool TimelineModel::hasKeyframeAtPlayhead(const QString &prop) const
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return false;
+    const QVector<Keyframe> *kf = kfVec(m_clips[i].transform, prop);
+    if (!kf) return false;
+    const qint64 src = srcAtPlayhead(m_clips[i]);
+    for (const Keyframe &k : *kf)
+        if (qAbs(k.sourceUs - src) < 20000)
+            return true;
+    return false;
 }
 
 void TimelineModel::splitAtFraction(quint64 id, double timelineFraction)
@@ -704,6 +831,24 @@ void TimelineModel::runSelfTestIfRequested()
         if (b.size() == 2)
             check(b[0].sourceUs == qint64(0.30 * m_totalUs) - qint64(0.20 * m_totalUs),
                   "clipsAt: sourceUs = inUs + (us - inicio)");
+    }
+
+    // 5) Keyframes: interpolación lineal de opacidad en el compositor.
+    {
+        const int ci = indexOfClip(v1sorted().first().id);
+        const qint64 st = m_clips[ci].startUs;
+        const qint64 dur = m_clips[ci].durationUs;
+        m_clips[ci].transform.kfOpacity = { { 0, 0.0 }, { dur, 1.0 } };
+        auto opAt = [this](qint64 us) {
+            for (const auto &r : clipsAt(us)) if (r.trackIndex == 2) return r.transform.opacity;
+            return -1.0;
+        };
+        setPlayheadUs(st + dur / 2);
+        check(qAbs(opAt(playheadUs()) - 0.5) < 0.03, "keyframe: opacidad interpolada ~0.5");
+        setPlayheadUs(st);
+        check(opAt(playheadUs()) < 0.05, "keyframe: opacidad en el inicio ~0");
+        m_clips[ci].transform.kfOpacity.clear();
+        setPlayheadUs(0);
     }
 
     setSnapEnabled(snapWas);

@@ -37,7 +37,13 @@ public:
         QString idColor;    // color de la etiqueta
         int height;
     };
-    // Transformación de una capa en el compositor.
+    // Un keyframe: valor de una propiedad en un tiempo de origen (sourceUs).
+    struct Keyframe {
+        qint64 sourceUs;
+        double value;
+    };
+    // Transformación de una capa en el compositor. Cada propiedad puede animarse con
+    // keyframes (anclados al tiempo de origen del clip → estables ante mover/recortar).
     struct Transform {
         double posX = 0.0;      // desplazamiento en fracción del ancho de salida (0 = centrado)
         double posY = 0.0;      // fracción del alto
@@ -45,6 +51,7 @@ public:
         double rotation = 0.0;  // grados
         double opacity = 1.0;   // 0..1
         double cropL = 0.0, cropT = 0.0, cropR = 0.0, cropB = 0.0; // recorte por borde (0..1)
+        QVector<Keyframe> kfPosX, kfPosY, kfScale, kfRotation, kfOpacity;
     };
     struct Clip {
         quint64 id;
@@ -105,11 +112,17 @@ public:
     Q_INVOKABLE void setClipMedia(quint64 id, const QString &path);
 
     // Edición de la transformación del clip seleccionado (recompón sin rehacer la timeline).
+    // Si la propiedad está animada, el valor se aplica al keyframe del playhead.
     Q_INVOKABLE void setSelOpacity(double v);
     Q_INVOKABLE void setSelScale(double v);
     Q_INVOKABLE void setSelPosX(double v);
     Q_INVOKABLE void setSelPosY(double v);
     Q_INVOKABLE void setSelRotation(double v);
+
+    // Keyframes de la propiedad indicada ("posX"|"posY"|"scale"|"rotation"|"opacity").
+    Q_INVOKABLE void toggleKeyframe(const QString &prop); // añade/quita en el playhead
+    Q_INVOKABLE bool isKeyframed(const QString &prop) const;
+    Q_INVOKABLE bool hasKeyframeAtPlayhead(const QString &prop) const;
     Q_INVOKABLE void splitAtFraction(quint64 id, double timelineFraction);
     Q_INVOKABLE void removeSelected();
     Q_INVOKABLE void moveClipToFraction(quint64 id, int trackIndex, double startFraction);
@@ -151,6 +164,17 @@ private:
     // dentro de una tolerancia, si el imán (snap) está activo. excludeId se ignora.
     qint64 snapUs(qint64 us, quint64 excludeId) const;
     void runSelfTestIfRequested();
+
+    // --- Keyframes ---
+    // Interpola linealmente el valor de una propiedad en sourceUs; si no hay keyframes
+    // devuelve el valor estático.
+    static double evalKf(const QVector<Keyframe> &kf, double staticVal, qint64 sourceUs);
+    // Devuelve los punteros a la lista de keyframes y al valor estático de una propiedad.
+    QVector<Keyframe> *kfVec(Transform &tf, const QString &prop, double *&staticOut);
+    const QVector<Keyframe> *kfVec(const Transform &tf, const QString &prop) const;
+    // Tiempo de origen del clip en el playhead actual.
+    qint64 srcAtPlayhead(const Clip &c) const { return c.inUs + (m_playheadUs - c.startUs); }
+    void bumpSelection();  // ++revisión y emite selectionChanged
 
     QVector<Track> m_tracks;
     QVector<Clip> m_clips;
