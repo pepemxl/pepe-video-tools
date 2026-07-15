@@ -2,6 +2,7 @@
 
 #include <QUndoCommand>
 #include <QVariantMap>
+#include <algorithm>
 #include <functional>
 
 // ---- Comando genérico (redo/undo como lambdas) ----
@@ -114,6 +115,51 @@ QVariantList TimelineModel::tracks() const
     return out;
 }
 
+QVariantList TimelineModel::markers() const
+{
+    QVariantList out;
+    for (const Marker &mk : m_markers) {
+        QVariantMap m;
+        m["x"] = m_totalUs > 0 ? double(mk.timeUs) / m_totalUs : 0.0;
+        m["color"] = mk.color;
+        m["note"] = mk.note;
+        out.append(m);
+    }
+    return out;
+}
+
+void TimelineModel::addMarkerAtPlayhead()
+{
+    addMarkerAtFraction(m_totalUs > 0 ? double(m_playheadUs) / m_totalUs : 0.0);
+}
+
+void TimelineModel::addMarkerAtFraction(double f)
+{
+    const qint64 t = qBound<qint64>(0, qint64(f * m_totalUs), m_totalUs);
+    // Evita duplicar un marcador prácticamente en el mismo punto.
+    const qint64 tol = qint64(m_totalUs * 0.004);
+    for (const Marker &mk : m_markers)
+        if (qAbs(mk.timeUs - t) < tol)
+            return;
+    m_markers.push_back({ t, QStringLiteral("#e2a24b"), QString() });
+    std::sort(m_markers.begin(), m_markers.end(),
+              [](const Marker &a, const Marker &b) { return a.timeUs < b.timeUs; });
+    emit markersChanged();
+}
+
+void TimelineModel::removeMarkerNear(double f)
+{
+    const qint64 t = qint64(f * m_totalUs);
+    const qint64 tol = qint64(m_totalUs * 0.01);
+    for (int i = 0; i < m_markers.size(); ++i) {
+        if (qAbs(m_markers.at(i).timeUs - t) < tol) {
+            m_markers.remove(i);
+            emit markersChanged();
+            return;
+        }
+    }
+}
+
 void TimelineModel::selectClip(quint64 id)
 {
     if (m_selectedId == id)
@@ -189,8 +235,19 @@ void TimelineModel::moveClipToFraction(quint64 id, int trackIndex, double startF
         return;
     const int oldTrack = m_clips[idx].trackIndex;
     const qint64 oldStart = m_clips[idx].startUs;
+    const qint64 dur = m_clips[idx].durationUs;
     int newTrack = qBound(0, trackIndex, int(m_tracks.size()) - 1);
     qint64 newStart = qMax<qint64>(0, qint64(startFraction * m_totalUs));
+
+    // Imán: ajusta el borde (entrada o salida) que quede más cerca de un punto de anclaje.
+    const qint64 snapStart = snapUs(newStart, id);
+    const qint64 snapEnd = snapUs(newStart + dur, id) - dur;
+    if (qAbs(snapStart - newStart) <= qAbs(snapEnd - newStart))
+        newStart = snapStart;
+    else
+        newStart = snapEnd;
+    newStart = qMax<qint64>(0, newStart);
+
     if (newTrack == oldTrack && newStart == oldStart)
         return;
 
@@ -204,6 +261,92 @@ void TimelineModel::moveClipToFraction(quint64 id, int trackIndex, double startF
             const int i = indexOfClip(id);
             if (i >= 0) { m_clips[i].trackIndex = oldTrack; m_clips[i].startUs = oldStart; emit changed(); }
         }));
+}
+
+void TimelineModel::trimClip(quint64 id, bool leftEdge, double deltaFraction)
+{
+    const int idx = indexOfClip(id);
+    if (idx < 0)
+        return;
+    const Clip orig = m_clips.at(idx);
+    const qint64 deltaUs = qint64(deltaFraction * m_totalUs);
+    if (deltaUs == 0)
+        return;
+
+    qint64 newStart = orig.startUs;
+    qint64 newDur = orig.durationUs;
+    qint64 newInUs = orig.inUs;
+
+    if (leftEdge) {
+        // Mover el borde izquierdo: ajusta la entrada del origen y la posición.
+        qint64 edge = snapUs(orig.startUs + deltaUs, id);
+        edge = qBound<qint64>(qMax<qint64>(0, orig.startUs - orig.inUs),   // no antes del origen
+                              edge,
+                              orig.startUs + orig.durationUs - kMinClipUs); // deja duración mínima
+        const qint64 applied = edge - orig.startUs;
+        newStart = orig.startUs + applied;
+        newDur = orig.durationUs - applied;
+        newInUs = orig.inUs + applied;
+    } else {
+        // Mover el borde derecho: solo cambia la duración.
+        qint64 edge = snapUs(orig.startUs + orig.durationUs + deltaUs, id);
+        edge = qMax<qint64>(orig.startUs + kMinClipUs, edge);
+        newDur = edge - orig.startUs;
+    }
+
+    if (newStart == orig.startUs && newDur == orig.durationUs)
+        return;
+
+    m_undo.push(new TimelineCommand(
+        QStringLiteral("Recortar clip"),
+        [this, id, newStart, newDur, newInUs]() {
+            const int i = indexOfClip(id);
+            if (i < 0) return;
+            m_clips[i].startUs = newStart;
+            m_clips[i].durationUs = newDur;
+            m_clips[i].inUs = newInUs;
+            emit changed();
+        },
+        [this, id, os = orig.startUs, od = orig.durationUs, oi = orig.inUs]() {
+            const int i = indexOfClip(id);
+            if (i < 0) return;
+            m_clips[i].startUs = os;
+            m_clips[i].durationUs = od;
+            m_clips[i].inUs = oi;
+            emit changed();
+        }));
+}
+
+qint64 TimelineModel::snapUs(qint64 us, quint64 excludeId) const
+{
+    if (!m_snap)
+        return us;
+    const qint64 tol = qint64(m_totalUs * 0.006); // ~1.8 s en la ventana de 5 min
+    qint64 best = us;
+    qint64 bestDist = tol + 1;
+    auto consider = [&](qint64 edge) {
+        const qint64 d = qAbs(edge - us);
+        if (d < bestDist) { bestDist = d; best = edge; }
+    };
+    consider(0);
+    consider(m_playheadUs);
+    for (const Clip &c : m_clips) {
+        if (c.id == excludeId)
+            continue;
+        consider(c.startUs);
+        consider(c.startUs + c.durationUs);
+    }
+    for (const Marker &mk : m_markers)
+        consider(mk.timeUs);
+    return best;
+}
+
+void TimelineModel::setSnapEnabled(bool on)
+{
+    if (m_snap == on)
+        return;
+    m_snap = on;
+    emit snapChanged();
 }
 
 void TimelineModel::undo()

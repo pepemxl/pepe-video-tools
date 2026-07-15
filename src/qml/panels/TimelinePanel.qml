@@ -9,7 +9,8 @@ Rectangle {
     color: Theme.bg2
 
     property int currentTool: 0   // A = Selección
-    property bool snap: true
+    // El imán real vive en el modelo (afecta al arrastre/recorte).
+    readonly property bool snap: TimelineModel.snapEnabled
 
     Rectangle { anchors.top: parent.top; width: parent.width; height: 1; color: Theme.line3 }
 
@@ -62,10 +63,11 @@ Rectangle {
 
                 Item { Layout.fillWidth: true }
 
-                // Marcador
+                // Marcador (añade en el playhead)
                 Rectangle {
                     width: 28; height: 28; radius: 5; color: mkHover.hovered ? Theme.hover : "transparent"
                     HoverHandler { id: mkHover }
+                    TapHandler { onTapped: TimelineModel.addMarkerAtPlayhead() }
                     Canvas { anchors.centerIn: parent; width: 9; height: 11
                         onPaint: { var c=getContext("2d"); c.fillStyle=Theme.amber; c.beginPath()
                             c.moveTo(0,0); c.lineTo(9,0); c.lineTo(9,7.7); c.lineTo(4.5,11); c.lineTo(0,7.7); c.closePath(); c.fill() } }
@@ -74,7 +76,7 @@ Rectangle {
                 Rectangle {
                     width: snapRow.width + 20; height: 28; radius: 5
                     color: snap ? Theme.blue : Theme.hover
-                    TapHandler { onTapped: snap = !snap }
+                    TapHandler { onTapped: TimelineModel.snapEnabled = !TimelineModel.snapEnabled }
                     Row { id: snapRow; anchors.centerIn: parent; spacing: 6
                         Text { text: "🧲"; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
                         Text { text: "Imán"; font.pixelSize: 11; font.weight: Font.DemiBold; font.family: Theme.sans
@@ -123,9 +125,21 @@ Rectangle {
                                     Text { text: modelData.t; color: Theme.textFaint; font.pixelSize: 9; font.family: Theme.mono; x: 2; y: 5 }
                                 }
                             }
-                            // Marcador estático
-                            Canvas { anchors.top: parent.top; width: 9; height: 11; x: parent.width*0.30 - 4.5
-                                onPaint: { var c=getContext("2d"); c.fillStyle=Theme.amber; c.beginPath(); c.moveTo(0,0);c.lineTo(9,0);c.lineTo(9,6.6);c.lineTo(4.5,11);c.lineTo(0,6.6); c.closePath(); c.fill() } }
+                            // Marcadores (desde el modelo); clic para eliminar
+                            Repeater {
+                                model: TimelineModel.markers
+                                delegate: Item {
+                                    required property var modelData
+                                    anchors.top: parent.top; anchors.bottom: parent.bottom
+                                    x: scaleArea.width * modelData.x - 4.5
+                                    width: 9
+                                    Canvas { anchors.top: parent.top; width: 9; height: 11
+                                        onPaint: { var c=getContext("2d"); c.fillStyle=modelData.color; c.beginPath()
+                                            c.moveTo(0,0);c.lineTo(9,0);c.lineTo(9,6.6);c.lineTo(4.5,11);c.lineTo(0,6.6); c.closePath(); c.fill() } }
+                                    Rectangle { x: 4; width: 1; height: parent.height; color: modelData.color; opacity: 0.35 }
+                                    TapHandler { onTapped: TimelineModel.removeMarkerNear(modelData.x) }
+                                }
+                            }
                             // Playhead (desde el modelo)
                             Rectangle { width: 1; height: parent.height; color: Theme.amber; x: scaleArea.width * TimelineModel.playheadFraction }
                             Canvas { anchors.top: parent.top; width: 11; height: 9; x: scaleArea.width * TimelineModel.playheadFraction - 5.5
@@ -144,7 +158,10 @@ Rectangle {
                         Repeater {
                             model: TimelineModel.tracks
                             delegate: Row {
+                                id: trackRow
                                 required property var modelData
+                                required property int index
+                                readonly property int trackIndex: index
                                 width: tracksCol.width; height: modelData.height
                                 // Cabecera de pista
                                 Rectangle {
@@ -171,12 +188,34 @@ Rectangle {
                                             required property var modelData
                                             readonly property bool isTitle: modelData.kind === "title"
                                             readonly property bool isAudio: modelData.kind === "audio"
-                                            x: lane.width * modelData.x + 1
-                                            y: 5; width: lane.width * modelData.w - 2; height: parent.height - 10
+                                            // Desplazamientos en vivo mientras se arrastra (px):
+                                            property real mvDx: 0   // mover clip
+                                            property real tlDx: 0   // recortar borde izquierdo
+                                            property real trDx: 0   // recortar borde derecho
+                                            readonly property bool moveTool: tlRoot.currentTool === 0
+                                            readonly property bool trimTool: tlRoot.currentTool === 6
+                                            x: lane.width * modelData.x + 1 + mvDx + tlDx
+                                            y: 5
+                                            width: Math.max(6, lane.width * modelData.w - 2 - tlDx + trDx)
+                                            height: parent.height - 10
                                             radius: 3; color: modelData.fill
                                             border.color: modelData.selected ? Theme.amber : modelData.border
                                             border.width: modelData.selected ? 2 : 1
                                             clip: true
+
+                                            // Arrastrar para mover (herramienta Selección · A)
+                                            DragHandler {
+                                                id: moveDrag
+                                                target: null
+                                                enabled: clip.moveTool
+                                                onActiveChanged: {
+                                                    if (active) { clip.mvDx = 0; TimelineModel.selectClip(clip.modelData.id); return }
+                                                    var frac = clip.modelData.x + clip.mvDx / lane.width
+                                                    clip.mvDx = 0
+                                                    TimelineModel.moveClipToFraction(clip.modelData.id, trackRow.trackIndex, frac)
+                                                }
+                                                onActiveTranslationChanged: if (active) clip.mvDx = activeTranslation.x
+                                            }
                                             // Franja superior (vídeo)
                                             Rectangle { visible: !clip.isAudio && !clip.isTitle; width: parent.width; height: Math.min(24, parent.height*0.45); color: "#10ffffff" }
                                             // Forma de onda (audio)
@@ -193,6 +232,39 @@ Rectangle {
                                                    color: clip.modelData.selected ? "#ffffff" : (clip.isTitle ? "#e0d8f0" : "#cfe0ec")
                                                    font.pixelSize: clip.isTitle ? 10 : 9; font.family: Theme.sans; elide: Text.ElideRight
                                                    width: parent.width - 12 }
+                                            // Tirador de recorte izquierdo (herramienta Trim · W)
+                                            Rectangle {
+                                                width: 7; height: parent.height; anchors.left: parent.left
+                                                visible: clip.trimTool
+                                                color: trimLeft.active ? Theme.amber : "#33ffffff"
+                                                DragHandler {
+                                                    id: trimLeft; target: null; enabled: clip.trimTool
+                                                    onActiveChanged: {
+                                                        if (active) { clip.tlDx = 0; TimelineModel.selectClip(clip.modelData.id); return }
+                                                        var d = clip.tlDx / lane.width
+                                                        clip.tlDx = 0
+                                                        TimelineModel.trimClip(clip.modelData.id, true, d)
+                                                    }
+                                                    onActiveTranslationChanged: if (active) clip.tlDx = activeTranslation.x
+                                                }
+                                            }
+                                            // Tirador de recorte derecho (herramienta Trim · W)
+                                            Rectangle {
+                                                width: 7; height: parent.height; anchors.right: parent.right
+                                                visible: clip.trimTool
+                                                color: trimRight.active ? Theme.amber : "#33ffffff"
+                                                DragHandler {
+                                                    id: trimRight; target: null; enabled: clip.trimTool
+                                                    onActiveChanged: {
+                                                        if (active) { clip.trDx = 0; TimelineModel.selectClip(clip.modelData.id); return }
+                                                        var d = clip.trDx / lane.width
+                                                        clip.trDx = 0
+                                                        TimelineModel.trimClip(clip.modelData.id, false, d)
+                                                    }
+                                                    onActiveTranslationChanged: if (active) clip.trDx = activeTranslation.x
+                                                }
+                                            }
+
                                             // Selección / cuchilla
                                             TapHandler {
                                                 onTapped: (p) => {

@@ -52,7 +52,8 @@ Window {
             case Qt.Key_W: timeline.currentTool = 6; break;
             case Qt.Key_P: timeline.currentTool = 7; break;
             case Qt.Key_Z: timeline.currentTool = 8; break;
-            case Qt.Key_S: timeline.snap = !timeline.snap; break;
+            case Qt.Key_S: TimelineModel.snapEnabled = !TimelineModel.snapEnabled; break;
+            case Qt.Key_M: TimelineModel.addMarkerAtPlayhead(); break;
             case Qt.Key_Delete:
             case Qt.Key_Backspace: TimelineModel.removeSelected(); break;
             }
