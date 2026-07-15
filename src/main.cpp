@@ -3,6 +3,7 @@
 #include <QtQml>
 
 #include "app/mediapoolmodel.h"
+#include "app/timelinemodel.h"
 #include "app/videocontroller.h"
 #include "engine/videosurface.h"
 
@@ -18,6 +19,9 @@ int main(int argc, char *argv[])
 
     VideoController videoController;
     qmlRegisterSingletonInstance("PepeVideo", 1, 0, "VideoController", &videoController);
+
+    TimelineModel timelineModel;
+    qmlRegisterSingletonInstance("PepeVideo", 1, 0, "TimelineModel", &timelineModel);
 
     qmlRegisterType<VideoSurface>("PepeVideo", 1, 0, "VideoSurface");
 

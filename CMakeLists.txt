@@ -14,6 +14,8 @@ qt_add_executable(PepeVideoStudio
     src/main.cpp
     src/app/mediapoolmodel.h
     src/app/mediapoolmodel.cpp
+    src/app/timelinemodel.h
+    src/app/timelinemodel.cpp
     src/app/videocontroller.h
     src/app/videocontroller.cpp
     src/engine/videodecoder.h

@@ -4,6 +4,7 @@ import PepeVideo
 
 // Región inferior: barra de herramientas + pistas + mezclador.
 Rectangle {
+    id: tlRoot
     height: 334
     color: Theme.bg2
 
@@ -109,7 +110,9 @@ Rectangle {
                             Text { anchors.left: parent.left; anchors.leftMargin: 10; anchors.verticalCenter: parent.verticalCenter
                                    text: "00:04:12:08"; color: Theme.textDim; font.pixelSize: 10; font.family: Theme.mono } }
                         Item {
+                            id: scaleArea
                             Layout.fillWidth: true; Layout.fillHeight: true; clip: true
+                            TapHandler { onTapped: (p) => TimelineModel.setPlayheadFraction(p.position.x / scaleArea.width) }
                             Repeater {
                                 model: [ {p:0.06,t:"00:00"},{p:0.24,t:"01:00"},{p:0.42,t:"02:00"},{p:0.60,t:"03:00"},{p:0.78,t:"04:00"},{p:0.96,t:"05:00"} ]
                                 delegate: Item {
@@ -120,11 +123,12 @@ Rectangle {
                                     Text { text: modelData.t; color: Theme.textFaint; font.pixelSize: 9; font.family: Theme.mono; x: 2; y: 5 }
                                 }
                             }
-                            // Marcadores + playhead
+                            // Marcador estático
                             Canvas { anchors.top: parent.top; width: 9; height: 11; x: parent.width*0.30 - 4.5
                                 onPaint: { var c=getContext("2d"); c.fillStyle=Theme.amber; c.beginPath(); c.moveTo(0,0);c.lineTo(9,0);c.lineTo(9,6.6);c.lineTo(4.5,11);c.lineTo(0,6.6); c.closePath(); c.fill() } }
-                            Rectangle { width: 1; height: parent.height; color: Theme.amber; x: parent.width*0.52 }
-                            Canvas { anchors.top: parent.top; width: 11; height: 9; x: parent.width*0.52 - 5.5
+                            // Playhead (desde el modelo)
+                            Rectangle { width: 1; height: parent.height; color: Theme.amber; x: scaleArea.width * TimelineModel.playheadFraction }
+                            Canvas { anchors.top: parent.top; width: 11; height: 9; x: scaleArea.width * TimelineModel.playheadFraction - 5.5
                                 onPaint: { var c=getContext("2d"); c.fillStyle=Theme.amber; c.beginPath(); c.moveTo(0,0);c.lineTo(11,0);c.lineTo(5.5,9); c.closePath(); c.fill() } }
                         }
                     }
@@ -136,79 +140,74 @@ Rectangle {
                     contentWidth: width; contentHeight: tracksCol.height
                     Column {
                         id: tracksCol; width: parent.width
-                        // Definición de pistas (con clips)
+                        // Pistas y clips desde TimelineModel (C++)
                         Repeater {
-                            model: [
-                                { id: "V3", col: Theme.purple, h: 44, kind: "title" },
-                                { id: "V2", col: Theme.blue,   h: 56, kind: "broll" },
-                                { id: "V1", col: Theme.blue,   h: 60, kind: "main" },
-                                { id: "A1", col: Theme.green,  h: 48, kind: "dia" },
-                                { id: "A2", col: Theme.purple, h: 48, kind: "mus" },
-                                { id: "A3", col: Theme.green,  h: 40, kind: "amb" }
-                            ]
+                            model: TimelineModel.tracks
                             delegate: Row {
                                 required property var modelData
-                                width: tracksCol.width; height: modelData.h
+                                width: tracksCol.width; height: modelData.height
                                 // Cabecera de pista
                                 Rectangle {
                                     width: 158; height: parent.height; color: Theme.panel2
                                     Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: Theme.line }
                                     Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#202127" }
                                     Text { anchors.left: parent.left; anchors.leftMargin: 8; anchors.verticalCenter: parent.verticalCenter
-                                           text: modelData.id; color: modelData.col; font.pixelSize: 10; font.weight: Font.Bold; font.family: Theme.mono }
+                                           text: modelData.name; color: modelData.idColor; font.pixelSize: 10; font.weight: Font.Bold; font.family: Theme.mono }
                                     Row { anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter; spacing: 3
-                                        Repeater { model: modelData.kind === "title" || modelData.kind === "broll" || modelData.kind === "main" ? ["👁","🔒"] : ["M","S"]
+                                        Repeater { model: modelData.kind === "video" ? ["👁","🔒"] : ["M","S"]
                                             delegate: Rectangle { required property string modelData; width: 16; height: 14; radius: 3; color: Theme.hover2
                                                 Text { anchors.centerIn: parent; text: modelData; font.pixelSize: 8; color: Theme.textDim } } } }
                                 }
                                 // Lane con clips
                                 Item {
+                                    id: lane
                                     width: parent.width - 158; height: parent.height
                                     Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#202127" }
 
-                                    // Clips según tipo
                                     Repeater {
-                                        model: {
-                                            switch (modelData.kind) {
-                                            case "title": return [{x:0.24,w:0.20,label:"T · Mercado de Abastos",fill:"#4a3f6b",bd:"#6a5a94",sel:false,text:true}]
-                                            case "broll": return [{x:0.06,w:0.16,label:"Drone_zocalo",fill:"#2f5560",bd:"#3f7d8f",sel:false,text:false},
-                                                                  {x:0.46,w:0.22,label:"B009_puesto ◧ 45%",fill:"#2f5560",bd:"#e2a24b",sel:true,text:false}]
-                                            case "main": return [{x:0.0,w:0.20,label:"A012_entrevista",fill:"#345066",bd:"#47708f",sel:false,text:false},
-                                                                 {x:0.20,w:0.26,label:"A017_mercado",fill:"#345066",bd:"#47708f",sel:false,text:false},
-                                                                 {x:0.46,w:0.30,label:"A012_entrevista · 02",fill:"#345066",bd:"#47708f",sel:false,text:false},
-                                                                 {x:0.76,w:0.24,label:"A020_calle",fill:"#345066",bd:"#47708f",sel:false,text:false}]
-                                            case "dia": return [{x:0.0,w:0.46,label:"Diálogo A",fill:"#2d5540",bd:"#3c7052",sel:false,text:false,wav:"#5fbf87"},
-                                                                {x:0.46,w:0.30,label:"",fill:"#2d5540",bd:"#3c7052",sel:false,text:false,wav:"#5fbf87"}]
-                                            case "mus": return [{x:0.0,w:0.92,label:"Musica_intro ▼ automatización",fill:"#4a3f6b",bd:"#6a5a94",sel:false,text:false,wav:"#b39ad6"}]
-                                            case "amb": return [{x:0.06,w:0.88,label:"Ambiente_mercado",fill:"#2d5540",bd:"#3c7052",sel:false,text:false,wav:"#4d9970"}]
-                                            }
-                                            return []
-                                        }
+                                        model: modelData.clips
                                         delegate: Rectangle {
+                                            id: clip
                                             required property var modelData
-                                            x: parent.width * modelData.x + 1
-                                            y: 5; width: parent.width * modelData.w - 2; height: parent.height - 10
+                                            readonly property bool isTitle: modelData.kind === "title"
+                                            readonly property bool isAudio: modelData.kind === "audio"
+                                            x: lane.width * modelData.x + 1
+                                            y: 5; width: lane.width * modelData.w - 2; height: parent.height - 10
                                             radius: 3; color: modelData.fill
-                                            border.color: modelData.bd; border.width: modelData.sel ? 2 : 1
+                                            border.color: modelData.selected ? Theme.amber : modelData.border
+                                            border.width: modelData.selected ? 2 : 1
                                             clip: true
                                             // Franja superior (vídeo)
-                                            Rectangle { visible: !modelData.wav && !modelData.text; width: parent.width; height: Math.min(24, parent.height*0.45); color: "#10ffffff" }
+                                            Rectangle { visible: !clip.isAudio && !clip.isTitle; width: parent.width; height: Math.min(24, parent.height*0.45); color: "#10ffffff" }
                                             // Forma de onda (audio)
-                                            Canvas { visible: !!modelData.wav; anchors.fill: parent; anchors.margins: 4
-                                                onPaint: { var c=getContext("2d"); c.clearRect(0,0,width,height); c.fillStyle = modelData.wav
+                                            Canvas { visible: clip.isAudio; anchors.fill: parent; anchors.margins: 4
+                                                onPaint: { var c=getContext("2d"); c.clearRect(0,0,width,height); c.fillStyle = clip.modelData.wav
                                                     var mid=height/2; c.beginPath(); c.moveTo(0,mid)
                                                     for (var i=0;i<=width;i+=6){ var a=(Math.sin(i*0.35)+Math.sin(i*0.13))*0.25*height; c.lineTo(i,mid-a) }
                                                     for (var j=width;j>=0;j-=6){ var b=(Math.sin(j*0.35)+Math.sin(j*0.13))*0.25*height; c.lineTo(j,mid+b) }
                                                     c.closePath(); c.fill() } }
                                             // Etiqueta
-                                            Text { visible: modelData.label !== ""; text: modelData.label
+                                            Text { visible: clip.modelData.name !== ""; text: clip.modelData.name
                                                    anchors.left: parent.left; anchors.leftMargin: 6
-                                                   y: modelData.text ? (parent.height-height)/2 : 4
-                                                   color: modelData.sel ? "#ffffff" : (modelData.text ? "#e0d8f0" : "#cfe0ec")
-                                                   font.pixelSize: modelData.text ? 10 : 9; font.family: Theme.sans; elide: Text.ElideRight
+                                                   y: clip.isTitle ? (parent.height-height)/2 : 4
+                                                   color: clip.modelData.selected ? "#ffffff" : (clip.isTitle ? "#e0d8f0" : "#cfe0ec")
+                                                   font.pixelSize: clip.isTitle ? 10 : 9; font.family: Theme.sans; elide: Text.ElideRight
                                                    width: parent.width - 12 }
+                                            // Selección / cuchilla
+                                            TapHandler {
+                                                onTapped: (p) => {
+                                                    if (tlRoot.currentTool === 2) // cuchilla
+                                                        TimelineModel.splitAtFraction(clip.modelData.id,
+                                                            clip.modelData.x + (p.position.x / clip.width) * clip.modelData.w)
+                                                    else
+                                                        TimelineModel.selectClip(clip.modelData.id)
+                                                }
+                                            }
                                         }
                                     }
+                                    // Playhead sobre la pista
+                                    Rectangle { width: 1; height: parent.height; color: "#e2a24bcc"
+                                                x: lane.width * TimelineModel.playheadFraction }
                                 }
                             }
                         }
