@@ -113,11 +113,19 @@ npm start
   - `PVS_FFMPEG` / `PVS_FFPROBE` — rutas a los ejecutables si no están en el PATH.
 - Miniaturas cacheadas en `%LOCALAPPDATA%/Pepe/PepeVideo Studio/cache/thumbs`.
 
-### Nota de estado del motor
-- **Fase 1 (en curso):** importación de medios vía **subproceso `ffmpeg`/`ffprobe`**
-  (metadatos + miniaturas + proxies). No requiere librerías de desarrollo de FFmpeg.
-- **Decodificación en tiempo real → textura RHI** (reproducción en los monitores) requerirá
-  enlazar **libav\*** (`libavcodec`, `libavformat`, `libswscale`, `libswresample`). Para ello hay
-  que instalar la build **shared/dev** de FFmpeg (con `include/` y `lib/`); la build actual solo
-  trae los ejecutables. Ese enlace se añadirá en el siguiente incremento de la Fase 1.
+### Reproducción de vídeo (Fase 1)
+- **Decodificación real con libav\*** enlazada desde `C:/FFMPEG` (build shared/dev). Se configura
+  con la variable de CMake `FFMPEG_ROOT` (por defecto `C:/FFMPEG`):
+  ```bash
+  cmake --preset mingw -DFFMPEG_ROOT=C:/FFMPEG
+  ```
+- Las DLL de FFmpeg (`avcodec-62`, `avformat-62`, `avutil-60`, `swscale-9`, `swresample-6`, …) se
+  **copian automáticamente** junto al `.exe` tras compilar (paso `POST_BUILD` del CMake).
+- Componentes: `src/engine/videodecoder.*` (demux/decode/swscale en hilo de trabajo),
+  `src/engine/videosurface.*` (`QQuickPaintedItem` que pinta el fotograma), `src/app/videocontroller.*`
+  (fachada QML con play/pausa/seek, posición y timecode).
+- **Uso:** doble clic en un medio del pool → se abre y reproduce en el monitor **ORIGEN**.
+  El botón de reproducción y la barra (clic = buscar) del monitor de origen ya funcionan.
+- Pendiente: subir el fotograma a **textura RHI/QSG** (ahora se pinta por CPU), y **audio**
+  (Fase 4). El compositor multicapa del monitor de **PROGRAMA** es de la Fase 2.
 ```

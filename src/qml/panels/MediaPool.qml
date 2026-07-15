@@ -108,6 +108,7 @@ Rectangle {
                 required property string tex
                 required property string kind
                 required property string thumb
+                required property string path
                 required property bool used
                 readonly property bool selected: MediaPoolModel.selectedIndex === index
                 width: grid.cellWidth - 8
@@ -129,7 +130,10 @@ Rectangle {
                         Text { id: bt; anchors.centerIn: parent; text: "EN USO"; color: Theme.amberInk; font.pixelSize: 8; font.weight: Font.DemiBold } }
                     Text { visible: cell.dur !== ""; text: cell.dur; color: "#c6c9d0"; font.pixelSize: 8; font.family: Theme.mono
                            anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: 2 }
-                    TapHandler { onTapped: MediaPoolModel.selectedIndex = cell.index }
+                    TapHandler {
+                        onTapped: MediaPoolModel.selectedIndex = cell.index
+                        onDoubleTapped: if (cell.path !== "") VideoController.open(cell.path)
+                    }
                 }
                 Text { width: parent.width; text: cell.nm; elide: Text.ElideRight; font.pixelSize: 10; font.family: Theme.sans
                        color: (cell.selected || cell.used) ? Theme.textHi : Theme.textMid }

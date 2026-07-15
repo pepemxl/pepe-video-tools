@@ -3,6 +3,8 @@
 #include <QtQml>
 
 #include "app/mediapoolmodel.h"
+#include "app/videocontroller.h"
+#include "engine/videosurface.h"
 
 int main(int argc, char *argv[])
 {
@@ -10,9 +12,14 @@ int main(int argc, char *argv[])
     QGuiApplication::setApplicationName("PepeVideo Studio");
     QGuiApplication::setOrganizationName("Pepe");
 
-    // Modelo del Media Pool, expuesto a QML como singleton PepeVideo.MediaPoolModel.
+    // Tipos y singletons expuestos a QML en el módulo PepeVideo.
     MediaPoolModel mediaPool;
     qmlRegisterSingletonInstance("PepeVideo", 1, 0, "MediaPoolModel", &mediaPool);
+
+    VideoController videoController;
+    qmlRegisterSingletonInstance("PepeVideo", 1, 0, "VideoController", &videoController);
+
+    qmlRegisterType<VideoSurface>("PepeVideo", 1, 0, "VideoSurface");
 
     QQmlApplicationEngine engine;
     QObject::connect(

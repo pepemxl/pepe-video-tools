@@ -14,6 +14,12 @@ qt_add_executable(PepeVideoStudio
     src/main.cpp
     src/app/mediapoolmodel.h
     src/app/mediapoolmodel.cpp
+    src/app/videocontroller.h
+    src/app/videocontroller.cpp
+    src/engine/videodecoder.h
+    src/engine/videodecoder.cpp
+    src/engine/videosurface.h
+    src/engine/videosurface.cpp
 )
 
 qt_add_qml_module(PepeVideoStudio
@@ -42,6 +48,25 @@ target_link_libraries(PepeVideoStudio PRIVATE Qt6::Quick Qt6::Gui)
 if (WIN32)
     target_link_libraries(PepeVideoStudio PRIVATE comdlg32)
 endif()
+
+# ===== FFmpeg (build shared/dev en C:/FFMPEG) =====
+set(FFMPEG_ROOT "C:/FFMPEG" CACHE PATH "FFmpeg shared/dev build (include/ lib/ bin/)")
+target_include_directories(PepeVideoStudio PRIVATE "${FFMPEG_ROOT}/include")
+target_link_libraries(PepeVideoStudio PRIVATE
+    "${FFMPEG_ROOT}/lib/avformat.lib"
+    "${FFMPEG_ROOT}/lib/avcodec.lib"
+    "${FFMPEG_ROOT}/lib/avutil.lib"
+    "${FFMPEG_ROOT}/lib/swscale.lib"
+    "${FFMPEG_ROOT}/lib/swresample.lib"
+)
+
+# Copiar las DLL de FFmpeg junto al ejecutable tras compilar.
+file(GLOB FFMPEG_DLLS "${FFMPEG_ROOT}/bin/*.dll")
+add_custom_command(TARGET PepeVideoStudio POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FFMPEG_DLLS} "$<TARGET_FILE_DIR:PepeVideoStudio>"
+    COMMAND_EXPAND_LISTS
+    VERBATIM
+)
 
 # En Windows, app GUI sin consola
 set_target_properties(PepeVideoStudio PROPERTIES
