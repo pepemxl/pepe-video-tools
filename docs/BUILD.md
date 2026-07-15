@@ -193,13 +193,18 @@ npm start
 - **Autotest del compositor** (sin UI): `PVS_COMP_SELFTEST=1 ./PepeVideoStudio.exe` compone
   fotogramas de color en memoria y comprueba opacidad y mezcla de capas por píxel
   (`[COMP selftest] … OK/FALLO`).
-- Pendiente: **transiciones** entre clips y curvas de interpolación (bezier/hold) de keyframes.
+- **Transiciones (disolvencia cruzada):** si dos clips de una misma pista **se solapan** en el
+  tiempo, la región de solape hace un crossfade — el clip entrante se funde sobre el saliente.
+  Se crea arrastrando un clip sobre otro (sin herramienta aparte); la timeline marca el solape
+  con un indicador ⤫. El compositor renderiza ambas capas y mezcla por opacidad.
+- Pendiente: transiciones explícitas con selector de tipo, y curvas de interpolación
+  (bezier/hold) de keyframes.
 
 ### Resumen de estado (2026-07-15)
 | Fase | Estado |
 |------|--------|
 | 0 — Shell QML | ✅ completa |
 | 1 — Medios y reproducción | 🟢 casi completa (fotograma por GPU/RHI listo; falta audio, hwaccel) |
-| 2 — Timeline | 🟢 avanzada (mover/trim/ripple/roll/snap/marcadores + compositor 1ª etapa) |
+| 2 — Timeline | ✅ completa (edición + compositor: capas, transform, keyframes, transiciones) |
 | 3–6 — Color, audio, títulos, export | ⬜ pendientes |
 ```

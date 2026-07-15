@@ -305,6 +305,26 @@ Rectangle {
                                             }
                                         }
                                     }
+                                    // Indicador de transición (solape de clips = disolvencia)
+                                    Repeater {
+                                        model: {
+                                            var cs = modelData.clips.slice().sort((a, b) => a.x - b.x)
+                                            var r = []
+                                            for (var i = 1; i < cs.length; i++) {
+                                                var pe = cs[i-1].x + cs[i-1].w
+                                                if (cs[i].x < pe - 1e-6)
+                                                    r.push({ x: cs[i].x, w: Math.min(pe, cs[i].x + cs[i].w) - cs[i].x })
+                                            }
+                                            return r
+                                        }
+                                        delegate: Rectangle {
+                                            required property var modelData
+                                            x: lane.width * modelData.x; y: 5
+                                            width: Math.max(2, lane.width * modelData.w); height: parent.height - 10
+                                            color: "#33e2a24b"; border.color: Theme.amber; border.width: 1; radius: 2
+                                            Text { anchors.centerIn: parent; text: "⤫"; color: Theme.amber; font.pixelSize: 13 }
+                                        }
+                                    }
                                     // Playhead sobre la pista
                                     Rectangle { width: 1; height: parent.height; color: "#e2a24bcc"
                                                 x: lane.width * TimelineModel.playheadFraction }

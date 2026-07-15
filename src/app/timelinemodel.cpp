@@ -73,30 +73,51 @@ void TimelineModel::seed()
 QVector<TimelineModel::RenderClip> TimelineModel::clipsAt(qint64 us) const
 {
     QVector<RenderClip> out;
+
+    // Resuelve un clip a RenderClip: evalúa keyframes en srcUs y multiplica la opacidad
+    // por opFactor (crossfade). El worker no necesita las listas de keyframes.
+    auto resolved = [](const Clip &c, qint64 nowUs, double opFactor) -> RenderClip {
+        const qint64 srcUs = c.inUs + (nowUs - c.startUs);
+        Transform rt = c.transform;
+        rt.posX = evalKf(c.transform.kfPosX, c.transform.posX, srcUs);
+        rt.posY = evalKf(c.transform.kfPosY, c.transform.posY, srcUs);
+        rt.scale = evalKf(c.transform.kfScale, c.transform.scale, srcUs);
+        rt.rotation = evalKf(c.transform.kfRotation, c.transform.rotation, srcUs);
+        rt.opacity = evalKf(c.transform.kfOpacity, c.transform.opacity, srcUs) * opFactor;
+        rt.kfPosX.clear(); rt.kfPosY.clear(); rt.kfScale.clear();
+        rt.kfRotation.clear(); rt.kfOpacity.clear();
+        return { c.trackIndex, c.kind, c.fill, c.mediaPath, srcUs, rt };
+    };
+
     // Pistas de vídeo de abajo (índice mayor, V1) hacia arriba (índice menor, V3),
     // para pintarlas en ese orden (las de arriba tapan a las de abajo).
     for (int t = m_tracks.size() - 1; t >= 0; --t) {
         if (m_tracks.at(t).kind != QLatin1String("video"))
             continue;
-        for (const Clip &c : m_clips) {
-            if (c.trackIndex != t)
-                continue;
-            if (us < c.startUs || us >= c.startUs + c.durationUs)
-                continue;
-            const qint64 srcUs = c.inUs + (us - c.startUs);
-            // Transform resuelto: evalúa los keyframes en srcUs y hornea valores escalares
-            // (el worker no necesita las listas de keyframes).
-            Transform rt = c.transform;
-            rt.posX = evalKf(c.transform.kfPosX, c.transform.posX, srcUs);
-            rt.posY = evalKf(c.transform.kfPosY, c.transform.posY, srcUs);
-            rt.scale = evalKf(c.transform.kfScale, c.transform.scale, srcUs);
-            rt.rotation = evalKf(c.transform.kfRotation, c.transform.rotation, srcUs);
-            rt.opacity = evalKf(c.transform.kfOpacity, c.transform.opacity, srcUs);
-            rt.kfPosX.clear(); rt.kfPosY.clear(); rt.kfScale.clear();
-            rt.kfRotation.clear(); rt.kfOpacity.clear();
-            out.push_back({ t, c.kind, c.fill, c.mediaPath, srcUs, rt });
-            break; // un clip por pista
+
+        // Clips activos en la pista, ordenados por inicio.
+        QVector<const Clip *> active;
+        for (const Clip &c : m_clips)
+            if (c.trackIndex == t && us >= c.startUs && us < c.startUs + c.durationUs)
+                active.push_back(&c);
+        if (active.isEmpty())
+            continue;
+        std::sort(active.begin(), active.end(),
+                  [](const Clip *a, const Clip *b) { return a->startUs < b->startUs; });
+
+        // Sin solape: un clip. Con solape: el saliente (A) a plena opacidad y el entrante
+        // (B) con opacidad de crossfade f = avance dentro de la región de solape.
+        const Clip *B = active.last();
+        const Clip *A = active.size() >= 2 ? active.at(active.size() - 2) : nullptr;
+        double f = 1.0;
+        if (A) {
+            const qint64 ovStart = B->startUs;                    // inicio del solape
+            const qint64 ovEnd = A->startUs + A->durationUs;      // fin del solape (fin de A)
+            if (ovEnd > ovStart)
+                f = qBound(0.0, double(us - ovStart) / double(ovEnd - ovStart), 1.0);
+            out.push_back(resolved(*A, us, 1.0));                 // saliente debajo
         }
+        out.push_back(resolved(*B, us, f));                       // entrante encima (crossfade)
     }
     return out;
 }
@@ -849,6 +870,26 @@ void TimelineModel::runSelfTestIfRequested()
         check(opAt(playheadUs()) < 0.05, "keyframe: opacidad en el inicio ~0");
         m_clips[ci].transform.kfOpacity.clear();
         setPlayheadUs(0);
+    }
+
+    // 6) Transición: solape de dos clips de una pista → crossfade del entrante.
+    {
+        auto v = v1sorted();
+        const int ia = indexOfClip(v[0].id);   // A (saliente)
+        const int ib = indexOfClip(v[1].id);   // B (entrante)
+        const qint64 aEnd = m_clips[ia].startUs + m_clips[ia].durationUs;
+        const qint64 ov = qint64(0.04 * m_totalUs);
+        const qint64 bStart0 = m_clips[ib].startUs;
+        m_clips[ib].startUs = aEnd - ov;        // crea el solape [aEnd-ov, aEnd]
+        const qint64 mid = aEnd - ov / 2;
+
+        auto atMid = clipsAt(mid);
+        int nT2 = 0; double bOp = -1;
+        for (const auto &r : atMid) if (r.trackIndex == 2) { ++nT2; bOp = r.transform.opacity; }
+        check(nT2 == 2, "transición: dos capas en la pista durante el solape");
+        check(qAbs(bOp - 0.5) < 0.05, "transición: opacidad del entrante ~0.5 en el medio");
+
+        m_clips[ib].startUs = bStart0;          // restaura
     }
 
     setSnapEnabled(snapWas);
