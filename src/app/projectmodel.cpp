@@ -46,8 +46,8 @@ void ProjectModel::setSources(TimelineModel *timeline, MediaPoolModel *pool)
         connect(m_timeline, &TimelineModel::markersChanged, this, &ProjectModel::markDirty);
         connect(m_timeline, &TimelineModel::subtitlesChanged, this, &ProjectModel::markDirty);
     }
-    if (m_pool)
-        connect(m_pool, &MediaPoolModel::countChanged, this, &ProjectModel::markDirty);
+    if (m_pool)   // importar un medio ensucia el proyecto (filtrar la vista NO)
+        connect(m_pool, &MediaPoolModel::mediaImported, this, &ProjectModel::markDirty);
     m_initial = projectJson();   // instantánea para "Nuevo proyecto"
 }
 

@@ -30,6 +30,9 @@ class MediaPoolModel : public QAbstractListModel
 {
     Q_OBJECT
     Q_PROPERTY(int count READ count NOTIFY countChanged)
+    // Filtro de búsqueda (caja "Buscar clips…"): solo se muestran los medios cuyo
+    // nombre contiene el texto (sin distinguir mayúsculas). Vacío = todos.
+    Q_PROPERTY(QString filter READ filter WRITE setFilter NOTIFY filterChanged)
     Q_PROPERTY(int selectedIndex READ selectedIndex WRITE setSelectedIndex NOTIFY selectedChanged)
     Q_PROPERTY(QString selectedName READ selectedName NOTIFY selectedChanged)
     Q_PROPERTY(QString selectedLine1 READ selectedLine1 NOTIFY selectedChanged)
@@ -48,8 +51,13 @@ public:
     QVariant data(const QModelIndex &index, int role) const override;
     QHash<int, QByteArray> roleNames() const override;
 
-    int count() const { return int(m_items.size()); }
-    int selectedIndex() const { return m_selected; }
+    // Nº de medios VISIBLES (tras el filtro); rowCount() coincide.
+    int count() const { return int(m_visible.size()); }
+    QString filter() const { return m_filter; }
+    void setFilter(const QString &f);
+    // selectedIndex es la FILA VISIBLE (-1 si el seleccionado quedó filtrado);
+    // internamente la selección se guarda como índice del elemento (estable).
+    int selectedIndex() const { return int(m_visible.indexOf(m_selected)); }
     void setSelectedIndex(int i);
     QString selectedName() const;
     QString selectedLine1() const;
@@ -61,19 +69,30 @@ public:
     Q_INVOKABLE void importFile(const QUrl &url);
     Q_INVOKABLE void importPath(const QString &path);
 
+    // Rutas de los medios reales importados (para guardarlas en el proyecto).
+    QStringList mediaPaths() const;
+    bool containsPath(const QString &path) const;
+
 signals:
     void countChanged();
+    void filterChanged();
     void selectedChanged();
+    void mediaImported();      // se añadió un medio (el proyecto se marca sucio)
     void importError(const QString &message);
 
 private:
     void seedDemo();
     void appendItem(const MediaItem &item);
     int rowForId(quint64 id) const;
+    // Reconstruye la lista visible según el filtro (reset del modelo).
+    void rebuildVisible();
+    bool matchesFilter(const MediaItem &it) const;
     void generateThumbnail(quint64 id, const QString &path, const QString &kind, double atSeconds);
 
     QVector<MediaItem> m_items;
-    int m_selected = 0;
+    QVector<int> m_visible;    // filas visibles → índice en m_items
+    QString m_filter;
+    int m_selected = 0;        // índice del elemento seleccionado en m_items
     quint64 m_nextId = 1;
     QString m_ffprobe;
     QString m_ffmpeg;

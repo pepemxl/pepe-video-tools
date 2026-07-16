@@ -3,14 +3,17 @@
 #include <QtQml>
 
 #include "app/mediapoolmodel.h"
+#include "app/projectmodel.h"
 #include "app/theme.h"
 #include "app/timelinemodel.h"
 #include "app/videocontroller.h"
 #include "engine/audioengine.h"
 #include "engine/compositor.h"
+#include "engine/exporter.h"
 #include "engine/scopesprovider.h"
 #include "engine/scopeview.h"
 #include "engine/videosurface.h"
+#include "engine/waveformprovider.h"
 
 int main(int argc, char *argv[])
 {
@@ -20,6 +23,15 @@ int main(int argc, char *argv[])
 
     // Auto-test de audio (decode + remuestreo + medición de pico), sin GUI ni dispositivo.
     if (const int rc = runAudioSelfTestIfRequested(); rc >= 0)
+        return rc;
+    // Auto-test de exportación (compone + codifica H.264/AAC a un MP4 temporal).
+    if (const int rc = runExportSelfTestIfRequested(); rc >= 0)
+        return rc;
+    // Auto-test de formas de onda (envolvente de PCM real, decodificada en un hilo).
+    if (const int rc = runWaveformSelfTestIfRequested(); rc >= 0)
+        return rc;
+    // Auto-test de proyecto (guardar/abrir/round-trip/dirty).
+    if (const int rc = runProjectSelfTestIfRequested(); rc >= 0)
         return rc;
 
     // Tipos y singletons expuestos a QML en el módulo PepeVideo.
@@ -35,6 +47,11 @@ int main(int argc, char *argv[])
     TimelineModel timelineModel;
     qmlRegisterSingletonInstance("PepeVideo", 1, 0, "TimelineModel", &timelineModel);
 
+    // Estado de proyecto: nombre/ruta, guardar/abrir .pvsproj, autoguardado y "sucio".
+    ProjectModel project;
+    project.setSources(&timelineModel, &mediaPool);
+    qmlRegisterSingletonInstance("PepeVideo", 1, 0, "Project", &project);
+
     Compositor compositor;
     compositor.setTimeline(&timelineModel);
     qmlRegisterSingletonInstance("PepeVideo", 1, 0, "Compositor", &compositor);
@@ -46,6 +63,15 @@ int main(int argc, char *argv[])
     // Motor de audio: mezcla multi-clip del PROGRAMA sincronizada con el transporte.
     AudioEngine audio;
     qmlRegisterSingletonInstance("PepeVideo", 1, 0, "Audio", &audio);
+
+    // Formas de onda de los clips de audio (envolvente de PCM real, cacheada por archivo).
+    WaveformProvider waveforms;
+    qmlRegisterSingletonInstance("PepeVideo", 1, 0, "Waveforms", &waveforms);
+
+    // Motor de exportación (H.264/AAC → MP4) en segundo plano.
+    Exporter exporter;
+    exporter.setSources(&timelineModel);
+    qmlRegisterSingletonInstance("PepeVideo", 1, 0, "Export", &exporter);
 
     // Construye la lista de clips de la mezcla desde el timeline y la envía al motor.
     auto rebuildMix = [&audio, &timelineModel]() {
@@ -91,6 +117,13 @@ int main(int argc, char *argv[])
         &engine, &QQmlApplicationEngine::objectCreationFailed,
         &app, []() { QCoreApplication::exit(-1); },
         Qt::QueuedConnection);
+
+    // Hook de prueba: PVS_WORKSPACE=<0..5> arranca en ese workspace del TopBar
+    // (0 Medios · 1 Editar · 2 Fusión · 3 Color · 4 Audio · 5 Entregar).
+    engine.rootContext()->setContextProperty(
+        QStringLiteral("pvsInitialWorkspace"),
+        qEnvironmentVariableIsEmpty("PVS_WORKSPACE") ? 1
+            : qEnvironmentVariableIntValue("PVS_WORKSPACE"));
 
     // Fuerza la creación del singleton QML `Theme` ANTES de cargar la UI. Los
     // singletons basados en archivo QML se crean de forma perezosa en el primer

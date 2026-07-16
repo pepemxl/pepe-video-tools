@@ -105,20 +105,21 @@ void MediaPoolModel::seedDemo()
         it.inUse = d.used;
         m_items.push_back(it);
     }
+    rebuildVisible();
 }
 
 int MediaPoolModel::rowCount(const QModelIndex &parent) const
 {
     if (parent.isValid())
         return 0;
-    return int(m_items.size());
+    return int(m_visible.size());
 }
 
 QVariant MediaPoolModel::data(const QModelIndex &index, int role) const
 {
-    if (!index.isValid() || index.row() < 0 || index.row() >= m_items.size())
+    if (!index.isValid() || index.row() < 0 || index.row() >= m_visible.size())
         return {};
-    const MediaItem &it = m_items.at(index.row());
+    const MediaItem &it = m_items.at(m_visible.at(index.row()));
     switch (role) {
     case NameRole:       return it.name;
     case PathRole:       return it.path;
@@ -147,10 +148,39 @@ QHash<int, QByteArray> MediaPoolModel::roleNames() const
 
 void MediaPoolModel::setSelectedIndex(int i)
 {
-    if (i == m_selected)
+    // `i` es la fila visible; se guarda el índice del elemento (estable ante filtros).
+    const int item = m_visible.value(i, -1);
+    if (item == m_selected)
         return;
-    m_selected = i;
+    m_selected = item;
     emit selectedChanged();
+}
+
+bool MediaPoolModel::matchesFilter(const MediaItem &it) const
+{
+    return m_filter.isEmpty() || it.name.contains(m_filter, Qt::CaseInsensitive);
+}
+
+void MediaPoolModel::setFilter(const QString &f)
+{
+    const QString t = f.trimmed();
+    if (m_filter == t)
+        return;
+    m_filter = t;
+    emit filterChanged();
+    rebuildVisible();
+}
+
+void MediaPoolModel::rebuildVisible()
+{
+    beginResetModel();
+    m_visible.clear();
+    for (int i = 0; i < m_items.size(); ++i)
+        if (matchesFilter(m_items.at(i)))
+            m_visible.push_back(i);
+    endResetModel();
+    emit countChanged();
+    emit selectedChanged();   // la fila visible del seleccionado pudo cambiar
 }
 
 QString MediaPoolModel::selectedName() const
@@ -188,10 +218,16 @@ QString MediaPoolModel::selectedLine2() const
 
 void MediaPoolModel::appendItem(const MediaItem &item)
 {
-    beginInsertRows({}, int(m_items.size()), int(m_items.size()));
-    m_items.push_back(item);
-    endInsertRows();
-    emit countChanged();
+    if (matchesFilter(item)) {
+        beginInsertRows({}, int(m_visible.size()), int(m_visible.size()));
+        m_items.push_back(item);
+        m_visible.push_back(int(m_items.size()) - 1);
+        endInsertRows();
+        emit countChanged();
+    } else {
+        m_items.push_back(item);   // invisible con el filtro actual
+    }
+    emit mediaImported();
 }
 
 int MediaPoolModel::rowForId(quint64 id) const
@@ -244,6 +280,24 @@ void MediaPoolModel::openImportDialog()
 void MediaPoolModel::importFile(const QUrl &url)
 {
     importPath(url.toLocalFile());
+}
+
+QStringList MediaPoolModel::mediaPaths() const
+{
+    QStringList out;
+    for (const MediaItem &it : m_items)
+        if (!it.path.isEmpty())
+            out.append(it.path);
+    return out;
+}
+
+bool MediaPoolModel::containsPath(const QString &path) const
+{
+    const QString abs = QFileInfo(path).absoluteFilePath();
+    for (const MediaItem &it : m_items)
+        if (!it.path.isEmpty() && QFileInfo(it.path).absoluteFilePath() == abs)
+            return true;
+    return false;
 }
 
 void MediaPoolModel::importPath(const QString &path)
@@ -350,8 +404,11 @@ void MediaPoolModel::generateThumbnail(quint64 id, const QString &path, const QS
         if (row < 0)
             return;
         m_items[row].thumb = QUrl::fromLocalFile(out).toString();
-        const QModelIndex idx = index(row);
-        emit dataChanged(idx, idx, {ThumbRole});
+        const int vis = int(m_visible.indexOf(row));   // fila visible (si no está filtrada)
+        if (vis >= 0) {
+            const QModelIndex idx = index(vis);
+            emit dataChanged(idx, idx, {ThumbRole});
+        }
         if (row == m_selected)
             emit selectedChanged();
     });

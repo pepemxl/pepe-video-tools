@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QJsonObject>
 #include <QObject>
 #include <QString>
 #include <QVariantList>
@@ -16,6 +17,7 @@ class TimelineModel : public QObject
     Q_PROPERTY(QVariantList markers READ markers NOTIFY markersChanged)
     Q_PROPERTY(double playheadFraction READ playheadFraction NOTIFY playheadChanged)
     Q_PROPERTY(qint64 playheadUs READ playheadUs NOTIFY playheadChanged)
+    Q_PROPERTY(double totalUsMs READ totalUsMs NOTIFY changed)   // duración de la ventana en ms
     Q_PROPERTY(bool snapEnabled READ snapEnabled WRITE setSnapEnabled NOTIFY snapChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY changed)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY changed)
@@ -66,6 +68,10 @@ public:
         int height;
         bool mute = false;  // silenciar la pista en la mezcla
         bool solo = false;  // aislar: si alguna pista está en solo, solo suenan las solo
+        double gain = 1.0;  // ganancia de pista (fader del mezclador), 1.0 = 0 dB
+        double pan = 0.0;   // paneo de pista (-1 izq … +1 der)
+        bool hidden = false; // pista de vídeo oculta (no se compone)
+        bool locked = false; // pista de vídeo bloqueada (no editable)
     };
     // Un keyframe: valor de una propiedad en un tiempo de origen (sourceUs).
     struct Keyframe {
@@ -179,6 +185,7 @@ public:
     double playheadFraction() const { return m_totalUs > 0 ? double(m_playheadUs) / m_totalUs : 0.0; }
     qint64 playheadUs() const { return m_playheadUs; }
     qint64 totalUs() const { return m_totalUs; }
+    double totalUsMs() const { return m_totalUs / 1000.0; }
     // Fin del contenido: mayor (inicio + duración) entre todos los clips.
     qint64 contentEndUs() const;
     bool snapEnabled() const { return m_snap; }
@@ -193,6 +200,13 @@ public:
     // Parseo/serialización SRT (estáticos, para pruebas).
     static QVector<Subtitle> parseSrt(const QString &content);
     static QString serializeSrt(const QVector<Subtitle> &subs);
+
+    // Serialización del documento completo (pistas, clips, marcadores, subtítulos,
+    // playhead). Usada por el modelo de proyecto (guardar/abrir .pvsproj).
+    QJsonObject toJson() const;
+    // Restaura el documento desde JSON: reemplaza el estado, limpia el undo y emite
+    // todas las señales de refresco. Devuelve false si el JSON no es un proyecto.
+    bool fromJson(const QJsonObject &o);
 
     bool hasSelection() const { return indexOfClip(m_selectedId) >= 0; }
     QString selectedName() const;
@@ -257,6 +271,12 @@ public:
     // Mute/solo por pista (índice de pista). Afectan a la mezcla completa.
     Q_INVOKABLE void setTrackMute(int trackIndex, bool m);
     Q_INVOKABLE void setTrackSolo(int trackIndex, bool s);
+    // Ganancia/paneo de pista (faders y perillas del mezclador). Rehornean la mezcla.
+    Q_INVOKABLE void setTrackGain(int trackIndex, double gain);
+    Q_INVOKABLE void setTrackPan(int trackIndex, double pan);
+    // Visibilidad/bloqueo de pista de vídeo (cabecera 👁/🔒). Oculta = no se compone.
+    Q_INVOKABLE void setTrackHidden(int trackIndex, bool hidden);
+    Q_INVOKABLE void setTrackLocked(int trackIndex, bool locked);
     // Título del clip seleccionado.
     Q_INVOKABLE void setSelTitleText(const QString &text);
     Q_INVOKABLE void setSelTitleSize(double v);
@@ -265,6 +285,11 @@ public:
     Q_INVOKABLE void setSelTitleBar(bool bar);
     // Inserta un nuevo clip de título en la pista V3 (índice 0) en el playhead.
     Q_INVOKABLE void addTitleAtPlayhead();
+    // Inserta un clip a partir de un medio (arrastrado desde el Media Pool). Ajusta la
+    // pista al tipo correcto (vídeo/audio); devuelve el id del clip creado (0 si falla).
+    Q_INVOKABLE quint64 addMediaClip(const QString &path, const QString &name,
+                                     const QString &kind, qint64 durationUs,
+                                     int trackIndex, double startFraction);
 
     // Subtítulos (.srt): importar/exportar (con diálogo nativo en Windows) y toggle.
     Q_INVOKABLE bool importSrt(const QString &path);
@@ -279,6 +304,16 @@ public:
     // Recorta el clip arrastrando un borde. leftEdge = borde izquierdo (entrada);
     // deltaFraction es el desplazamiento del borde en fracción de la ventana total.
     Q_INVOKABLE void trimClip(quint64 id, bool leftEdge, double deltaFraction);
+    // Slip: desliza el contenido del clip (cambia el punto de entrada in) SIN mover su
+    // posición ni su duración en la línea de tiempo. deltaFraction en fracción del total.
+    Q_INVOKABLE void slipClip(quint64 id, double deltaFraction);
+    // Herramienta de pista: desplaza en bloque TODOS los clips de una pista (útil para
+    // abrir/cerrar huecos). deltaFraction en fracción del total; se acota para que ningún
+    // clip cruce el origen.
+    Q_INVOKABLE void shiftTrack(int trackIndex, double deltaFraction);
+    // Herramienta pluma: alterna un keyframe de una propiedad en un punto de la línea de
+    // tiempo (fracción). Mueve el playhead ahí, selecciona el clip y conmuta el keyframe.
+    Q_INVOKABLE void penToggleKeyframe(quint64 id, double timelineFraction, const QString &prop);
     // Ripple: recorta el borde de salida (derecho) y desplaza los clips posteriores de
     // la misma pista para cerrar/abrir el hueco.
     Q_INVOKABLE void rippleTrimRight(quint64 id, double deltaFraction);
@@ -307,6 +342,9 @@ signals:
     void selectionChanged();
     void audioChanged();       // cambió algo relevante para la mezcla de audio (rehornear)
     void subtitlesChanged();   // cambió la lista de subtítulos (recompón el PROGRAMA)
+    // Hubo una EDICIÓN del documento (a diferencia de `changed`, que también se
+    // emite al seleccionar). La escucha el modelo de proyecto para marcar "sucio".
+    void edited();
 
 private:
     friend class TimelineCommand;

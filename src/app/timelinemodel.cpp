@@ -1,11 +1,15 @@
 #include "timelinemodel.h"
 
 #include <QFile>
+#include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QRegularExpression>
 #include <QUndoCommand>
 #include <QVariantMap>
 #include <algorithm>
 #include <functional>
+#include <limits>
 
 #ifdef Q_OS_WIN
 #  ifndef NOMINMAX
@@ -30,6 +34,8 @@ private:
 TimelineModel::TimelineModel(QObject *parent) : QObject(parent)
 {
     seed();
+    // Toda edición estructural pasa por la pila de undo → señal de documento editado.
+    connect(&m_undo, &QUndoStack::indexChanged, this, &TimelineModel::edited);
     runSelfTestIfRequested();
 }
 
@@ -121,6 +127,8 @@ QVector<TimelineModel::RenderClip> TimelineModel::clipsAt(qint64 us) const
     for (int t = m_tracks.size() - 1; t >= 0; --t) {
         if (m_tracks.at(t).kind != QLatin1String("video"))
             continue;
+        if (m_tracks.at(t).hidden)   // pista de vídeo oculta (👁): no se compone
+            continue;
 
         // Clips activos en la pista, ordenados por inicio.
         QVector<const Clip *> active;
@@ -176,6 +184,7 @@ void TimelineModel::setClipMedia(quint64 id, const QString &path)
         return;
     m_clips[i].mediaPath = path;
     emit changed();
+    emit edited();
 }
 
 int TimelineModel::indexOfClip(quint64 id) const
@@ -217,6 +226,11 @@ QVariantList TimelineModel::tracks() const
             m["fill"] = c.fill;
             m["border"] = c.border;
             m["wav"] = c.wav;
+            // Datos para la forma de onda real (Waveforms.peaks en QML).
+            m["mediaPath"] = c.mediaPath;
+            m["inSec"] = c.inUs / 1e6;
+            m["durSec"] = c.durationUs / 1e6;
+            m["speed"] = c.speed;
             m["selected"] = (c.id == m_selectedId);
             clips.append(m);
         }
@@ -225,6 +239,11 @@ QVariantList TimelineModel::tracks() const
         tm["kind"] = tr.kind;
         tm["idColor"] = tr.idColor;
         tm["height"] = tr.height;
+        tm["index"] = t;
+        tm["mute"] = tr.mute;
+        tm["solo"] = tr.solo;
+        tm["hidden"] = tr.hidden;
+        tm["locked"] = tr.locked;
         tm["clips"] = clips;
         out.append(tm);
     }
@@ -329,7 +348,10 @@ const QVector<TimelineModel::Keyframe> *TimelineModel::kfVec(const Transform &tf
 
 void TimelineModel::bumpSelection()
 {
+    // Todos los llamadores de bumpSelection() son EDICIONES del clip seleccionado
+    // (transform/color/audio/título/velocidad); seleccionar no pasa por aquí.
     emit selectionChanged();
+    emit edited();
 }
 
 // ---- Transformación del clip seleccionado (valores evaluados en el playhead) ----
@@ -592,6 +614,38 @@ void TimelineModel::setTrackSolo(int trackIndex, bool s)
     m_tracks[trackIndex].solo = s;
     emit audioChanged();
 }
+void TimelineModel::setTrackGain(int trackIndex, double gain)
+{
+    if (trackIndex < 0 || trackIndex >= m_tracks.size()) return;
+    gain = qBound(0.0, gain, 4.0);  // hasta +12 dB
+    if (qFuzzyCompare(m_tracks[trackIndex].gain, gain)) return;
+    m_tracks[trackIndex].gain = gain;
+    emit audioChanged();
+}
+void TimelineModel::setTrackPan(int trackIndex, double pan)
+{
+    if (trackIndex < 0 || trackIndex >= m_tracks.size()) return;
+    pan = qBound(-1.0, pan, 1.0);
+    if (qFuzzyCompare(m_tracks[trackIndex].pan, pan)) return;
+    m_tracks[trackIndex].pan = pan;
+    emit audioChanged();
+}
+void TimelineModel::setTrackHidden(int trackIndex, bool hidden)
+{
+    if (trackIndex < 0 || trackIndex >= m_tracks.size()) return;
+    if (m_tracks[trackIndex].hidden == hidden) return;
+    m_tracks[trackIndex].hidden = hidden;
+    emit changed();   // el compositor recompone al cambiar la estructura
+    emit edited();
+}
+void TimelineModel::setTrackLocked(int trackIndex, bool locked)
+{
+    if (trackIndex < 0 || trackIndex >= m_tracks.size()) return;
+    if (m_tracks[trackIndex].locked == locked) return;
+    m_tracks[trackIndex].locked = locked;
+    emit changed();
+    emit edited();
+}
 
 QVariantList TimelineModel::audioTracks() const
 {
@@ -600,7 +654,8 @@ QVariantList TimelineModel::audioTracks() const
         const Track &tr = m_tracks[t];
         out.append(QVariantMap{
             { "index", t }, { "name", tr.name }, { "kind", tr.kind },
-            { "mute", tr.mute }, { "solo", tr.solo } });
+            { "mute", tr.mute }, { "solo", tr.solo },
+            { "gain", tr.gain }, { "pan", tr.pan } });
     }
     return out;
 }
@@ -703,6 +758,50 @@ void TimelineModel::addTitleAtPlayhead()
         [this, t]() { doInsert(t, m_clips.size()); emit changed(); },
         [this, id]() { const int r = indexOfClip(id); if (r >= 0) doRemoveAt(r); emit changed(); }));
     selectClip(id);
+}
+
+quint64 TimelineModel::addMediaClip(const QString &path, const QString &name,
+                                    const QString &kind, qint64 durationUs,
+                                    int trackIndex, double startFraction)
+{
+    if (path.isEmpty()) return 0;
+    const bool isAudio = (kind == QLatin1String("audio"));
+
+    // Ajusta a una pista del tipo correcto (vídeo↔vídeo, audio↔audio).
+    if (trackIndex < 0 || trackIndex >= m_tracks.size()
+        || (m_tracks[trackIndex].kind == QLatin1String("audio")) != isAudio) {
+        trackIndex = -1;
+        for (int t = 0; t < m_tracks.size(); ++t)
+            if ((m_tracks[t].kind == QLatin1String("audio")) == isAudio) { trackIndex = t; break; }
+        if (trackIndex < 0) return 0;
+    }
+
+    qint64 dur = durationUs > 0 ? durationUs : 5LL * 1000000;
+    dur = qMin(dur, m_totalUs);
+    qint64 start = qMax<qint64>(0, qint64(startFraction * m_totalUs));
+    if (start + dur > m_totalUs) start = qMax<qint64>(0, m_totalUs - dur);
+    start = snapUs(start, 0);
+
+    Clip c;
+    c.id = m_nextId++;
+    c.trackIndex = trackIndex;
+    c.name = name.isEmpty() ? QFileInfo(path).fileName() : name;
+    c.kind = isAudio ? QStringLiteral("audio") : QStringLiteral("video");
+    c.fill = isAudio ? QStringLiteral("#2d5540") : QStringLiteral("#345066");
+    c.border = isAudio ? QStringLiteral("#3c7052") : QStringLiteral("#47708f");
+    c.wav = isAudio ? QStringLiteral("#5fbf87") : QString();
+    c.startUs = start;
+    c.durationUs = dur;
+    c.inUs = 0;
+    c.mediaPath = path;
+    const quint64 id = c.id;
+    m_undo.push(new TimelineCommand(
+        QStringLiteral("Añadir clip"),
+        [this, c]() { doInsert(c, m_clips.size()); emit changed(); emit audioChanged(); },
+        [this, id]() { const int r = indexOfClip(id); if (r >= 0) doRemoveAt(r);
+                       emit changed(); emit audioChanged(); }));
+    selectClip(id);
+    return id;
 }
 
 // ---- Subtítulos (.srt) ----
@@ -808,6 +907,211 @@ bool TimelineModel::exportSrt(const QString &path)
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Serialización del documento (proyecto .pvsproj)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+QJsonArray kfToJson(const QVector<TimelineModel::Keyframe> &kf)
+{
+    QJsonArray a;
+    for (const auto &k : kf)
+        a.append(QJsonObject{ { "t", double(k.sourceUs) }, { "v", k.value } });
+    return a;
+}
+
+QVector<TimelineModel::Keyframe> kfFromJson(const QJsonValue &v)
+{
+    QVector<TimelineModel::Keyframe> out;
+    for (const QJsonValue &e : v.toArray()) {
+        const QJsonObject o = e.toObject();
+        out.push_back({ qint64(o.value("t").toDouble()), o.value("v").toDouble() });
+    }
+    return out;
+}
+
+} // namespace
+
+QJsonObject TimelineModel::toJson() const
+{
+    QJsonArray tracks;
+    for (const Track &t : m_tracks)
+        tracks.append(QJsonObject{
+            { "name", t.name }, { "kind", t.kind }, { "idColor", t.idColor },
+            { "height", t.height }, { "mute", t.mute }, { "solo", t.solo },
+            { "gain", t.gain }, { "pan", t.pan },
+            { "hidden", t.hidden }, { "locked", t.locked } });
+
+    QJsonArray clips;
+    for (const Clip &c : m_clips) {
+        const Transform &tf = c.transform;
+        const Color &co = c.color;
+        QJsonObject o{
+            { "id", double(c.id) }, { "track", c.trackIndex },
+            { "name", c.name }, { "kind", c.kind },
+            { "fill", c.fill }, { "border", c.border }, { "wav", c.wav },
+            { "startUs", double(c.startUs) }, { "durationUs", double(c.durationUs) },
+            { "inUs", double(c.inUs) }, { "mediaPath", c.mediaPath },
+            { "speed", c.speed },
+            { "transform", QJsonObject{
+                { "posX", tf.posX }, { "posY", tf.posY }, { "scale", tf.scale },
+                { "rotation", tf.rotation }, { "opacity", tf.opacity },
+                { "cropL", tf.cropL }, { "cropT", tf.cropT },
+                { "cropR", tf.cropR }, { "cropB", tf.cropB },
+                { "kfPosX", kfToJson(tf.kfPosX) }, { "kfPosY", kfToJson(tf.kfPosY) },
+                { "kfScale", kfToJson(tf.kfScale) }, { "kfRotation", kfToJson(tf.kfRotation) },
+                { "kfOpacity", kfToJson(tf.kfOpacity) } } },
+            { "color", QJsonObject{
+                { "liftX", co.liftX }, { "liftY", co.liftY },
+                { "gammaX", co.gammaX }, { "gammaY", co.gammaY },
+                { "gainX", co.gainX }, { "gainY", co.gainY },
+                { "temp", co.temp }, { "tint", co.tint }, { "sat", co.sat } } },
+            { "audio", QJsonObject{
+                { "gain", c.audio.gain }, { "pan", c.audio.pan }, { "mute", c.audio.mute },
+                { "gainKf", kfToJson(c.audio.gainKf) }, { "panKf", kfToJson(c.audio.panKf) } } },
+            { "title", QJsonObject{
+                { "text", c.title.text }, { "sizePt", c.title.sizePt },
+                { "color", c.title.color }, { "align", c.title.align },
+                { "bar", c.title.bar }, { "barColor", c.title.barColor } } } };
+        clips.append(o);
+    }
+
+    QJsonArray markers;
+    for (const Marker &m : m_markers)
+        markers.append(QJsonObject{ { "timeUs", double(m.timeUs) },
+                                    { "color", m.color }, { "note", m.note } });
+
+    QJsonArray subs;
+    for (const Subtitle &s : m_subtitles)
+        subs.append(QJsonObject{ { "startUs", double(s.startUs) },
+                                 { "endUs", double(s.endUs) }, { "text", s.text } });
+
+    return QJsonObject{
+        { "totalUs", double(m_totalUs) }, { "playheadUs", double(m_playheadUs) },
+        { "snap", m_snap }, { "subsEnabled", m_subsEnabled },
+        { "tracks", tracks }, { "clips", clips },
+        { "markers", markers }, { "subtitles", subs } };
+}
+
+bool TimelineModel::fromJson(const QJsonObject &o)
+{
+    if (!o.contains("tracks") || !o.contains("clips"))
+        return false;
+
+    QVector<Track> tracks;
+    for (const QJsonValue &v : o.value("tracks").toArray()) {
+        const QJsonObject t = v.toObject();
+        Track tr;
+        tr.name = t.value("name").toString();
+        tr.kind = t.value("kind").toString();
+        tr.idColor = t.value("idColor").toString();
+        tr.height = t.value("height").toInt(48);
+        tr.mute = t.value("mute").toBool();
+        tr.solo = t.value("solo").toBool();
+        tr.gain = t.value("gain").toDouble(1.0);
+        tr.pan = t.value("pan").toDouble(0.0);
+        tr.hidden = t.value("hidden").toBool();
+        tr.locked = t.value("locked").toBool();
+        tracks.push_back(tr);
+    }
+    if (tracks.isEmpty())
+        return false;
+
+    QVector<Clip> clips;
+    quint64 maxId = 0;
+    for (const QJsonValue &v : o.value("clips").toArray()) {
+        const QJsonObject cj = v.toObject();
+        Clip c;
+        c.id = quint64(cj.value("id").toDouble());
+        c.trackIndex = qBound(0, cj.value("track").toInt(), int(tracks.size()) - 1);
+        c.name = cj.value("name").toString();
+        c.kind = cj.value("kind").toString();
+        c.fill = cj.value("fill").toString();
+        c.border = cj.value("border").toString();
+        c.wav = cj.value("wav").toString();
+        c.startUs = qint64(cj.value("startUs").toDouble());
+        c.durationUs = qint64(cj.value("durationUs").toDouble());
+        c.inUs = qint64(cj.value("inUs").toDouble());
+        c.mediaPath = cj.value("mediaPath").toString();
+        c.speed = cj.value("speed").toDouble(1.0);
+        const QJsonObject tf = cj.value("transform").toObject();
+        c.transform.posX = tf.value("posX").toDouble();
+        c.transform.posY = tf.value("posY").toDouble();
+        c.transform.scale = tf.value("scale").toDouble(1.0);
+        c.transform.rotation = tf.value("rotation").toDouble();
+        c.transform.opacity = tf.value("opacity").toDouble(1.0);
+        c.transform.cropL = tf.value("cropL").toDouble();
+        c.transform.cropT = tf.value("cropT").toDouble();
+        c.transform.cropR = tf.value("cropR").toDouble();
+        c.transform.cropB = tf.value("cropB").toDouble();
+        c.transform.kfPosX = kfFromJson(tf.value("kfPosX"));
+        c.transform.kfPosY = kfFromJson(tf.value("kfPosY"));
+        c.transform.kfScale = kfFromJson(tf.value("kfScale"));
+        c.transform.kfRotation = kfFromJson(tf.value("kfRotation"));
+        c.transform.kfOpacity = kfFromJson(tf.value("kfOpacity"));
+        const QJsonObject co = cj.value("color").toObject();
+        c.color.liftX = co.value("liftX").toDouble();
+        c.color.liftY = co.value("liftY").toDouble();
+        c.color.gammaX = co.value("gammaX").toDouble();
+        c.color.gammaY = co.value("gammaY").toDouble();
+        c.color.gainX = co.value("gainX").toDouble();
+        c.color.gainY = co.value("gainY").toDouble();
+        c.color.temp = co.value("temp").toDouble();
+        c.color.tint = co.value("tint").toDouble();
+        c.color.sat = co.value("sat").toDouble(1.0);
+        const QJsonObject au = cj.value("audio").toObject();
+        c.audio.gain = au.value("gain").toDouble(1.0);
+        c.audio.pan = au.value("pan").toDouble(0.0);
+        c.audio.mute = au.value("mute").toBool();
+        c.audio.gainKf = kfFromJson(au.value("gainKf"));
+        c.audio.panKf = kfFromJson(au.value("panKf"));
+        const QJsonObject ti = cj.value("title").toObject();
+        c.title.text = ti.value("text").toString();
+        c.title.sizePt = ti.value("sizePt").toDouble(0.09);
+        c.title.color = ti.value("color").toString(QStringLiteral("#ffffff"));
+        c.title.align = ti.value("align").toInt(1);
+        c.title.bar = ti.value("bar").toBool();
+        c.title.barColor = ti.value("barColor").toString(QStringLiteral("#cc0e0f13"));
+        maxId = qMax(maxId, c.id);
+        clips.push_back(c);
+    }
+
+    QVector<Marker> markers;
+    for (const QJsonValue &v : o.value("markers").toArray()) {
+        const QJsonObject m = v.toObject();
+        markers.push_back({ qint64(m.value("timeUs").toDouble()),
+                            m.value("color").toString(), m.value("note").toString() });
+    }
+    QVector<Subtitle> subs;
+    for (const QJsonValue &v : o.value("subtitles").toArray()) {
+        const QJsonObject s = v.toObject();
+        subs.push_back({ qint64(s.value("startUs").toDouble()),
+                         qint64(s.value("endUs").toDouble()), s.value("text").toString() });
+    }
+
+    m_tracks = tracks;
+    m_clips = clips;
+    m_markers = markers;
+    m_subtitles = subs;
+    m_totalUs = qMax<qint64>(qint64(o.value("totalUs").toDouble()), 1000000);
+    m_playheadUs = qBound<qint64>(0, qint64(o.value("playheadUs").toDouble()), m_totalUs);
+    m_snap = o.value("snap").toBool(true);
+    m_subsEnabled = o.value("subsEnabled").toBool(true);
+    m_selectedId = 0;
+    m_nextId = maxId + 1;
+    m_undo.clear();
+
+    emit changed();
+    emit audioChanged();
+    emit markersChanged();
+    emit subtitlesChanged();
+    emit selectionChanged();
+    emit playheadChanged();
+    emit snapChanged();
+    return true;
+}
+
 void TimelineModel::openImportSrtDialog()
 {
 #ifdef Q_OS_WIN
@@ -858,8 +1162,14 @@ QVector<TimelineModel::AudioClip> TimelineModel::audioClips() const
         const Track &tr = m_tracks.at(c.trackIndex);
         // Mute efectivo: mute de clip, o mute de pista, o (hay solo y esta pista no lo está).
         const bool eff = c.audio.mute || tr.mute || (anySolo && !tr.solo);
+        // La ganancia/paneo de pista (fader/perilla del mezclador) se combinan con los
+        // del clip: ganancia multiplicativa; paneo aditivo acotado a [-1, 1].
+        const double gain = c.audio.gain * tr.gain;
+        const double pan = qBound(-1.0, c.audio.pan + tr.pan, 1.0);
+        QVector<Keyframe> gainKf = c.audio.gainKf;
+        for (Keyframe &k : gainKf) k.value *= tr.gain;   // escala la automatización por el fader
         out.push_back({ c.mediaPath, c.trackIndex, c.startUs, c.durationUs, c.inUs,
-                        c.speed, c.audio.gain, c.audio.pan, eff, c.audio.gainKf, c.audio.panKf });
+                        c.speed, gain, pan, eff, gainKf, c.audio.panKf });
     }
     return out;
 }
@@ -1092,6 +1402,66 @@ void TimelineModel::trimClip(quint64 id, bool leftEdge, double deltaFraction)
             m_clips[i].inUs = oi;
             emit changed();
         }));
+}
+
+void TimelineModel::slipClip(quint64 id, double deltaFraction)
+{
+    const int idx = indexOfClip(id);
+    if (idx < 0)
+        return;
+    const Clip orig = m_clips.at(idx);
+    // Arrastrar a la derecha (delta>0) muestra contenido anterior → in disminuye.
+    const qint64 deltaSrc = qint64(deltaFraction * m_totalUs * orig.speed);
+    qint64 newIn = qMax<qint64>(0, orig.inUs - deltaSrc);
+    if (newIn == orig.inUs)
+        return;
+    m_undo.push(new TimelineCommand(
+        QStringLiteral("Deslizar clip"),
+        [this, id, newIn]() {
+            const int i = indexOfClip(id);
+            if (i >= 0) { m_clips[i].inUs = newIn; emit changed(); }
+        },
+        [this, id, oi = orig.inUs]() {
+            const int i = indexOfClip(id);
+            if (i >= 0) { m_clips[i].inUs = oi; emit changed(); }
+        }));
+}
+
+void TimelineModel::shiftTrack(int trackIndex, double deltaFraction)
+{
+    if (trackIndex < 0 || trackIndex >= m_tracks.size()) return;
+    qint64 deltaUs = qint64(deltaFraction * m_totalUs);
+    if (deltaUs == 0) return;
+
+    // Acota el desplazamiento para que el clip más temprano de la pista no cruce el origen.
+    qint64 minStart = std::numeric_limits<qint64>::max();
+    bool any = false;
+    for (const Clip &c : m_clips)
+        if (c.trackIndex == trackIndex) { minStart = qMin(minStart, c.startUs); any = true; }
+    if (!any) return;
+    if (minStart + deltaUs < 0) deltaUs = -minStart;
+    if (deltaUs == 0) return;
+
+    m_undo.push(new TimelineCommand(
+        QStringLiteral("Desplazar pista"),
+        [this, trackIndex, deltaUs]() {
+            for (Clip &c : m_clips)
+                if (c.trackIndex == trackIndex) c.startUs += deltaUs;
+            emit changed();
+        },
+        [this, trackIndex, deltaUs]() {
+            for (Clip &c : m_clips)
+                if (c.trackIndex == trackIndex) c.startUs -= deltaUs;
+            emit changed();
+        }));
+}
+
+void TimelineModel::penToggleKeyframe(quint64 id, double timelineFraction, const QString &prop)
+{
+    if (indexOfClip(id) < 0) return;
+    selectClip(id);
+    setPlayheadFraction(qBound(0.0, timelineFraction, 1.0));
+    toggleKeyframe(prop);
 }
 
 void TimelineModel::rippleTrimRight(quint64 id, double deltaFraction)
