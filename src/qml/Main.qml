@@ -37,6 +37,23 @@ Window {
                 TimelineModel.addTitleAtPlayhead()
                 e.accepted = true; return
             }
+            if (e.modifiers & Qt.ControlModifier && e.key === Qt.Key_E) {  // exportar vídeo
+                if (!Export.running) Export.openExportDialog()
+                e.accepted = true; return
+            }
+            // Proyecto: guardar / guardar como / abrir / nuevo
+            if (e.modifiers & Qt.ControlModifier && e.key === Qt.Key_S) {
+                (e.modifiers & Qt.ShiftModifier) ? Project.openSaveAsDialog() : Project.save()
+                e.accepted = true; return
+            }
+            if (e.modifiers & Qt.ControlModifier && e.key === Qt.Key_O) {
+                Project.openOpenDialog()
+                e.accepted = true; return
+            }
+            if (e.modifiers & Qt.ControlModifier && e.key === Qt.Key_N) {
+                Project.newProject()
+                e.accepted = true; return
+            }
             switch (e.key) {
             case Qt.Key_A: timeline.currentTool = 0; e.accepted = true; break;
             case Qt.Key_T: timeline.currentTool = 1; e.accepted = true; break;
@@ -58,17 +75,37 @@ Window {
             spacing: 0
 
             TitleBar { Layout.fillWidth: true; win: win }
-            TopBar   { Layout.fillWidth: true }
+            TopBar   {
+                id: topBar
+                Layout.fillWidth: true
+                // Workspaces: cada modo muestra los paneles relevantes (ver bindings
+                // de visibilidad abajo). Fusión/Color fijan además la tab del Inspector.
+                onCurrentModeChanged: {
+                    if (currentMode === 2) inspector.currentTab = 0        // Fusión → Inspector
+                    else if (currentMode === 3) inspector.currentTab = 2   // Color → corrección
+                }
+            }
 
             // Fila principal: media pool · monitores · inspector
             RowLayout {
                 Layout.fillWidth: true; Layout.fillHeight: true; spacing: 1
-                MediaPool    { Layout.fillHeight: true }
+                MediaPool {
+                    Layout.fillHeight: true
+                    // Medios (0): panel protagonista, más ancho; Editar (1): ancho normal.
+                    visible: topBar.currentMode <= 1
+                    Layout.preferredWidth: topBar.currentMode === 0 ? 460 : 272
+                }
                 MonitorsRow  { Layout.fillWidth: true; Layout.fillHeight: true }
-                Inspector    { Layout.fillHeight: true }
+                Inspector {
+                    id: inspector
+                    Layout.fillHeight: true
+                    // Editar / Fusión / Color; oculto en Medios, Audio y Entregar.
+                    visible: topBar.currentMode >= 1 && topBar.currentMode <= 3
+                }
             }
 
-            TimelinePanel { id: timeline; Layout.fillWidth: true }
+            // Sin timeline en Medios (0): esa vista es para revisar material.
+            TimelinePanel { id: timeline; Layout.fillWidth: true; visible: topBar.currentMode !== 0 }
             StatusBar     { Layout.fillWidth: true }
         }
     }

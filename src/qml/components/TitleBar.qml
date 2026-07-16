@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Window
 import QtQuick.Layouts
 import PepeVideo
 
@@ -31,7 +32,9 @@ Rectangle {
         }
         Text { text: "PepeVideo Studio"; color: "#b9bcc4"; font.pixelSize: 12; font.weight: Font.DemiBold; font.family: Theme.sans }
         Text { text: "—"; color: Theme.textFaint; font.pixelSize: 12 }
-        Text { text: "Viaje a Oaxaca · Vlog 04.lcproj"; color: "#8b8e97"; font.pixelSize: 12; font.family: Theme.sans }
+        // Nombre real del proyecto; el punto ámbar marca cambios sin guardar.
+        Text { text: Project.displayName; color: "#8b8e97"; font.pixelSize: 12; font.family: Theme.sans }
+        Text { visible: Project.dirty; text: "●"; color: Theme.amber; font.pixelSize: 8 }
 
         Item { Layout.fillWidth: true }
 

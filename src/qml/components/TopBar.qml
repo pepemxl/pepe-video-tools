@@ -3,11 +3,17 @@ import QtQuick.Layouts
 import QtQuick.Controls.Basic as C
 import PepeVideo
 
-// Barra de menús (funcional) + tabs de modo.
+// Barra de menús (funcional) + tabs de modo (workspaces).
 Rectangle {
     id: root
     height: 30
     color: Theme.panel2
+
+    // Workspace activo (0 Medios · 1 Editar · 2 Fusión · 3 Color · 4 Audio · 5 Entregar).
+    // Main.qml lo lee para mostrar/ocultar paneles.
+    property alias currentMode: modeRow.current
+    // Hook de prueba (PVS_WORKSPACE, ver main.cpp): workspace inicial.
+    Component.onCompleted: if (typeof pvsInitialWorkspace !== "undefined") currentMode = pvsInitialWorkspace
 
     // Estado compartido: menú actualmente abierto (para cerrar/cambiar entre menús).
     QtObject { id: menuState; property var current: null }
@@ -45,10 +51,17 @@ Rectangle {
             spacing: 2
 
             MenuButton { title: "Archivo"; state: menuState
+                Mi { text: "Nuevo proyecto"; shortcut: "Ctrl+N"; onTriggered: Project.newProject() }
+                Mi { text: "Abrir proyecto…"; shortcut: "Ctrl+O"; onTriggered: Project.openOpenDialog() }
+                Mi { text: "Guardar"; shortcut: "Ctrl+S"; onTriggered: Project.save() }
+                Mi { text: "Guardar como…"; shortcut: "Ctrl+Shift+S"; onTriggered: Project.openSaveAsDialog() }
+                Sep {}
                 Mi { text: "Importar medios…"; shortcut: "Ctrl+I"; onTriggered: MediaPoolModel.openImportDialog() }
                 Sep {}
                 Mi { text: "Importar subtítulos (.srt)…"; onTriggered: TimelineModel.openImportSrtDialog() }
                 Mi { text: "Exportar subtítulos (.srt)…"; onTriggered: TimelineModel.openExportSrtDialog() }
+                Sep {}
+                Mi { text: "Exportar vídeo (MP4)…"; shortcut: "Ctrl+E"; enabled: !Export.running; onTriggered: Export.openExportDialog() }
                 Sep {}
                 Mi { text: "Salir"; shortcut: "Alt+F4"; onTriggered: Qt.quit() }
             }

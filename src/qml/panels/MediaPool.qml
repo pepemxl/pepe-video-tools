@@ -7,6 +7,24 @@ Rectangle {
     width: 272
     color: Theme.panel
 
+    // Botón de preset reutilizable (Efectos/Títulos).
+    component PresetBtn: Rectangle {
+        id: pb
+        property string label
+        property string sub: ""
+        property bool enabledBtn: true
+        signal clicked()
+        Layout.fillWidth: true; height: 42; radius: 5
+        opacity: enabledBtn ? 1.0 : 0.4
+        color: pbHover.hovered && enabledBtn ? Theme.hover : Theme.sunken
+        border.color: Theme.line; border.width: 1
+        HoverHandler { id: pbHover }
+        TapHandler { enabled: pb.enabledBtn; onTapped: pb.clicked() }
+        Column { anchors.left: parent.left; anchors.leftMargin: 10; anchors.verticalCenter: parent.verticalCenter; spacing: 2
+            Text { text: pb.label; color: Theme.textHi; font.pixelSize: 11; font.family: Theme.sans; font.weight: Font.DemiBold }
+            Text { visible: pb.sub !== ""; text: pb.sub; color: Theme.textDim; font.pixelSize: 9; font.family: Theme.sans } }
+    }
+
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
@@ -15,6 +33,7 @@ Rectangle {
         Rectangle {
             Layout.fillWidth: true; height: 34; color: Theme.panelHead
             Row {
+                id: poolTabs
                 anchors.left: parent.left; anchors.leftMargin: 6; anchors.verticalCenter: parent.verticalCenter
                 spacing: 2
                 property int current: 0
@@ -40,6 +59,7 @@ Rectangle {
 
         // Búsqueda + importar
         RowLayout {
+            visible: poolTabs.current === 0
             Layout.fillWidth: true; Layout.margins: 8; spacing: 6
             Rectangle {
                 Layout.fillWidth: true; height: 28; radius: 5
@@ -60,6 +80,7 @@ Rectangle {
 
         // Bins
         ColumnLayout {
+            visible: poolTabs.current === 0
             Layout.fillWidth: true; Layout.leftMargin: 8; Layout.rightMargin: 8; spacing: 1
             Rectangle {
                 Layout.fillWidth: true; height: 24; radius: 4; color: "#2a2c33"
@@ -91,11 +112,12 @@ Rectangle {
             }
         }
 
-        Rectangle { Layout.fillWidth: true; Layout.leftMargin: 8; Layout.rightMargin: 8; Layout.topMargin: 2; height: 1; color: Theme.line }
+        Rectangle { visible: poolTabs.current === 0; Layout.fillWidth: true; Layout.leftMargin: 8; Layout.rightMargin: 8; Layout.topMargin: 2; height: 1; color: Theme.line }
 
         // Grid de miniaturas (modelo C++)
         GridView {
             id: grid
+            visible: poolTabs.current === 0
             Layout.fillWidth: true; Layout.fillHeight: true; Layout.margins: 8
             clip: true
             cellWidth: (272 - 16) / 2; cellHeight: cellWidth * 9 / 16 + 20
@@ -130,9 +152,35 @@ Rectangle {
                         Text { id: bt; anchors.centerIn: parent; text: "EN USO"; color: Theme.amberInk; font.pixelSize: 8; font.weight: Font.DemiBold } }
                     Text { visible: cell.dur !== ""; text: cell.dur; color: "#c6c9d0"; font.pixelSize: 8; font.family: Theme.mono
                            anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: 2 }
-                    TapHandler {
-                        onTapped: MediaPoolModel.selectedIndex = cell.index
-                        onDoubleTapped: if (cell.path !== "") VideoController.open(cell.path)
+
+                    // Fantasma de arrastre: transporta los datos del medio a la línea de tiempo.
+                    Item {
+                        id: dragGhost
+                        width: 120; height: 68
+                        Drag.active: tileMA.drag.active
+                        Drag.hotSpot.x: width / 2; Drag.hotSpot.y: height / 2
+                        Drag.keys: ["application/x-pvs-media"]
+                        Drag.mimeData: ({
+                            "application/x-pvs-media": cell.path,
+                            "text/pvs-name": cell.nm,
+                            "text/pvs-kind": cell.kind,
+                            "text/pvs-dur": cell.dur
+                        })
+                        Rectangle {
+                            anchors.fill: parent; radius: 4; visible: dragGhost.Drag.active
+                            color: "#e61c1d22"; border.color: Theme.amber; border.width: 1
+                            Text { anchors.centerIn: parent; width: parent.width - 8; text: cell.nm
+                                   color: Theme.textHi; font.pixelSize: 9; font.family: Theme.sans
+                                   elide: Text.ElideRight; horizontalAlignment: Text.AlignHCenter }
+                        }
+                    }
+                    MouseArea {
+                        id: tileMA
+                        anchors.fill: parent
+                        drag.target: dragGhost
+                        onPressed: { dragGhost.x = 0; dragGhost.y = 0; MediaPoolModel.selectedIndex = cell.index }
+                        onReleased: dragGhost.Drag.drop()
+                        onDoubleClicked: if (cell.path !== "") VideoController.open(cell.path)
                     }
                 }
                 Text { width: parent.width; text: cell.nm; elide: Text.ElideRight; font.pixelSize: 10; font.family: Theme.sans
@@ -142,6 +190,7 @@ Rectangle {
 
         // Metadatos del clip seleccionado
         Rectangle {
+            visible: poolTabs.current === 0
             Layout.fillWidth: true; height: 52; color: Theme.panel3
             Rectangle { anchors.top: parent.top; width: parent.width; height: 1; color: Theme.line }
             Column {
@@ -150,6 +199,48 @@ Rectangle {
                 Text { text: MediaPoolModel.selectedLine1; color: Theme.textDim; font.pixelSize: 10; font.family: Theme.mono; elide: Text.ElideRight; width: parent.width - 12 }
                 Text { text: MediaPoolModel.selectedLine2; color: Theme.textDim; font.pixelSize: 10; font.family: Theme.mono; elide: Text.ElideRight; width: parent.width - 12 }
             }
+        }
+
+        // ---- Pestaña Efectos: presets de color aplicados al clip seleccionado ----
+        ColumnLayout {
+            visible: poolTabs.current === 1
+            Layout.fillWidth: true; Layout.fillHeight: true
+            Layout.margins: 8; spacing: 6
+            Text { text: TimelineModel.hasSelection ? "Aplicar al clip seleccionado" : "Selecciona un clip primero"
+                   color: TimelineModel.hasSelection ? Theme.textMid : Theme.textFaint
+                   font.pixelSize: 10; font.family: Theme.sans; Layout.bottomMargin: 2 }
+            PresetBtn { label: "Restablecer color"; sub: "Neutro"; enabledBtn: TimelineModel.hasSelection
+                        onClicked: TimelineModel.resetSelColor() }
+            PresetBtn { label: "Blanco y negro"; sub: "Saturación 0"; enabledBtn: TimelineModel.hasSelection
+                        onClicked: { TimelineModel.resetSelColor(); TimelineModel.setSelSat(0) } }
+            PresetBtn { label: "Cálido"; sub: "Temp +"; enabledBtn: TimelineModel.hasSelection
+                        onClicked: { TimelineModel.resetSelColor(); TimelineModel.setSelTemp(0.4) } }
+            PresetBtn { label: "Frío"; sub: "Temp −"; enabledBtn: TimelineModel.hasSelection
+                        onClicked: { TimelineModel.resetSelColor(); TimelineModel.setSelTemp(-0.4) } }
+            PresetBtn { label: "Vívido"; sub: "Saturación +"; enabledBtn: TimelineModel.hasSelection
+                        onClicked: { TimelineModel.resetSelColor(); TimelineModel.setSelSat(1.4) } }
+            PresetBtn { label: "Cine"; sub: "Cálido · desaturado"; enabledBtn: TimelineModel.hasSelection
+                        onClicked: { TimelineModel.resetSelColor(); TimelineModel.setSelTemp(0.15); TimelineModel.setSelTint(-0.08); TimelineModel.setSelSat(0.88) } }
+            Item { Layout.fillHeight: true }
+        }
+
+        // ---- Pestaña Títulos: presets que insertan un título en el playhead ----
+        ColumnLayout {
+            visible: poolTabs.current === 2
+            Layout.fillWidth: true; Layout.fillHeight: true
+            Layout.margins: 8; spacing: 6
+            Text { text: "Insertar en el playhead (pista V3)"; color: Theme.textMid
+                   font.pixelSize: 10; font.family: Theme.sans; Layout.bottomMargin: 2 }
+            PresetBtn { label: "Título centrado"; sub: "Texto grande centrado"
+                        onClicked: { TimelineModel.addTitleAtPlayhead(); TimelineModel.setSelTitleAlign(1)
+                                     TimelineModel.setSelTitleSize(0.11); TimelineModel.setSelPosY(0) } }
+            PresetBtn { label: "Lower third"; sub: "Barra inferior izquierda"
+                        onClicked: { TimelineModel.addTitleAtPlayhead(); TimelineModel.setSelTitleBar(true)
+                                     TimelineModel.setSelTitleAlign(0); TimelineModel.setSelTitleSize(0.06); TimelineModel.setSelPosY(0.3) } }
+            PresetBtn { label: "Subtítulo"; sub: "Texto pequeño inferior"
+                        onClicked: { TimelineModel.addTitleAtPlayhead(); TimelineModel.setSelTitleAlign(1)
+                                     TimelineModel.setSelTitleSize(0.05); TimelineModel.setSelPosY(0.4) } }
+            Item { Layout.fillHeight: true }
         }
     }
 }

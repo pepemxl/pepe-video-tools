@@ -9,8 +9,17 @@ Rectangle {
     color: Theme.bg2
 
     property int currentTool: 0   // A = Selección
+    property real zoom: 1.0       // 1 = ajustar a la vista; >1 = ampliar horizontalmente
+    property real scrollX: 0.0    // desplazamiento horizontal [0..1] cuando hay zoom
     // El imán real vive en el modelo (afecta al arrastre/recorte).
     readonly property bool snap: TimelineModel.snapEnabled
+
+    // Formatea milisegundos como mm:ss (regla de tiempo).
+    function fmtClock(ms) {
+        var s = Math.max(0, Math.floor(ms / 1000))
+        var m = Math.floor(s / 60); s = s % 60
+        return (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s
+    }
 
     // Mapea una coordenada Y de escena al índice de pista (para arrastre vertical).
     function trackIndexAtSceneY(sceneY) {
@@ -131,13 +140,22 @@ Rectangle {
                         Text { text: "Imán"; font.pixelSize: 11; font.weight: Font.DemiBold; font.family: Theme.sans
                                color: snap ? "#0c1420" : Theme.textMid; anchors.verticalCenter: parent.verticalCenter } }
                 }
-                // Zoom
+                // Zoom (arrastra; doble clic = ajustar a la vista)
                 Row {
                     spacing: 6; Layout.alignment: Qt.AlignVCenter
                     Text { text: "Zoom"; color: Theme.textDim; font.pixelSize: 11; font.family: Theme.sans; anchors.verticalCenter: parent.verticalCenter }
-                    Rectangle { width: 120; height: 5; radius: 3; color: Theme.sunken; anchors.verticalCenter: parent.verticalCenter
-                        Rectangle { width: parent.width*0.46; height: parent.height; radius: 3; color: "#4a4d55" }
-                        Rectangle { width: 11; height: 11; radius: 6; color: Theme.text; x: parent.width*0.46 - 5.5; y: -3 } }
+                    Rectangle { id: zoomTrack; width: 120; height: 5; radius: 3; color: Theme.sunken; anchors.verticalCenter: parent.verticalCenter
+                        readonly property real maxZoom: 10
+                        readonly property real f: (tlRoot.zoom - 1) / (maxZoom - 1)
+                        Rectangle { width: zoomTrack.width * zoomTrack.f; height: parent.height; radius: 3; color: "#4a4d55" }
+                        Rectangle { width: 11; height: 11; radius: 6; color: zoomDrag.pressed ? Theme.amber : Theme.text; x: zoomTrack.width * zoomTrack.f - 5.5; y: -3 }
+                        MouseArea { id: zoomDrag; anchors.fill: parent; anchors.margins: -6
+                            function upd(mx) { var f = Math.max(0, Math.min(1, mx / zoomTrack.width)); tlRoot.zoom = 1 + f * (zoomTrack.maxZoom - 1) }
+                            onPressed: (m) => upd(m.x)
+                            onPositionChanged: (m) => upd(m.x)
+                            onDoubleClicked: tlRoot.zoom = 1 }
+                    }
+                    Text { text: tlRoot.zoom.toFixed(1) + "×"; color: Theme.textFaint; font.pixelSize: 9; font.family: Theme.mono; anchors.verticalCenter: parent.verticalCenter }
                 }
             }
         }
@@ -159,19 +177,25 @@ Rectangle {
                         Rectangle { Layout.preferredWidth: 158; Layout.fillHeight: true; color: "transparent"
                             Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: Theme.line }
                             Text { anchors.left: parent.left; anchors.leftMargin: 10; anchors.verticalCenter: parent.verticalCenter
-                                   text: "00:04:12:08"; color: Theme.textDim; font.pixelSize: 10; font.family: Theme.mono } }
+                                   text: tlRoot.fmtClock(TimelineModel.playheadUs / 1000); color: Theme.textDim; font.pixelSize: 10; font.family: Theme.mono } }
                         Item {
                             id: scaleArea
                             Layout.fillWidth: true; Layout.fillHeight: true; clip: true
-                            TapHandler { onTapped: (p) => TimelineModel.setPlayheadFraction(p.position.x / scaleArea.width) }
+                            // Ancho de contenido (con zoom) y desplazamiento horizontal en px.
+                            readonly property real contentW: width * tlRoot.zoom
+                            readonly property real offX: -(contentW - width) * tlRoot.scrollX
+                            TapHandler { onTapped: (p) => TimelineModel.setPlayheadFraction((p.position.x - scaleArea.offX) / scaleArea.contentW) }
+                            // Marcas de tiempo reales (una cada ~minuto de la ventana), formateadas mm:ss.
                             Repeater {
-                                model: [ {p:0.06,t:"00:00"},{p:0.24,t:"01:00"},{p:0.42,t:"02:00"},{p:0.60,t:"03:00"},{p:0.78,t:"04:00"},{p:0.96,t:"05:00"} ]
+                                model: 6
                                 delegate: Item {
-                                    required property var modelData
+                                    required property int index
+                                    readonly property real frac: index / 6
                                     anchors.top: parent.top; anchors.bottom: parent.bottom
-                                    x: parent.width * modelData.p
+                                    x: scaleArea.offX + scaleArea.contentW * frac
                                     Rectangle { width: 1; height: parent.height; color: Theme.line }
-                                    Text { text: modelData.t; color: Theme.textFaint; font.pixelSize: 9; font.family: Theme.mono; x: 2; y: 5 }
+                                    Text { text: tlRoot.fmtClock(frac * TimelineModel.totalUsMs)
+                                           color: Theme.textFaint; font.pixelSize: 9; font.family: Theme.mono; x: 2; y: 5 }
                                 }
                             }
                             // Marcadores (desde el modelo); clic para eliminar
@@ -180,7 +204,7 @@ Rectangle {
                                 delegate: Item {
                                     required property var modelData
                                     anchors.top: parent.top; anchors.bottom: parent.bottom
-                                    x: scaleArea.width * modelData.x - 4.5
+                                    x: scaleArea.offX + scaleArea.contentW * modelData.x - 4.5
                                     width: 9
                                     Canvas { anchors.top: parent.top; width: 9; height: 11
                                         onPaint: { var c=getContext("2d"); c.fillStyle=modelData.color; c.beginPath()
@@ -190,16 +214,19 @@ Rectangle {
                                 }
                             }
                             // Playhead (desde el modelo)
-                            Rectangle { width: 1; height: parent.height; color: Theme.amber; x: scaleArea.width * TimelineModel.playheadFraction }
-                            Canvas { anchors.top: parent.top; width: 11; height: 9; x: scaleArea.width * TimelineModel.playheadFraction - 5.5
+                            Rectangle { width: 1; height: parent.height; color: Theme.amber; x: scaleArea.offX + scaleArea.contentW * TimelineModel.playheadFraction }
+                            Canvas { anchors.top: parent.top; width: 11; height: 9; x: scaleArea.offX + scaleArea.contentW * TimelineModel.playheadFraction - 5.5
                                 onPaint: { var c=getContext("2d"); c.fillStyle=Theme.amber; c.beginPath(); c.moveTo(0,0);c.lineTo(11,0);c.lineTo(5.5,9); c.closePath(); c.fill() } }
                         }
                     }
                 }
 
-                // Pistas
+                // Pistas (+ zona de soltado para arrastrar medios desde el Media Pool)
+                Item {
+                    Layout.fillWidth: true; Layout.fillHeight: true
                 Flickable {
-                    Layout.fillWidth: true; Layout.fillHeight: true; clip: true
+                    id: tracksFlick
+                    anchors.fill: parent; clip: true
                     contentWidth: width; contentHeight: tracksCol.height
                     Column {
                         id: tracksCol; width: parent.width
@@ -220,14 +247,44 @@ Rectangle {
                                     Text { anchors.left: parent.left; anchors.leftMargin: 8; anchors.verticalCenter: parent.verticalCenter
                                            text: modelData.name; color: modelData.idColor; font.pixelSize: 10; font.weight: Font.Bold; font.family: Theme.mono }
                                     Row { anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter; spacing: 3
-                                        Repeater { model: modelData.kind === "video" ? ["👁","🔒"] : ["M","S"]
-                                            delegate: Rectangle { required property string modelData; width: 16; height: 14; radius: 3; color: Theme.hover2
-                                                Text { anchors.centerIn: parent; text: modelData; font.pixelSize: 8; color: Theme.textDim } } } }
+                                        Repeater { model: trackRow.modelData.kind === "video" ? ["👁","🔒"] : ["M","S"]
+                                            delegate: Rectangle {
+                                                id: hdrBtn
+                                                required property string modelData
+                                                required property int index
+                                                readonly property bool isVideo: trackRow.modelData.kind === "video"
+                                                readonly property bool first: index === 0   // 👁 / M
+                                                readonly property bool on: isVideo
+                                                    ? (first ? trackRow.modelData.hidden : trackRow.modelData.locked)
+                                                    : (first ? trackRow.modelData.mute : trackRow.modelData.solo)
+                                                width: 16; height: 14; radius: 3
+                                                color: on ? (isVideo ? Theme.amber : (first ? Theme.amber : Theme.blue)) : Theme.hover2
+                                                Text { anchors.centerIn: parent; text: hdrBtn.modelData; font.pixelSize: 8
+                                                       color: hdrBtn.on ? "#101216" : Theme.textDim }
+                                                TapHandler {
+                                                    onTapped: {
+                                                        var ti = trackRow.trackIndex
+                                                        if (hdrBtn.isVideo) {
+                                                            if (hdrBtn.first) TimelineModel.setTrackHidden(ti, !trackRow.modelData.hidden)
+                                                            else TimelineModel.setTrackLocked(ti, !trackRow.modelData.locked)
+                                                        } else {
+                                                            if (hdrBtn.first) TimelineModel.setTrackMute(ti, !trackRow.modelData.mute)
+                                                            else TimelineModel.setTrackSolo(ti, !trackRow.modelData.solo)
+                                                        }
+                                                    }
+                                                }
+                                            } } }
                                 }
                                 // Lane con clips
                                 Item {
                                     id: lane
                                     width: parent.width - 158; height: parent.height
+                                    clip: true
+                                    // Ancho de contenido (con zoom) y desplazamiento horizontal en px,
+                                    // compartidos con la regla para que todo se mueva en sincronía.
+                                    readonly property real contentW: width * tlRoot.zoom
+                                    readonly property real offX: -(contentW - width) * tlRoot.scrollX
+                                    property real trackShiftDx: 0   // desplazamiento en vivo de toda la pista (herramienta T)
                                     Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#202127" }
 
                                     Repeater {
@@ -237,19 +294,24 @@ Rectangle {
                                             required property var modelData
                                             readonly property bool isTitle: modelData.kind === "title"
                                             readonly property bool isAudio: modelData.kind === "audio"
+                                            readonly property bool locked: trackRow.modelData.locked === true
                                             // Desplazamientos en vivo mientras se arrastra (px):
                                             property real mvDx: 0   // mover clip (horizontal)
                                             property real mvDy: 0   // mover clip (vertical, entre pistas)
                                             property real tlDx: 0   // recortar borde izquierdo
                                             property real trDx: 0   // recortar borde derecho
+                                            property real slipDx: 0 // deslizar contenido (no mueve el clip)
                                             readonly property bool moveTool: tlRoot.currentTool === 0
                                             readonly property bool trimTool: tlRoot.currentTool === 6
                                             readonly property bool rollTool: tlRoot.currentTool === 4
                                             readonly property bool rippleTool: tlRoot.currentTool === 3
-                                            x: lane.width * modelData.x + 1 + mvDx + tlDx
+                                            readonly property bool slipTool: tlRoot.currentTool === 5
+                                            readonly property bool trackTool: tlRoot.currentTool === 1
+                                            readonly property bool penTool: tlRoot.currentTool === 7
+                                            x: lane.offX + lane.contentW * modelData.x + 1 + mvDx + tlDx + lane.trackShiftDx
                                             y: 5 + (moveDrag.active ? mvDy : 0)
                                             z: moveDrag.active ? 20 : 0
-                                            width: Math.max(6, lane.width * modelData.w - 2 - tlDx + trDx)
+                                            width: Math.max(6, lane.contentW * modelData.w - 2 - tlDx + trDx)
                                             height: parent.height - 10
                                             radius: 3; color: modelData.fill
                                             border.color: modelData.selected ? Theme.amber : modelData.border
@@ -258,37 +320,67 @@ Rectangle {
 
                                             // Aplica la edición de un borde según la herramienta activa.
                                             function commitEdge(leftEdge, dpx) {
-                                                var d = dpx / lane.width
+                                                var d = dpx / lane.contentW
                                                 if (clip.trimTool) TimelineModel.trimClip(clip.modelData.id, leftEdge, d)
                                                 else if (clip.rollTool) TimelineModel.rollEdit(clip.modelData.id, leftEdge, d)
                                                 else if (clip.rippleTool && !leftEdge) TimelineModel.rippleTrimRight(clip.modelData.id, d)
                                             }
 
-                                            // Arrastrar para mover (herramienta Selección · A); vertical = cambiar de pista
+                                            // Arrastrar para mover (herramienta Selección · A); vertical = cambiar de pista.
+                                            // Con la herramienta Slip (Y) el mismo arrastre desliza el contenido (in-point).
                                             DragHandler {
                                                 id: moveDrag
                                                 target: null
-                                                enabled: clip.moveTool
+                                                enabled: (clip.moveTool || clip.slipTool || clip.trackTool) && !clip.locked
                                                 onActiveChanged: {
-                                                    if (active) { clip.mvDx = 0; clip.mvDy = 0; TimelineModel.selectClip(clip.modelData.id); return }
-                                                    var frac = clip.modelData.x + clip.mvDx / lane.width
+                                                    if (active) { clip.mvDx = 0; clip.mvDy = 0; clip.slipDx = 0; lane.trackShiftDx = 0; TimelineModel.selectClip(clip.modelData.id); return }
+                                                    if (clip.slipTool) {
+                                                        TimelineModel.slipClip(clip.modelData.id, clip.slipDx / lane.contentW)
+                                                        clip.slipDx = 0
+                                                        return
+                                                    }
+                                                    if (clip.trackTool) {
+                                                        TimelineModel.shiftTrack(trackRow.trackIndex, lane.trackShiftDx / lane.contentW)
+                                                        lane.trackShiftDx = 0
+                                                        return
+                                                    }
+                                                    var frac = clip.modelData.x + clip.mvDx / lane.contentW
                                                     var track = tlRoot.trackIndexAtSceneY(centroid.scenePosition.y)
                                                     clip.mvDx = 0; clip.mvDy = 0
                                                     TimelineModel.moveClipToFraction(clip.modelData.id, track, frac)
                                                 }
                                                 onActiveTranslationChanged: {
-                                                    if (active) { clip.mvDx = activeTranslation.x; clip.mvDy = activeTranslation.y }
+                                                    // Slip y Track no mueven el clip individual: registran su propio desplazamiento.
+                                                    if (!active) return
+                                                    if (clip.slipTool) clip.slipDx = activeTranslation.x
+                                                    else if (clip.trackTool) lane.trackShiftDx = activeTranslation.x
+                                                    else { clip.mvDx = activeTranslation.x; clip.mvDy = activeTranslation.y }
                                                 }
                                             }
                                             // Franja superior (vídeo)
                                             Rectangle { visible: !clip.isAudio && !clip.isTitle; width: parent.width; height: Math.min(24, parent.height*0.45); color: "#10ffffff" }
-                                            // Forma de onda (audio)
-                                            Canvas { visible: clip.isAudio; anchors.fill: parent; anchors.margins: 4
+                                            // Forma de onda (audio): envolvente de PCM real si el clip tiene media
+                                            // (Waveforms decodifica en un hilo y cachea); si no, onda sintética.
+                                            Canvas { id: wavCanvas; visible: clip.isAudio; anchors.fill: parent; anchors.margins: 4
+                                                readonly property string mediaPath: clip.modelData.mediaPath || ""
                                                 onPaint: { var c=getContext("2d"); c.clearRect(0,0,width,height); c.fillStyle = clip.modelData.wav
-                                                    var mid=height/2; c.beginPath(); c.moveTo(0,mid)
-                                                    for (var i=0;i<=width;i+=6){ var a=(Math.sin(i*0.35)+Math.sin(i*0.13))*0.25*height; c.lineTo(i,mid-a) }
-                                                    for (var j=width;j>=0;j-=6){ var b=(Math.sin(j*0.35)+Math.sin(j*0.13))*0.25*height; c.lineTo(j,mid+b) }
-                                                    c.closePath(); c.fill() } }
+                                                    var mid=height/2
+                                                    var pk = mediaPath !== "" ? Waveforms.peaks(mediaPath, clip.modelData.inSec, clip.modelData.durSec,
+                                                                                                clip.modelData.speed, Math.max(1, Math.floor(width/2))) : []
+                                                    c.beginPath(); c.moveTo(0,mid)
+                                                    if (pk.length > 0) {
+                                                        var step = width/pk.length
+                                                        for (var i=0;i<pk.length;++i) c.lineTo((i+0.5)*step, mid - Math.max(0.02, pk[i])*mid)
+                                                        c.lineTo(width, mid)
+                                                        for (var j=pk.length-1;j>=0;--j) c.lineTo((j+0.5)*step, mid + Math.max(0.02, pk[j])*mid)
+                                                    } else {
+                                                        for (var i2=0;i2<=width;i2+=6){ var a=(Math.sin(i2*0.35)+Math.sin(i2*0.13))*0.25*height; c.lineTo(i2,mid-a) }
+                                                        for (var j2=width;j2>=0;j2-=6){ var b=(Math.sin(j2*0.35)+Math.sin(j2*0.13))*0.25*height; c.lineTo(j2,mid+b) }
+                                                    }
+                                                    c.closePath(); c.fill() }
+                                                // Repinta cuando el worker termina de decodificar este archivo.
+                                                Connections { target: Waveforms
+                                                    function onReady(path) { if (path === wavCanvas.mediaPath) wavCanvas.requestPaint() } } }
                                             // Etiqueta
                                             Text { visible: clip.modelData.name !== ""; text: clip.modelData.name
                                                    anchors.left: parent.left; anchors.leftMargin: 6
@@ -302,7 +394,7 @@ Rectangle {
                                                 visible: clip.trimTool || clip.rollTool
                                                 color: trimLeft.active ? Theme.amber : "#33ffffff"
                                                 DragHandler {
-                                                    id: trimLeft; target: null; enabled: clip.trimTool || clip.rollTool
+                                                    id: trimLeft; target: null; enabled: (clip.trimTool || clip.rollTool) && !clip.locked
                                                     onActiveChanged: {
                                                         if (active) { clip.tlDx = 0; TimelineModel.selectClip(clip.modelData.id); return }
                                                         var dpx = clip.tlDx
@@ -319,7 +411,7 @@ Rectangle {
                                                 color: trimRight.active ? Theme.amber : "#33ffffff"
                                                 DragHandler {
                                                     id: trimRight; target: null
-                                                    enabled: clip.trimTool || clip.rollTool || clip.rippleTool
+                                                    enabled: (clip.trimTool || clip.rollTool || clip.rippleTool) && !clip.locked
                                                     onActiveChanged: {
                                                         if (active) { clip.trDx = 0; TimelineModel.selectClip(clip.modelData.id); return }
                                                         var dpx = clip.trDx
@@ -333,9 +425,11 @@ Rectangle {
                                             // Selección / cuchilla
                                             TapHandler {
                                                 onTapped: (p) => {
-                                                    if (tlRoot.currentTool === 2) // cuchilla
-                                                        TimelineModel.splitAtFraction(clip.modelData.id,
-                                                            clip.modelData.x + (p.position.x / clip.width) * clip.modelData.w)
+                                                    var frac = clip.modelData.x + (p.position.x / clip.width) * clip.modelData.w
+                                                    if (tlRoot.currentTool === 2 && !clip.locked) // cuchilla
+                                                        TimelineModel.splitAtFraction(clip.modelData.id, frac)
+                                                    else if (clip.penTool && !clip.locked)        // pluma: keyframe de opacidad
+                                                        TimelineModel.penToggleKeyframe(clip.modelData.id, frac, "opacity")
                                                     else
                                                         TimelineModel.selectClip(clip.modelData.id)
                                                 }
@@ -356,18 +450,65 @@ Rectangle {
                                         }
                                         delegate: Rectangle {
                                             required property var modelData
-                                            x: lane.width * modelData.x; y: 5
-                                            width: Math.max(2, lane.width * modelData.w); height: parent.height - 10
+                                            x: lane.offX + lane.contentW * modelData.x; y: 5
+                                            width: Math.max(2, lane.contentW * modelData.w); height: parent.height - 10
                                             color: "#33e2a24b"; border.color: Theme.amber; border.width: 1; radius: 2
                                             Text { anchors.centerIn: parent; text: "⤫"; color: Theme.amber; font.pixelSize: 13 }
                                         }
                                     }
                                     // Playhead sobre la pista
                                     Rectangle { width: 1; height: parent.height; color: "#e2a24bcc"
-                                                x: lane.width * TimelineModel.playheadFraction }
+                                                x: lane.offX + lane.contentW * TimelineModel.playheadFraction }
                                 }
                             }
                         }
+                    }
+                }
+                    // Zona de soltado: arrastrar un medio del Media Pool inserta un clip.
+                    DropArea {
+                        anchors.fill: parent
+                        keys: ["application/x-pvs-media"]
+                        onDropped: (drop) => {
+                            var path = drop.getDataAsString("application/x-pvs-media")
+                            if (!path) return
+                            var kind = drop.getDataAsString("text/pvs-kind")
+                            var nm = drop.getDataAsString("text/pvs-name")
+                            var durStr = drop.getDataAsString("text/pvs-dur")
+                            var us = 0
+                            if (durStr && durStr.indexOf(":") >= 0) {
+                                var pp = durStr.split(":"); us = (parseInt(pp[0]) * 60 + parseInt(pp[1])) * 1000000
+                            }
+                            var laneW = width - 158
+                            var contentW = laneW * tlRoot.zoom
+                            var offX = -(contentW - laneW) * tlRoot.scrollX
+                            var fx = ((drop.x - 158) - offX) / contentW
+                            var sceneY = mapToItem(null, drop.x, drop.y).y
+                            var track = tlRoot.trackIndexAtSceneY(sceneY)
+                            TimelineModel.addMediaClip(path, nm, kind, us, track, Math.max(0, Math.min(1, fx)))
+                        }
+                        // Realce del área de pistas mientras se arrastra encima.
+                        Rectangle { anchors.fill: parent; anchors.leftMargin: 158
+                            visible: parent.containsDrag; color: "#15e2a24b"; border.color: Theme.amber; border.width: 1 }
+                    }
+                }
+
+                // Barra de desplazamiento horizontal (visible al ampliar con zoom)
+                Rectangle {
+                    Layout.fillWidth: true; height: 10; color: Theme.panel3; visible: tlRoot.zoom > 1.001
+                    Rectangle { anchors.top: parent.top; width: parent.width; height: 1; color: Theme.line }
+                    Item {
+                        id: hbarArea
+                        anchors.left: parent.left; anchors.leftMargin: 158; anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter; height: parent.height
+                        readonly property real barW: Math.max(24, width / tlRoot.zoom)
+                        Rectangle { id: hbar; height: 6; radius: 3; anchors.verticalCenter: parent.verticalCenter
+                            width: hbarArea.barW; color: hDrag.pressed ? Theme.amber : "#4a4d55"
+                            x: (hbarArea.width - hbarArea.barW) * tlRoot.scrollX }
+                        MouseArea { id: hDrag; anchors.fill: parent; cursorShape: Qt.SizeHorCursor
+                            function upd(mx) { var range = hbarArea.width - hbarArea.barW
+                                if (range > 0) tlRoot.scrollX = Math.max(0, Math.min(1, (mx - hbarArea.barW / 2) / range)) }
+                            onPressed: (m) => upd(m.x)
+                            onPositionChanged: (m) => upd(m.x) }
                     }
                 }
             }
@@ -404,10 +545,25 @@ Rectangle {
                                 readonly property real lvl: modelData.main
                                     ? Math.max(Audio.peakL, Audio.peakR)
                                     : (Audio.trackPeaks[modelData.trk] || 0)
+                                // Pista de audio asociada (null para MAIN): ganancia/paneo del fader.
+                                readonly property var atrack: modelData.trk >= 0 ? TimelineModel.audioTracks[modelData.trk] : null
+                                readonly property real trackGain: atrack ? atrack.gain : 1.0
+                                readonly property real trackPan: atrack ? atrack.pan : 0.0
                                 Layout.fillWidth: true; Layout.fillHeight: true; spacing: 5
                                 Text { Layout.alignment: Qt.AlignHCenter; text: modelData.id; color: modelData.col; font.pixelSize: 9; font.weight: Font.Bold; font.family: Theme.mono }
-                                Rectangle { Layout.alignment: Qt.AlignHCenter; width: 20; height: 20; radius: 10; color: Theme.hover2; border.color: Theme.line2; border.width: 1
-                                    Rectangle { width: 1.5; height: 8; color: modelData.main ? Theme.amber : Theme.text; x: parent.width/2 - 0.75; y: 2 } }
+                                // Perilla de paneo: arrástrala en horizontal (doble clic = centro).
+                                Rectangle { Layout.alignment: Qt.AlignHCenter; width: 20; height: 20; radius: 10; color: Theme.hover2; border.color: panKnob.pressed ? Theme.amber : Theme.line2; border.width: 1
+                                    Rectangle { width: 1.5; height: 8; color: modelData.main ? Theme.amber : Theme.text
+                                        x: parent.width/2 - 0.75; y: 2; transformOrigin: Item.Bottom; rotation: chan.trackPan * 135 }
+                                    MouseArea {
+                                        id: panKnob; anchors.fill: parent; anchors.margins: -3
+                                        enabled: modelData.trk >= 0; cursorShape: Qt.SizeHorCursor
+                                        property real base; property real px
+                                        onPressed: (m) => { base = chan.trackPan; px = m.x }
+                                        onPositionChanged: (m) => TimelineModel.setTrackPan(modelData.trk, base + (m.x - px) * 0.02)
+                                        onDoubleClicked: TimelineModel.setTrackPan(modelData.trk, 0)
+                                    }
+                                }
                                 // Medidor + fader
                                 RowLayout {
                                     Layout.alignment: Qt.AlignHCenter; Layout.fillHeight: true; spacing: 3
@@ -416,9 +572,20 @@ Rectangle {
                                             height: parent.height * Math.min(1, lvl)
                                             gradient: Gradient { GradientStop { position: 0.0; color: "#4a9e6b" } GradientStop { position: 0.6; color: "#4a9e6b" } GradientStop { position: 1.0; color: modelData.main ? "#c0392b" : "#e2a24b" } }
                                             Behavior on height { NumberAnimation { duration: 80 } } } }
-                                    Rectangle { width: 10; Layout.fillHeight: true; radius: 5; color: Theme.sunken
-                                        Rectangle { width: 20; height: 11; radius: 2; color: "#3a3d45"; border.color: modelData.main ? Theme.amber : "#55575f"; border.width: 1
-                                            x: parent.width/2 - 10; y: parent.height * modelData.cap } }
+                                    // Fader: arrástralo en vertical (doble clic = 0 dB). Rango 0…+12 dB.
+                                    Rectangle { id: faderTrack; width: 10; Layout.fillHeight: true; radius: 5; color: Theme.sunken
+                                        readonly property real capY: (1 - Math.min(1, chan.trackGain / 4)) * (height - 11)
+                                        Rectangle { width: 20; height: 11; radius: 2; color: faderDrag.pressed ? Theme.amber : "#3a3d45"
+                                            border.color: modelData.main ? Theme.amber : "#55575f"; border.width: 1
+                                            x: parent.width/2 - 10; y: modelData.main ? parent.height * modelData.cap : faderTrack.capY }
+                                        MouseArea {
+                                            id: faderDrag; anchors.fill: parent; anchors.margins: -6
+                                            enabled: modelData.trk >= 0; cursorShape: Qt.SizeVerCursor
+                                            function setFromY(my) { var f = 1 - Math.max(0, Math.min(1, my / faderTrack.height)); TimelineModel.setTrackGain(modelData.trk, f * 4) }
+                                            onPressed: (m) => setFromY(m.y)
+                                            onPositionChanged: (m) => setFromY(m.y)
+                                            onDoubleClicked: TimelineModel.setTrackGain(modelData.trk, 1.0)
+                                        } }
                                 }
                                 Text { Layout.alignment: Qt.AlignHCenter
                                     text: lvl > 0.0001 ? (20*Math.log10(lvl)).toFixed(1) : "−∞"

@@ -7,6 +7,10 @@ Rectangle {
     width: 322
     color: Theme.panel
 
+    // Tab activa (0 Inspector · 1 Scopes · 2 Color). Los workspaces del TopBar
+    // la fijan al entrar en Fusión/Color.
+    property alias currentTab: inspTabs.current
+
     // Campo numérico editable por arrastre horizontal (relativo al valor al pulsar).
     // El rombo es un toggle de keyframe en el playhead (relleno si hay uno aquí).
     component NumRow: RowLayout {
@@ -123,6 +127,7 @@ Rectangle {
         Rectangle {
             Layout.fillWidth: true; height: 34; color: Theme.panelHead
             Row {
+                id: inspTabs
                 anchors.left: parent.left; anchors.leftMargin: 6; anchors.verticalCenter: parent.verticalCenter; spacing: 2
                 property int current: 0
                 Repeater {
@@ -153,7 +158,7 @@ Rectangle {
 
                 // ---- Título (solo para clips de título) ----
                 ColumnLayout {
-                    visible: TimelineModel.selIsTitle
+                    visible: inspTabs.current === 0 && TimelineModel.selIsTitle
                     Layout.fillWidth: true; Layout.margins: 12; spacing: 9
                     Text { text: "Título"; color: Theme.textHi; font.pixelSize: 11; font.weight: Font.DemiBold; font.family: Theme.sans }
                     // Texto editable
@@ -211,10 +216,11 @@ Rectangle {
                             TapHandler { onTapped: TimelineModel.setSelTitleBar(!TimelineModel.selTitleBar) } }
                     }
                 }
-                Rectangle { visible: TimelineModel.selIsTitle; Layout.fillWidth: true; height: 1; color: Theme.lineSoft }
+                Rectangle { visible: inspTabs.current === 0 && TimelineModel.selIsTitle; Layout.fillWidth: true; height: 1; color: Theme.lineSoft }
 
                 // ---- Transformar ----
                 ColumnLayout {
+                    visible: inspTabs.current === 0
                     Layout.fillWidth: true; Layout.margins: 12; spacing: 9
                     enabled: TimelineModel.hasSelection
                     opacity: TimelineModel.hasSelection ? 1.0 : 0.4
@@ -256,10 +262,11 @@ Rectangle {
                         Text { text: ((TimelineModel.playheadUs, TimelineModel.selOpacity) * 100).toFixed(0) + "%"; color: Theme.textDim; font.pixelSize: 10; font.family: Theme.mono; Layout.preferredWidth: 30 }
                     }
                 }
-                Rectangle { Layout.fillWidth: true; height: 1; color: Theme.lineSoft }
+                Rectangle { visible: inspTabs.current === 0; Layout.fillWidth: true; height: 1; color: Theme.lineSoft }
 
                 // ---- Velocidad ----
                 ColumnLayout {
+                    visible: inspTabs.current === 0
                     Layout.fillWidth: true; Layout.margins: 12; spacing: 8
                     enabled: TimelineModel.hasSelection
                     opacity: TimelineModel.hasSelection ? 1.0 : 0.4
@@ -285,10 +292,11 @@ Rectangle {
                         }
                     }
                 }
-                Rectangle { Layout.fillWidth: true; height: 1; color: Theme.lineSoft }
+                Rectangle { visible: inspTabs.current === 0; Layout.fillWidth: true; height: 1; color: Theme.lineSoft }
 
                 // ---- Audio ----
                 ColumnLayout {
+                    visible: inspTabs.current === 0
                     Layout.fillWidth: true; Layout.margins: 12; spacing: 8
                     enabled: TimelineModel.selHasAudio
                     opacity: TimelineModel.selHasAudio ? 1.0 : 0.4
@@ -312,10 +320,11 @@ Rectangle {
                     CSlider { label: "Pan"; from: -1; to: 1; defaultVal: 0; prop: "audioPan"; value: TimelineModel.selPan
                               onMoved: (v) => TimelineModel.setSelPan(v) }
                 }
-                Rectangle { Layout.fillWidth: true; height: 1; color: Theme.lineSoft }
+                Rectangle { visible: inspTabs.current === 0; Layout.fillWidth: true; height: 1; color: Theme.lineSoft }
 
                 // ---- Corrección primaria ----
                 ColumnLayout {
+                    visible: inspTabs.current === 2
                     Layout.fillWidth: true; Layout.margins: 12; spacing: 11
                     enabled: TimelineModel.hasSelection
                     opacity: TimelineModel.hasSelection ? 1.0 : 0.4
@@ -339,10 +348,11 @@ Rectangle {
                     CSlider { label: "Tinte"; from: -1; to: 1; defaultVal: 0; value: TimelineModel.selTint; onMoved: (v) => TimelineModel.setSelTint(v) }
                     CSlider { label: "Saturac."; from: 0; to: 2; defaultVal: 1; value: TimelineModel.selSat; onMoved: (v) => TimelineModel.setSelSat(v) }
                 }
-                Rectangle { Layout.fillWidth: true; height: 1; color: Theme.lineSoft }
+                Rectangle { visible: inspTabs.current === 2; Layout.fillWidth: true; height: 1; color: Theme.lineSoft }
 
                 // ---- Scopes (reales, del fotograma del PROGRAMA) ----
                 ColumnLayout {
+                    visible: inspTabs.current === 1
                     Layout.fillWidth: true; Layout.margins: 12; spacing: 9
                     Text { text: "Scopes"; color: Theme.textHi; font.pixelSize: 11; font.weight: Font.DemiBold; font.family: Theme.sans }
                     // Waveform
