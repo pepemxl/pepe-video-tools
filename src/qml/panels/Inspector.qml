@@ -43,6 +43,69 @@ Rectangle {
         }
     }
 
+    // Rueda de color: punto arrastrable dentro de un círculo → (x,y) en [-1,1].
+    // Doble clic = centrar (neutro).
+    component ColorWheel: ColumnLayout {
+        id: cw
+        property string label
+        property real vx: 0
+        property real vy: 0
+        signal moved(real x, real y)
+        Layout.fillWidth: true; spacing: 5
+        Rectangle {
+            Layout.alignment: Qt.AlignHCenter
+            width: 58; height: 58; radius: 29; border.color: Theme.line2; border.width: 1
+            gradient: Gradient { GradientStop { position: 0.0; color: "#3a3d45" } GradientStop { position: 1.0; color: "#141519" } }
+            Rectangle { anchors.centerIn: parent; width: 1; height: parent.height - 8; color: "#18ffffff" }
+            Rectangle { anchors.centerIn: parent; width: parent.width - 8; height: 1; color: "#18ffffff" }
+            Rectangle {
+                width: 8; height: 8; radius: 4; color: Theme.amber; border.color: "#000000"; border.width: 1
+                x: parent.width / 2 + cw.vx * (parent.width / 2 - 5) - 4
+                y: parent.height / 2 - cw.vy * (parent.height / 2 - 5) - 4
+            }
+            MouseArea {
+                anchors.fill: parent
+                function upd(mx, my) {
+                    var rad = width / 2 - 5
+                    var nx = (mx - width / 2) / rad, ny = -(my - height / 2) / rad
+                    var r = Math.sqrt(nx * nx + ny * ny)
+                    if (r > 1) { nx /= r; ny /= r }
+                    cw.moved(nx, ny)
+                }
+                onPressed: (m) => upd(m.x, m.y)
+                onPositionChanged: (m) => upd(m.x, m.y)
+                onDoubleClicked: cw.moved(0, 0)
+            }
+        }
+        Text { Layout.alignment: Qt.AlignHCenter; text: cw.label; color: Theme.textMid; font.pixelSize: 9; font.family: Theme.sans }
+    }
+
+    // Deslizador simple (temp/tint/sat). Doble clic = valor por defecto.
+    component CSlider: RowLayout {
+        id: sl
+        property string label
+        property real value: 0
+        property real from: -1
+        property real to: 1
+        property real defaultVal: 0
+        signal moved(real v)
+        Layout.fillWidth: true; spacing: 8
+        Text { text: sl.label; color: Theme.textMid; font.pixelSize: 10; font.family: Theme.sans; Layout.preferredWidth: 56 }
+        Rectangle {
+            id: tr; Layout.fillWidth: true; height: 5; radius: 3; color: Theme.sunken
+            readonly property real frac: (sl.value - sl.from) / (sl.to - sl.from)
+            Rectangle { width: 11; height: 11; radius: 6; color: Theme.textHi; x: tr.width * tr.frac - 5.5; y: -3 }
+            MouseArea {
+                anchors.fill: parent; anchors.margins: -5
+                function upd(mx) { var f = Math.max(0, Math.min(1, mx / tr.width)); sl.moved(sl.from + f * (sl.to - sl.from)) }
+                onPressed: (m) => upd(m.x)
+                onPositionChanged: (m) => upd(m.x)
+                onDoubleClicked: sl.moved(sl.defaultVal)
+            }
+        }
+        Text { text: sl.value.toFixed(2); color: Theme.textDim; font.pixelSize: 9; font.family: Theme.mono; Layout.preferredWidth: 30 }
+    }
+
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
@@ -127,99 +190,128 @@ Rectangle {
                 // ---- Velocidad ----
                 ColumnLayout {
                     Layout.fillWidth: true; Layout.margins: 12; spacing: 8
+                    enabled: TimelineModel.hasSelection
+                    opacity: TimelineModel.hasSelection ? 1.0 : 0.4
                     Text { text: "Velocidad · Remapeo"; color: Theme.textHi; font.pixelSize: 11; font.weight: Font.DemiBold; font.family: Theme.sans }
-                    RowLayout { Layout.fillWidth: true; spacing: 8
-                        Text { text: "Velocidad"; color: Theme.textMid; font.pixelSize: 11; font.family: Theme.sans; Layout.preferredWidth: 64 }
-                        Rectangle { Layout.fillWidth: true; height: 24; radius: 4; color: Theme.sunken; border.color: Theme.line; border.width: 1
-                            Text { anchors.left: parent.left; anchors.leftMargin: 7; anchors.verticalCenter: parent.verticalCenter; text: "45.0 %"; font.pixelSize: 11; font.family: Theme.mono; color: Theme.text } }
-                        Text { text: "◷ Fluido"; color: Theme.green; font.pixelSize: 10; font.family: Theme.sans } }
-                    Rectangle { Layout.fillWidth: true; height: 30; radius: 4; color: Theme.sunken; border.color: Theme.line; border.width: 1; clip: true
-                        Rectangle { width: parent.width*0.6; height: parent.height; color: "#443c6b4a" }
-                        Rectangle { x: parent.width*0.6; width: parent.width*0.4; height: parent.height; color: "#22e2a24b" }
-                        Rectangle { x: parent.width*0.6; width: 2; height: parent.height; color: Theme.amber } }
+                    // Arrastra el campo para cambiar la velocidad (doble clic = 100 %).
+                    NumRow {
+                        label: "Velocidad"; value: TimelineModel.selSpeed; sensitivity: 0.01
+                        display: (TimelineModel.selSpeed * 100).toFixed(0) + " %"
+                        onEdited: (v) => TimelineModel.setSelSpeed(v)
+                    }
+                    RowLayout { Layout.fillWidth: true; spacing: 6
+                        Repeater {
+                            model: [ { l: "50 %", v: 0.5 }, { l: "100 %", v: 1.0 }, { l: "200 %", v: 2.0 } ]
+                            delegate: Rectangle {
+                                required property var modelData
+                                Layout.fillWidth: true; height: 22; radius: 4
+                                readonly property bool on: Math.abs(TimelineModel.selSpeed - modelData.v) < 0.005
+                                color: on ? Theme.amber : Theme.sunken; border.color: Theme.line; border.width: 1
+                                Text { anchors.centerIn: parent; text: modelData.l; font.pixelSize: 10; font.family: Theme.mono
+                                       color: parent.on ? Theme.amberInk : Theme.textMid }
+                                TapHandler { onTapped: TimelineModel.setSelSpeed(modelData.v) }
+                            }
+                        }
+                    }
+                }
+                Rectangle { Layout.fillWidth: true; height: 1; color: Theme.lineSoft }
+
+                // ---- Audio ----
+                ColumnLayout {
+                    Layout.fillWidth: true; Layout.margins: 12; spacing: 8
+                    enabled: TimelineModel.selHasAudio
+                    opacity: TimelineModel.selHasAudio ? 1.0 : 0.4
+                    RowLayout { Layout.fillWidth: true
+                        Text { text: "Audio"; color: Theme.textHi; font.pixelSize: 11; font.weight: Font.DemiBold; font.family: Theme.sans }
+                        Item { Layout.fillWidth: true }
+                        Rectangle { width: 26; height: 16; radius: 3
+                            color: TimelineModel.selAudioMute ? Theme.amber : Theme.sunken; border.color: Theme.line; border.width: 1
+                            Text { anchors.centerIn: parent; text: "M"; font.pixelSize: 9; font.family: Theme.mono
+                                   color: TimelineModel.selAudioMute ? Theme.amberInk : Theme.textMid }
+                            TapHandler { onTapped: TimelineModel.setSelAudioMute(!TimelineModel.selAudioMute) }
+                        }
+                    }
+                    // Ganancia con automatización por keyframes (diamante). Doble unidad = 0 dB.
+                    NumRow {
+                        label: "Ganancia"; prop: "audioGain"; value: TimelineModel.selAudioGain; sensitivity: 0.01
+                        display: TimelineModel.selAudioGain > 0.0001
+                                 ? (20*Math.log10(TimelineModel.selAudioGain)).toFixed(1) + " dB" : "−∞ dB"
+                        onEdited: (v) => TimelineModel.setSelAudioGain(v)
+                    }
+                    CSlider { label: "Pan"; from: -1; to: 1; defaultVal: 0; value: TimelineModel.selPan
+                              onMoved: (v) => TimelineModel.setSelPan(v) }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: Theme.lineSoft }
 
                 // ---- Corrección primaria ----
                 ColumnLayout {
                     Layout.fillWidth: true; Layout.margins: 12; spacing: 11
-                    Text { text: "Corrección primaria"; color: Theme.textHi; font.pixelSize: 11; font.weight: Font.DemiBold; font.family: Theme.sans }
+                    enabled: TimelineModel.hasSelection
+                    opacity: TimelineModel.hasSelection ? 1.0 : 0.4
+                    RowLayout { Layout.fillWidth: true
+                        Text { text: "Corrección primaria"; color: Theme.textHi; font.pixelSize: 11; font.weight: Font.DemiBold; font.family: Theme.sans }
+                        Item { Layout.fillWidth: true }
+                        Text { text: "Restablecer"; color: rstHover.hovered ? Theme.amber : Theme.textDim; font.pixelSize: 9; font.family: Theme.sans
+                               HoverHandler { id: rstHover }
+                               TapHandler { onTapped: TimelineModel.resetSelColor() } }
+                    }
                     RowLayout {
                         Layout.fillWidth: true; spacing: 6
-                        Repeater {
-                            model: [
-                                { n: "Sombras", num: "-0.04", dx: 0.44, dy: 0.38, amber: false },
-                                { n: "Medios",  num: "+0.02", dx: 0.52, dy: 0.50, amber: false },
-                                { n: "Altas",   num: "+0.08", dx: 0.58, dy: 0.44, amber: true }
-                            ]
-                            delegate: ColumnLayout {
-                                required property var modelData
-                                Layout.fillWidth: true; spacing: 5
-                                Rectangle {
-                                    Layout.alignment: Qt.AlignHCenter
-                                    width: 58; height: 58; radius: 29; border.color: Theme.line2; border.width: 1
-                                    gradient: Gradient {
-                                        GradientStop { position: 0.0; color: "#3a3d45" }
-                                        GradientStop { position: 1.0; color: "#141519" }
-                                    }
-                                    Rectangle { width: 6; height: 6; radius: 3; color: modelData.amber ? Theme.amber : Theme.text
-                                                x: parent.width*modelData.dx - 3; y: parent.height*modelData.dy - 3 }
-                                }
-                                Text { Layout.alignment: Qt.AlignHCenter; text: modelData.n; color: Theme.textMid; font.pixelSize: 9; font.family: Theme.sans }
-                                Text { Layout.alignment: Qt.AlignHCenter; text: modelData.num; color: Theme.textDim; font.pixelSize: 9; font.family: Theme.mono }
-                            }
-                        }
+                        ColorWheel { label: "Sombras"; vx: TimelineModel.selLiftX; vy: TimelineModel.selLiftY
+                                     onMoved: (x, y) => TimelineModel.setSelLift(x, y) }
+                        ColorWheel { label: "Medios"; vx: TimelineModel.selGammaX; vy: TimelineModel.selGammaY
+                                     onMoved: (x, y) => TimelineModel.setSelGamma(x, y) }
+                        ColorWheel { label: "Altas"; vx: TimelineModel.selGainX; vy: TimelineModel.selGainY
+                                     onMoved: (x, y) => TimelineModel.setSelGain(x, y) }
                     }
-                    Repeater {
-                        model: [ { l: "Temp", pos: 0.62, temp: true, sat: false },
-                                 { l: "Tinte", pos: 0.50, temp: false, sat: false },
-                                 { l: "Saturac.", pos: 0.64, temp: false, sat: true } ]
-                        delegate: RowLayout {
-                            required property var modelData
-                            Layout.fillWidth: true; spacing: 8
-                            Text { text: modelData.l; color: Theme.textMid; font.pixelSize: 10; font.family: Theme.sans; Layout.preferredWidth: 56 }
-                            Rectangle { Layout.fillWidth: true; height: 5; radius: 3; color: Theme.sunken
-                                gradient: modelData.temp ? tempGrad : null
-                                Gradient { id: tempGrad; orientation: Gradient.Horizontal
-                                    GradientStop { position: 0.0; color: "#5b8dd6" } GradientStop { position: 0.5; color: "#4a4d55" } GradientStop { position: 1.0; color: "#e2a24b" } }
-                                Rectangle { visible: modelData.sat; height: parent.height; radius: 3; color: Theme.green; width: parent.width*modelData.pos }
-                                Rectangle { width: 11; height: 11; radius: 6; color: Theme.textHi; x: parent.width*modelData.pos - 5.5; y: -3 } }
-                        }
-                    }
+                    CSlider { label: "Temp"; from: -1; to: 1; defaultVal: 0; value: TimelineModel.selTemp; onMoved: (v) => TimelineModel.setSelTemp(v) }
+                    CSlider { label: "Tinte"; from: -1; to: 1; defaultVal: 0; value: TimelineModel.selTint; onMoved: (v) => TimelineModel.setSelTint(v) }
+                    CSlider { label: "Saturac."; from: 0; to: 2; defaultVal: 1; value: TimelineModel.selSat; onMoved: (v) => TimelineModel.setSelSat(v) }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: Theme.lineSoft }
 
-                // ---- Scopes ----
+                // ---- Scopes (reales, del fotograma del PROGRAMA) ----
                 ColumnLayout {
                     Layout.fillWidth: true; Layout.margins: 12; spacing: 9
                     Text { text: "Scopes"; color: Theme.textHi; font.pixelSize: 11; font.weight: Font.DemiBold; font.family: Theme.sans }
+                    // Waveform
                     Rectangle {
-                        Layout.fillWidth: true; height: 72; radius: 4; color: Theme.sunken2; border.color: Theme.line; border.width: 1; clip: true
+                        Layout.fillWidth: true; height: 72; radius: 4; color: "#0b0d10"; border.color: Theme.line; border.width: 1; clip: true
+                        ScopeView { anchors.fill: parent; anchors.margins: 1; provider: Scopes; kind: "waveform" }
                         Text { text: "WAVEFORM"; color: Theme.textFaint; font.pixelSize: 8; font.family: Theme.mono; x: 6; y: 4 }
-                        Rectangle { anchors.centerIn: parent; width: parent.width*0.86; height: 34; color: "#184a9e6b"
-                            Rectangle { anchors.centerIn: parent; width: parent.width*0.7; height: 18; color: "#454a9e6b"
-                                Rectangle { anchors.centerIn: parent; width: parent.width*0.45; height: 14; color: "#7fd6a0" } } }
                     }
                     RowLayout {
                         Layout.fillWidth: true; spacing: 8
+                        // Vectorscopio
                         Rectangle {
-                            Layout.fillWidth: true; height: 78; radius: 4; color: Theme.sunken2; border.color: Theme.line; border.width: 1
+                            Layout.fillWidth: true; height: 96; radius: 4; color: "#0b0d10"; border.color: Theme.line; border.width: 1; clip: true
+                            ScopeView { anchors.centerIn: parent; width: Math.min(parent.width, parent.height); height: width; provider: Scopes; kind: "vectorscope" }
+                            Rectangle { anchors.centerIn: parent; width: Math.min(parent.width, parent.height) - 4; height: width; radius: width/2; color: "transparent"; border.color: "#1affffff"; border.width: 1 }
                             Text { text: "VECTOR"; color: Theme.textFaint; font.pixelSize: 8; font.family: Theme.mono; x: 6; y: 4 }
-                            Rectangle { anchors.centerIn: parent; width: 56; height: 56; radius: 28; color: "transparent"; border.color: Theme.line; border.width: 1
-                                Rectangle { anchors.horizontalCenter: parent.horizontalCenter; height: parent.height; width: 1; color: "#10ffffff" }
-                                Rectangle { anchors.verticalCenter: parent.verticalCenter; width: parent.width; height: 1; color: "#10ffffff" }
-                                Rectangle { width: 16; height: 12; radius: 6; color: "#e2a24b"; opacity: 0.7; x: parent.width*0.52; y: parent.height*0.40 } }
                         }
+                        // Histograma RGB
                         Rectangle {
-                            Layout.fillWidth: true; height: 78; radius: 4; color: Theme.sunken2; border.color: Theme.line; border.width: 1; clip: true
+                            Layout.fillWidth: true; height: 96; radius: 4; color: "#0b0d10"; border.color: Theme.line; border.width: 1; clip: true
                             Text { text: "HISTOGRAM"; color: Theme.textFaint; font.pixelSize: 8; font.family: Theme.mono; x: 6; y: 4 }
-                            Canvas { anchors.fill: parent; onPaint: {
-                                var c = getContext("2d"); c.clearRect(0,0,width,height)
-                                var pts = [[0,78],[8,60],[18,50],[30,30],[42,22],[55,26],[68,40],[80,55],[92,68],[100,78]]
-                                var sx = width/100, sy = height/78
-                                c.beginPath(); c.moveTo(pts[0][0]*sx,pts[0][1]*sy)
-                                for (var i=1;i<pts.length;i++) c.lineTo(pts[i][0]*sx,pts[i][1]*sy)
-                                c.closePath(); c.fillStyle = "#5b8dd640"; c.fill(); c.strokeStyle = Theme.blue; c.lineWidth = 1; c.stroke() } }
+                            Canvas {
+                                id: histCanvas; anchors.fill: parent; anchors.margins: 4
+                                readonly property var data: Scopes.histogram
+                                onDataChanged: requestPaint()
+                                onPaint: {
+                                    var c = getContext("2d"); c.clearRect(0, 0, width, height)
+                                    var h = data; if (!h || h.length === 0) return
+                                    var n = h.length, bw = width / n
+                                    var cols = ["#e26b6b", "#6bd68a", "#6b9ed6"]
+                                    c.globalCompositeOperation = "lighter"
+                                    for (var ch = 0; ch < 3; ch++) {
+                                        c.beginPath(); c.moveTo(0, height)
+                                        for (var i = 0; i < n; i++) c.lineTo(i * bw, height - h[i][ch] * height)
+                                        c.lineTo(width, height); c.closePath()
+                                        c.fillStyle = cols[ch] + "66"; c.fill()
+                                        c.strokeStyle = cols[ch]; c.lineWidth = 1; c.stroke()
+                                    }
+                                }
+                            }
                         }
                     }
                 }

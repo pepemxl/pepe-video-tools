@@ -345,19 +345,25 @@ Rectangle {
                         Layout.fillWidth: true; height: 26; color: Theme.panelHead
                         Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.line }
                         Text { anchors.left: parent.left; anchors.leftMargin: 10; anchors.verticalCenter: parent.verticalCenter; text: "Mezclador"; color: Theme.textHi; font.pixelSize: 11; font.weight: Font.DemiBold; font.family: Theme.sans }
-                        Text { anchors.right: parent.right; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; text: "−14 LUFS"; color: Theme.textDim; font.pixelSize: 10; font.family: Theme.sans }
+                        Text { anchors.right: parent.right; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter
+                            text: (Audio.lufs <= -60 ? "−∞" : Audio.lufs.toFixed(1)) + " LUFS"
+                            color: Theme.textDim; font.pixelSize: 10; font.family: Theme.sans }
                     }
                     RowLayout {
                         Layout.fillWidth: true; Layout.fillHeight: true; Layout.margins: 8; spacing: 4
                         Repeater {
                             model: [
-                                { id: "A1", col: Theme.green,  lvl: 0.66, cap: 0.34, db: "-3.2",  main: false },
-                                { id: "A2", col: Theme.purple, lvl: 0.48, cap: 0.52, db: "-9.5",  main: false },
-                                { id: "A3", col: Theme.green,  lvl: 0.32, cap: 0.64, db: "-14.0", main: false },
-                                { id: "MAIN", col: Theme.amber, lvl: 0.70, cap: 0.28, db: "0.0",  main: true }
+                                { id: "A1", col: Theme.green,  trk: 3, cap: 0.34, db: "-3.2",  main: false },
+                                { id: "A2", col: Theme.purple, trk: 4, cap: 0.52, db: "-9.5",  main: false },
+                                { id: "A3", col: Theme.green,  trk: 5, cap: 0.64, db: "-14.0", main: false },
+                                { id: "MAIN", col: Theme.amber, trk: -1, cap: 0.28, db: "0.0", main: true }
                             ]
                             delegate: ColumnLayout {
                                 required property var modelData
+                                // Nivel real del motor de audio: MAIN = pico del master; pistas = envolvente A1–A3.
+                                readonly property real lvl: modelData.main
+                                    ? Math.max(Audio.peakL, Audio.peakR)
+                                    : (Audio.trackPeaks[modelData.trk] || 0)
                                 Layout.fillWidth: true; Layout.fillHeight: true; spacing: 5
                                 Text { Layout.alignment: Qt.AlignHCenter; text: modelData.id; color: modelData.col; font.pixelSize: 9; font.weight: Font.Bold; font.family: Theme.mono }
                                 Rectangle { Layout.alignment: Qt.AlignHCenter; width: 20; height: 20; radius: 10; color: Theme.hover2; border.color: Theme.line2; border.width: 1
@@ -366,18 +372,17 @@ Rectangle {
                                 RowLayout {
                                     Layout.alignment: Qt.AlignHCenter; Layout.fillHeight: true; spacing: 3
                                     Rectangle { width: 16; Layout.fillHeight: true; radius: 3; color: Theme.sunken; clip: true
-                                        Rectangle { width: parent.width; height: parent.height * modelData.lvl; anchors.bottom: parent.bottom
+                                        Rectangle { width: parent.width; anchors.bottom: parent.bottom
+                                            height: parent.height * Math.min(1, lvl)
                                             gradient: Gradient { GradientStop { position: 0.0; color: "#4a9e6b" } GradientStop { position: 0.6; color: "#4a9e6b" } GradientStop { position: 1.0; color: modelData.main ? "#c0392b" : "#e2a24b" } }
-                                            SequentialAnimation on height {
-                                                loops: Animation.Infinite
-                                                NumberAnimation { to: (parent ? parent.height : 40) * (modelData.lvl+0.15); duration: 700; easing.type: Easing.InOutSine }
-                                                NumberAnimation { to: (parent ? parent.height : 40) * modelData.lvl; duration: 700; easing.type: Easing.InOutSine }
-                                            } } }
+                                            Behavior on height { NumberAnimation { duration: 80 } } } }
                                     Rectangle { width: 10; Layout.fillHeight: true; radius: 5; color: Theme.sunken
                                         Rectangle { width: 20; height: 11; radius: 2; color: "#3a3d45"; border.color: modelData.main ? Theme.amber : "#55575f"; border.width: 1
                                             x: parent.width/2 - 10; y: parent.height * modelData.cap } }
                                 }
-                                Text { Layout.alignment: Qt.AlignHCenter; text: modelData.db; color: modelData.main ? Theme.amber : Theme.textMid; font.pixelSize: 8; font.family: Theme.mono }
+                                Text { Layout.alignment: Qt.AlignHCenter
+                                    text: lvl > 0.0001 ? (20*Math.log10(lvl)).toFixed(1) : "−∞"
+                                    color: modelData.main ? Theme.amber : Theme.textMid; font.pixelSize: 8; font.family: Theme.mono }
                                 Row { Layout.alignment: Qt.AlignHCenter; spacing: 3
                                     Repeater { model: ["M","S"]; delegate: Rectangle { required property string modelData; width: 15; height: 14; radius: 3; color: Theme.hover2
                                         Text { anchors.centerIn: parent; text: modelData; font.pixelSize: 8; color: Theme.textDim } } } }
