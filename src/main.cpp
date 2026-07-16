@@ -3,6 +3,7 @@
 #include <QtQml>
 
 #include "app/mediapoolmodel.h"
+#include "app/theme.h"
 #include "app/timelinemodel.h"
 #include "app/videocontroller.h"
 #include "engine/audioengine.h"
@@ -22,6 +23,9 @@ int main(int argc, char *argv[])
         return rc;
 
     // Tipos y singletons expuestos a QML en el módulo PepeVideo.
+    Theme theme;
+    qmlRegisterSingletonInstance("PepeVideo", 1, 0, "Theme", &theme);
+
     MediaPoolModel mediaPool;
     qmlRegisterSingletonInstance("PepeVideo", 1, 0, "MediaPoolModel", &mediaPool);
 
@@ -88,6 +92,13 @@ int main(int argc, char *argv[])
         &app, []() { QCoreApplication::exit(-1); },
         Qt::QueuedConnection);
 
+    // Fuerza la creación del singleton QML `Theme` ANTES de cargar la UI. Los
+    // singletons basados en archivo QML se crean de forma perezosa en el primer
+    // acceso; si ese primer acceso ocurre dentro de un binding durante la
+    // construcción del árbol (como pasa aquí, todo se crea en una pasada
+    // síncrona), esa primera evaluación devuelve `undefined` y genera cientos de
+    // avisos "Unable to assign [undefined]" antes de reevaluarse. Instanciarlo
+    // aquí lo deja disponible desde el primer binding.
     engine.loadFromModule("PepeVideo", "Main");
 
     return app.exec();

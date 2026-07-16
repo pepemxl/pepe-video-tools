@@ -12,6 +12,7 @@ qt_standard_project_setup(REQUIRES 6.5)
 
 qt_add_executable(PepeVideoStudio
     src/main.cpp
+    src/app/theme.h
     src/app/mediapoolmodel.h
     src/app/mediapoolmodel.cpp
     src/app/timelinemodel.h
@@ -47,13 +48,9 @@ qt_add_qml_module(PepeVideoStudio
         src/qml/panels/MonitorsRow.qml
         src/qml/panels/Inspector.qml
         src/qml/panels/TimelinePanel.qml
-    QML_FILES
-        src/qml/theme/Theme.qml
 )
 
-# Theme.qml es un singleton QML
-set_source_files_properties(src/qml/theme/Theme.qml
-    PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+# `Theme` es un singleton de C++ (src/app/theme.h) registrado en main.cpp.
 
 target_link_libraries(PepeVideoStudio PRIVATE Qt6::Quick Qt6::Gui Qt6::Multimedia)
 

@@ -366,11 +366,13 @@ Rectangle {
                             Text { text: "HISTOGRAM"; color: Theme.textFaint; font.pixelSize: 8; font.family: Theme.mono; x: 6; y: 4 }
                             Canvas {
                                 id: histCanvas; anchors.fill: parent; anchors.margins: 4
-                                readonly property var data: Scopes.histogram
-                                onDataChanged: requestPaint()
+                                // No usar el nombre `data`: es la propiedad por defecto de Item
+                                // (lista de hijos) y sombrearla genera un aviso de propertyCache.
+                                readonly property var histData: Scopes.histogram
+                                onHistDataChanged: requestPaint()
                                 onPaint: {
                                     var c = getContext("2d"); c.clearRect(0, 0, width, height)
-                                    var h = data; if (!h || h.length === 0) return
+                                    var h = histData; if (!h || h.length === 0) return
                                     var n = h.length, bw = width / n
                                     var cols = ["#e26b6b", "#6bd68a", "#6b9ed6"]
                                     c.globalCompositeOperation = "lighter"

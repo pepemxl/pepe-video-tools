@@ -101,6 +101,9 @@ goto :end
 call :do_build || goto :fail
 set "PVS_AUDIO_SELFTEST=1"
 set "QT_QPA_PLATFORM=offscreen"
+rem El backend offscreen no trae fuentes; apunta su base de datos a las de Windows
+rem para evitar el aviso "QFontDatabase: Cannot find font directory".
+set "QT_QPA_FONTDIR=C:\Windows\Fonts"
 set "QT_FORCE_STDERR_LOGGING=1"
 "%EXE%"
 goto :end

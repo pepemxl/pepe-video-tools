@@ -89,8 +89,11 @@ run-wait: build
 	"$(EXE_WIN)"
 
 ## selftest: auto-test de audio (decodificacion/mezcla/LUFS); termina solo
+# QT_QPA_FONTDIR apunta la base de datos de fuentes del backend offscreen a las
+# fuentes de Windows (Qt ya no incluye fuentes propias) para evitar el aviso
+# "QFontDatabase: Cannot find font directory".
 selftest selftest-audio: build
-	set "PVS_AUDIO_SELFTEST=1" && set "QT_QPA_PLATFORM=offscreen" && set "QT_FORCE_STDERR_LOGGING=1" && "$(EXE_WIN)"
+	set "PVS_AUDIO_SELFTEST=1" && set "QT_QPA_PLATFORM=offscreen" && set "QT_QPA_FONTDIR=C:\Windows\Fonts" && set "QT_FORCE_STDERR_LOGGING=1" && "$(EXE_WIN)"
 
 ## selftest-comp: auto-test del compositor (abre la app; cierrala para terminar)
 selftest-comp: build

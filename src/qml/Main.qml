@@ -14,27 +14,13 @@ Window {
     title: "PepeVideo Studio"
     flags: Qt.Window | Qt.FramelessWindowHint
 
-    ColumnLayout {
-        anchors.fill: parent
-        spacing: 0
-
-        TitleBar { Layout.fillWidth: true; win: win }
-        TopBar   { Layout.fillWidth: true }
-
-        // Fila principal: media pool · monitores · inspector
-        RowLayout {
-            Layout.fillWidth: true; Layout.fillHeight: true; spacing: 1
-            MediaPool    { Layout.fillHeight: true }
-            MonitorsRow  { Layout.fillWidth: true; Layout.fillHeight: true }
-            Inspector    { Layout.fillHeight: true }
-        }
-
-        TimelinePanel { id: timeline; Layout.fillWidth: true }
-        StatusBar     { Layout.fillWidth: true }
-    }
-
     // ===== Atajos de teclado =====
-    Item {
+    // Este contenedor es el ANCESTRO de toda la UI (no un hermano superpuesto),
+    // así los eventos de tecla no consumidos por el elemento con foco (p. ej. un
+    // clip seleccionado en la línea de tiempo) burbujean hacia arriba hasta aquí.
+    // Un TextInput con foco consume antes Retroceso/Supr, así que editar textos
+    // no dispara "eliminar clip"; solo se elimina cuando el foco NO es un campo.
+    FocusScope {
         anchors.fill: parent
         focus: true
         Keys.onPressed: (e) => {
@@ -52,19 +38,38 @@ Window {
                 e.accepted = true; return
             }
             switch (e.key) {
-            case Qt.Key_A: timeline.currentTool = 0; break;
-            case Qt.Key_T: timeline.currentTool = 1; break;
-            case Qt.Key_B: timeline.currentTool = 2; break;
-            case Qt.Key_N: timeline.currentTool = 4; break;
-            case Qt.Key_Y: timeline.currentTool = 5; break;
-            case Qt.Key_W: timeline.currentTool = 6; break;
-            case Qt.Key_P: timeline.currentTool = 7; break;
-            case Qt.Key_Z: timeline.currentTool = 8; break;
-            case Qt.Key_S: TimelineModel.snapEnabled = !TimelineModel.snapEnabled; break;
-            case Qt.Key_M: TimelineModel.addMarkerAtPlayhead(); break;
+            case Qt.Key_A: timeline.currentTool = 0; e.accepted = true; break;
+            case Qt.Key_T: timeline.currentTool = 1; e.accepted = true; break;
+            case Qt.Key_B: timeline.currentTool = 2; e.accepted = true; break;
+            case Qt.Key_N: timeline.currentTool = 4; e.accepted = true; break;
+            case Qt.Key_Y: timeline.currentTool = 5; e.accepted = true; break;
+            case Qt.Key_W: timeline.currentTool = 6; e.accepted = true; break;
+            case Qt.Key_P: timeline.currentTool = 7; e.accepted = true; break;
+            case Qt.Key_Z: timeline.currentTool = 8; e.accepted = true; break;
+            case Qt.Key_S: TimelineModel.snapEnabled = !TimelineModel.snapEnabled; e.accepted = true; break;
+            case Qt.Key_M: TimelineModel.addMarkerAtPlayhead(); e.accepted = true; break;
             case Qt.Key_Delete:
-            case Qt.Key_Backspace: TimelineModel.removeSelected(); break;
+            case Qt.Key_Backspace: TimelineModel.removeSelected(); e.accepted = true; break;
             }
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 0
+
+            TitleBar { Layout.fillWidth: true; win: win }
+            TopBar   { Layout.fillWidth: true }
+
+            // Fila principal: media pool · monitores · inspector
+            RowLayout {
+                Layout.fillWidth: true; Layout.fillHeight: true; spacing: 1
+                MediaPool    { Layout.fillHeight: true }
+                MonitorsRow  { Layout.fillWidth: true; Layout.fillHeight: true }
+                Inspector    { Layout.fillHeight: true }
+            }
+
+            TimelinePanel { id: timeline; Layout.fillWidth: true }
+            StatusBar     { Layout.fillWidth: true }
         }
     }
 }
