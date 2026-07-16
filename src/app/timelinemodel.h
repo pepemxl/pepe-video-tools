@@ -27,6 +27,22 @@ class TimelineModel : public QObject
     Q_PROPERTY(double selPosX READ selPosX NOTIFY selectionChanged)
     Q_PROPERTY(double selPosY READ selPosY NOTIFY selectionChanged)
     Q_PROPERTY(double selRotation READ selRotation NOTIFY selectionChanged)
+    // Corrección de color del clip seleccionado.
+    Q_PROPERTY(double selLiftX READ selLiftX NOTIFY selectionChanged)
+    Q_PROPERTY(double selLiftY READ selLiftY NOTIFY selectionChanged)
+    Q_PROPERTY(double selGammaX READ selGammaX NOTIFY selectionChanged)
+    Q_PROPERTY(double selGammaY READ selGammaY NOTIFY selectionChanged)
+    Q_PROPERTY(double selGainX READ selGainX NOTIFY selectionChanged)
+    Q_PROPERTY(double selGainY READ selGainY NOTIFY selectionChanged)
+    Q_PROPERTY(double selTemp READ selTemp NOTIFY selectionChanged)
+    Q_PROPERTY(double selTint READ selTint NOTIFY selectionChanged)
+    Q_PROPERTY(double selSat READ selSat NOTIFY selectionChanged)
+    Q_PROPERTY(double selSpeed READ selSpeed NOTIFY selectionChanged)
+    // Audio del clip seleccionado.
+    Q_PROPERTY(bool selHasAudio READ selHasAudio NOTIFY selectionChanged)
+    Q_PROPERTY(double selAudioGain READ selAudioGain NOTIFY selectionChanged)
+    Q_PROPERTY(double selPan READ selPan NOTIFY selectionChanged)
+    Q_PROPERTY(bool selAudioMute READ selAudioMute NOTIFY selectionChanged)
 
 public:
     explicit TimelineModel(QObject *parent = nullptr);
@@ -53,6 +69,26 @@ public:
         double cropL = 0.0, cropT = 0.0, cropR = 0.0, cropB = 0.0; // recorte por borde (0..1)
         QVector<Keyframe> kfPosX, kfPosY, kfScale, kfRotation, kfOpacity;
     };
+    // Corrección de color primaria. Las ruedas guardan la posición del punto (x,y) en
+    // [-1,1]; el compositor deriva el ajuste RGB. temp/tint en [-1,1], sat en [0,2].
+    struct Color {
+        double liftX = 0.0, liftY = 0.0;    // Sombras
+        double gammaX = 0.0, gammaY = 0.0;  // Medios
+        double gainX = 0.0, gainY = 0.0;    // Altas
+        double temp = 0.0, tint = 0.0, sat = 1.0;
+        bool isIdentity() const {
+            return liftX == 0.0 && liftY == 0.0 && gammaX == 0.0 && gammaY == 0.0
+                && gainX == 0.0 && gainY == 0.0 && temp == 0.0 && tint == 0.0 && sat == 1.0;
+        }
+    };
+    // Audio de un clip: ganancia lineal (1.0 = 0 dB), pan (-1 izq … +1 der), mute y
+    // automatización de ganancia por keyframes (anclada al tiempo de origen).
+    struct Audio {
+        double gain = 1.0;
+        double pan = 0.0;
+        bool mute = false;
+        QVector<Keyframe> gainKf;
+    };
     struct Clip {
         quint64 id;
         int trackIndex;
@@ -65,7 +101,23 @@ public:
         qint64 durationUs;
         qint64 inUs;
         QString mediaPath;
+        double speed = 1.0;     // remapeo de velocidad (1.0 = normal, 2.0 = 2×, 0.5 = lento)
         Transform transform;
+        Color color;
+        Audio audio;
+    };
+    // Instantánea de un clip con audio para la mezcla (consumida por el motor de audio).
+    struct AudioClip {
+        QString mediaPath;
+        int trackIndex;
+        qint64 startUs;
+        qint64 durationUs;
+        qint64 inUs;
+        double speed;
+        double gain;
+        double pan;
+        bool mute;
+        QVector<Keyframe> gainKf;
     };
     struct Marker {
         qint64 timeUs;
@@ -80,6 +132,7 @@ public:
         QString mediaPath;  // vacío = sin media (se usa el color)
         qint64 sourceUs;    // tiempo dentro del origen (inUs + offset)
         Transform transform;
+        Color color;
     };
 
     QVariantList tracks() const;
@@ -87,6 +140,8 @@ public:
     // Clips de vídeo activos en el tiempo us, ordenados de abajo (V1) a arriba (V3)
     // para pintarlos en ese orden. Uso del compositor (no expuesto a QML).
     QVector<RenderClip> clipsAt(qint64 us) const;
+    // Instantánea de todos los clips con audio (media no vacía). Uso del motor de audio.
+    QVector<AudioClip> audioClips() const;
     double playheadFraction() const { return m_totalUs > 0 ? double(m_playheadUs) / m_totalUs : 0.0; }
     qint64 playheadUs() const { return m_playheadUs; }
     qint64 totalUs() const { return m_totalUs; }
@@ -105,6 +160,20 @@ public:
     double selPosX() const;
     double selPosY() const;
     double selRotation() const;
+    double selLiftX() const;
+    double selLiftY() const;
+    double selGammaX() const;
+    double selGammaY() const;
+    double selGainX() const;
+    double selGainY() const;
+    double selTemp() const;
+    double selTint() const;
+    double selSat() const;
+    double selSpeed() const;
+    bool selHasAudio() const;
+    double selAudioGain() const;
+    double selPan() const;
+    bool selAudioMute() const;
 
     // Edición (con undo/redo)
     Q_INVOKABLE void selectClip(quint64 id);
@@ -123,6 +192,21 @@ public:
     Q_INVOKABLE void toggleKeyframe(const QString &prop); // añade/quita en el playhead
     Q_INVOKABLE bool isKeyframed(const QString &prop) const;
     Q_INVOKABLE bool hasKeyframeAtPlayhead(const QString &prop) const;
+
+    // Corrección de color del clip seleccionado (ruedas + temp/tint/sat).
+    Q_INVOKABLE void setSelLift(double x, double y);
+    Q_INVOKABLE void setSelGamma(double x, double y);
+    Q_INVOKABLE void setSelGain(double x, double y);
+    Q_INVOKABLE void setSelTemp(double v);
+    Q_INVOKABLE void setSelTint(double v);
+    Q_INVOKABLE void setSelSat(double v);
+    Q_INVOKABLE void resetSelColor();
+    Q_INVOKABLE void setSelSpeed(double v);   // remapeo de velocidad del clip seleccionado
+    // Audio del clip seleccionado. La ganancia respeta la automatización (aplica al keyframe
+    // del playhead si está animada, igual que la transformación).
+    Q_INVOKABLE void setSelAudioGain(double v);
+    Q_INVOKABLE void setSelPan(double v);
+    Q_INVOKABLE void setSelAudioMute(bool m);
     Q_INVOKABLE void splitAtFraction(quint64 id, double timelineFraction);
     Q_INVOKABLE void removeSelected();
     Q_INVOKABLE void moveClipToFraction(quint64 id, int trackIndex, double startFraction);
@@ -153,6 +237,7 @@ signals:
     void markersChanged();
     void snapChanged();
     void selectionChanged();
+    void audioChanged();   // cambió algo relevante para la mezcla de audio (rehornear)
 
 private:
     friend class TimelineCommand;
@@ -172,8 +257,8 @@ private:
     // Devuelve los punteros a la lista de keyframes y al valor estático de una propiedad.
     QVector<Keyframe> *kfVec(Transform &tf, const QString &prop, double *&staticOut);
     const QVector<Keyframe> *kfVec(const Transform &tf, const QString &prop) const;
-    // Tiempo de origen del clip en el playhead actual.
-    qint64 srcAtPlayhead(const Clip &c) const { return c.inUs + (m_playheadUs - c.startUs); }
+    // Tiempo de origen del clip en el playhead actual (con remapeo de velocidad).
+    qint64 srcAtPlayhead(const Clip &c) const { return c.inUs + qint64((m_playheadUs - c.startUs) * c.speed); }
     void bumpSelection();  // ++revisión y emite selectionChanged
 
     QVector<Track> m_tracks;

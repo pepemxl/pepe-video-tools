@@ -68,6 +68,14 @@ void TimelineModel::seed()
         for (Clip &c : m_clips)
             if (c.trackIndex == 2)
                 c.mediaPath = demoMedia;
+
+    // Hook de prueba: asigna audio real a las pistas A1–A3 (índices 3–5) para verificar
+    // la mezcla multi-clip. PVS_TL_AUDIO=<ruta>.
+    const QString demoAudio = qEnvironmentVariable("PVS_TL_AUDIO");
+    if (!demoAudio.isEmpty())
+        for (Clip &c : m_clips)
+            if (c.trackIndex >= 3)
+                c.mediaPath = demoAudio;
 }
 
 QVector<TimelineModel::RenderClip> TimelineModel::clipsAt(qint64 us) const
@@ -77,7 +85,7 @@ QVector<TimelineModel::RenderClip> TimelineModel::clipsAt(qint64 us) const
     // Resuelve un clip a RenderClip: evalúa keyframes en srcUs y multiplica la opacidad
     // por opFactor (crossfade). El worker no necesita las listas de keyframes.
     auto resolved = [](const Clip &c, qint64 nowUs, double opFactor) -> RenderClip {
-        const qint64 srcUs = c.inUs + (nowUs - c.startUs);
+        const qint64 srcUs = c.inUs + qint64((nowUs - c.startUs) * c.speed);
         Transform rt = c.transform;
         rt.posX = evalKf(c.transform.kfPosX, c.transform.posX, srcUs);
         rt.posY = evalKf(c.transform.kfPosY, c.transform.posY, srcUs);
@@ -86,7 +94,7 @@ QVector<TimelineModel::RenderClip> TimelineModel::clipsAt(qint64 us) const
         rt.opacity = evalKf(c.transform.kfOpacity, c.transform.opacity, srcUs) * opFactor;
         rt.kfPosX.clear(); rt.kfPosY.clear(); rt.kfScale.clear();
         rt.kfRotation.clear(); rt.kfOpacity.clear();
-        return { c.trackIndex, c.kind, c.fill, c.mediaPath, srcUs, rt };
+        return { c.trackIndex, c.kind, c.fill, c.mediaPath, srcUs, rt, c.color };
     };
 
     // Pistas de vídeo de abajo (índice mayor, V1) hacia arriba (índice menor, V3),
@@ -393,10 +401,184 @@ void TimelineModel::setSelRotation(double v)
     bumpSelection();
 }
 
+// ---- Corrección de color del clip seleccionado ----
+double TimelineModel::selLiftX() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].color.liftX : 0.0; }
+double TimelineModel::selLiftY() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].color.liftY : 0.0; }
+double TimelineModel::selGammaX() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].color.gammaX : 0.0; }
+double TimelineModel::selGammaY() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].color.gammaY : 0.0; }
+double TimelineModel::selGainX() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].color.gainX : 0.0; }
+double TimelineModel::selGainY() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].color.gainY : 0.0; }
+double TimelineModel::selTemp() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].color.temp : 0.0; }
+double TimelineModel::selTint() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].color.tint : 0.0; }
+double TimelineModel::selSat() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].color.sat : 1.0; }
+
+void TimelineModel::setSelLift(double x, double y)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return;
+    m_clips[i].color.liftX = qBound(-1.0, x, 1.0);
+    m_clips[i].color.liftY = qBound(-1.0, y, 1.0);
+    bumpSelection();
+}
+void TimelineModel::setSelGamma(double x, double y)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return;
+    m_clips[i].color.gammaX = qBound(-1.0, x, 1.0);
+    m_clips[i].color.gammaY = qBound(-1.0, y, 1.0);
+    bumpSelection();
+}
+void TimelineModel::setSelGain(double x, double y)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return;
+    m_clips[i].color.gainX = qBound(-1.0, x, 1.0);
+    m_clips[i].color.gainY = qBound(-1.0, y, 1.0);
+    bumpSelection();
+}
+void TimelineModel::setSelTemp(double v)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return;
+    m_clips[i].color.temp = qBound(-1.0, v, 1.0);
+    bumpSelection();
+}
+void TimelineModel::setSelTint(double v)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return;
+    m_clips[i].color.tint = qBound(-1.0, v, 1.0);
+    bumpSelection();
+}
+void TimelineModel::setSelSat(double v)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return;
+    m_clips[i].color.sat = qBound(0.0, v, 2.0);
+    bumpSelection();
+}
+void TimelineModel::resetSelColor()
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return;
+    m_clips[i].color = Color{};
+    bumpSelection();
+}
+
+double TimelineModel::selSpeed() const
+{
+    const int i = indexOfClip(m_selectedId);
+    return i >= 0 ? m_clips[i].speed : 1.0;
+}
+void TimelineModel::setSelSpeed(double v)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return;
+    v = qBound(0.1, v, 8.0);
+    if (m_clips[i].speed == v) return;
+    m_clips[i].speed = v;
+    bumpSelection();
+}
+
+// ---- Audio del clip seleccionado ----
+bool TimelineModel::selHasAudio() const
+{
+    const int i = indexOfClip(m_selectedId);
+    return i >= 0 && !m_clips[i].mediaPath.isEmpty()
+        && m_clips[i].kind != QLatin1String("title");
+}
+double TimelineModel::selAudioGain() const
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return 1.0;
+    const Clip &c = m_clips[i];
+    return evalKf(c.audio.gainKf, c.audio.gain, srcAtPlayhead(c));
+}
+double TimelineModel::selPan() const
+{
+    const int i = indexOfClip(m_selectedId);
+    return i >= 0 ? m_clips[i].audio.pan : 0.0;
+}
+bool TimelineModel::selAudioMute() const
+{
+    const int i = indexOfClip(m_selectedId);
+    return i >= 0 && m_clips[i].audio.mute;
+}
+void TimelineModel::setSelAudioGain(double v)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return;
+    v = qBound(0.0, v, 4.0);
+    Clip &c = m_clips[i];
+    if (c.audio.gainKf.isEmpty()) {
+        c.audio.gain = v;
+    } else {
+        const qint64 src = srcAtPlayhead(c);
+        const qint64 tol = 20000;
+        bool hit = false;
+        for (int k = 0; k < c.audio.gainKf.size(); ++k)
+            if (qAbs(c.audio.gainKf[k].sourceUs - src) < tol) { c.audio.gainKf[k].value = v; hit = true; break; }
+        if (!hit) {
+            c.audio.gainKf.push_back({ src, v });
+            std::sort(c.audio.gainKf.begin(), c.audio.gainKf.end(),
+                      [](const Keyframe &a, const Keyframe &b) { return a.sourceUs < b.sourceUs; });
+        }
+    }
+    bumpSelection();
+    emit audioChanged();
+}
+void TimelineModel::setSelPan(double v)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return;
+    v = qBound(-1.0, v, 1.0);
+    if (m_clips[i].audio.pan == v) return;
+    m_clips[i].audio.pan = v;
+    bumpSelection();
+    emit audioChanged();
+}
+void TimelineModel::setSelAudioMute(bool m)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return;
+    if (m_clips[i].audio.mute == m) return;
+    m_clips[i].audio.mute = m;
+    bumpSelection();
+    emit audioChanged();
+}
+
+QVector<TimelineModel::AudioClip> TimelineModel::audioClips() const
+{
+    QVector<AudioClip> out;
+    for (const Clip &c : m_clips) {
+        if (c.mediaPath.isEmpty() || c.kind == QLatin1String("title"))
+            continue;
+        out.push_back({ c.mediaPath, c.trackIndex, c.startUs, c.durationUs, c.inUs,
+                        c.speed, c.audio.gain, c.audio.pan, c.audio.mute, c.audio.gainKf });
+    }
+    return out;
+}
+
 void TimelineModel::toggleKeyframe(const QString &prop)
 {
     const int i = indexOfClip(m_selectedId);
     if (i < 0) return;
+    // Automatización de ganancia de audio (lista propia en Clip::Audio).
+    if (prop == QLatin1String("audioGain")) {
+        Clip &c = m_clips[i];
+        const qint64 src = srcAtPlayhead(c);
+        const qint64 tol = 20000;
+        for (int k = 0; k < c.audio.gainKf.size(); ++k)
+            if (qAbs(c.audio.gainKf[k].sourceUs - src) < tol) {
+                c.audio.gainKf.remove(k); bumpSelection(); emit audioChanged(); return;
+            }
+        c.audio.gainKf.push_back({ src, evalKf(c.audio.gainKf, c.audio.gain, src) });
+        std::sort(c.audio.gainKf.begin(), c.audio.gainKf.end(),
+                  [](const Keyframe &a, const Keyframe &b) { return a.sourceUs < b.sourceUs; });
+        bumpSelection();
+        emit audioChanged();
+        return;
+    }
     double *sv = nullptr;
     QVector<Keyframe> *kf = kfVec(m_clips[i].transform, prop, sv);
     if (!kf) return;
@@ -416,6 +598,8 @@ bool TimelineModel::isKeyframed(const QString &prop) const
 {
     const int i = indexOfClip(m_selectedId);
     if (i < 0) return false;
+    if (prop == QLatin1String("audioGain"))
+        return !m_clips[i].audio.gainKf.isEmpty();
     const QVector<Keyframe> *kf = kfVec(m_clips[i].transform, prop);
     return kf && !kf->isEmpty();
 }
@@ -424,7 +608,9 @@ bool TimelineModel::hasKeyframeAtPlayhead(const QString &prop) const
 {
     const int i = indexOfClip(m_selectedId);
     if (i < 0) return false;
-    const QVector<Keyframe> *kf = kfVec(m_clips[i].transform, prop);
+    const QVector<Keyframe> *kf =
+        prop == QLatin1String("audioGain") ? &m_clips[i].audio.gainKf
+                                           : kfVec(m_clips[i].transform, prop);
     if (!kf) return false;
     const qint64 src = srcAtPlayhead(m_clips[i]);
     for (const Keyframe &k : *kf)
@@ -448,7 +634,7 @@ void TimelineModel::splitAtFraction(quint64 id, double timelineFraction)
     right.id = m_nextId++;
     right.startUs = splitUs;
     right.durationUs = orig.durationUs - offset;
-    right.inUs = orig.inUs + offset;
+    right.inUs = orig.inUs + qint64(offset * orig.speed); // avance de origen escalado por velocidad
 
     const qint64 leftDur = offset;
     const qint64 origDur = orig.durationUs;
@@ -555,7 +741,7 @@ void TimelineModel::trimClip(quint64 id, bool leftEdge, double deltaFraction)
         const qint64 applied = edge - orig.startUs;
         newStart = orig.startUs + applied;
         newDur = orig.durationUs - applied;
-        newInUs = orig.inUs + applied;
+        newInUs = orig.inUs + qint64(applied * orig.speed);
     } else {
         // Mover el borde derecho: solo cambia la duración.
         qint64 edge = snapUs(orig.startUs + orig.durationUs + deltaUs, id);
@@ -685,10 +871,10 @@ void TimelineModel::rollEdit(quint64 id, bool leftEdge, double deltaFraction)
             if (i < 0 || j < 0) return;
             if (!leftEdge) {
                 m_clips[i].durationUs += delta;                       // cur crece/mengua por la derecha
-                m_clips[j].startUs += delta; m_clips[j].inUs += delta; m_clips[j].durationUs -= delta;
+                m_clips[j].startUs += delta; m_clips[j].inUs += qint64(delta * m_clips[j].speed); m_clips[j].durationUs -= delta;
             } else {
                 m_clips[j].durationUs += delta;                       // neighbor (anterior) mueve su salida
-                m_clips[i].startUs += delta; m_clips[i].inUs += delta; m_clips[i].durationUs -= delta;
+                m_clips[i].startUs += delta; m_clips[i].inUs += qint64(delta * m_clips[i].speed); m_clips[i].durationUs -= delta;
             }
             emit changed();
         },
@@ -698,10 +884,10 @@ void TimelineModel::rollEdit(quint64 id, bool leftEdge, double deltaFraction)
             if (i < 0 || j < 0) return;
             if (!leftEdge) {
                 m_clips[i].durationUs -= delta;
-                m_clips[j].startUs -= delta; m_clips[j].inUs -= delta; m_clips[j].durationUs += delta;
+                m_clips[j].startUs -= delta; m_clips[j].inUs -= qint64(delta * m_clips[j].speed); m_clips[j].durationUs += delta;
             } else {
                 m_clips[j].durationUs -= delta;
-                m_clips[i].startUs -= delta; m_clips[i].inUs -= delta; m_clips[i].durationUs += delta;
+                m_clips[i].startUs -= delta; m_clips[i].inUs -= qint64(delta * m_clips[i].speed); m_clips[i].durationUs += delta;
             }
             emit changed();
         }));
@@ -890,6 +1076,20 @@ void TimelineModel::runSelfTestIfRequested()
         check(qAbs(bOp - 0.5) < 0.05, "transición: opacidad del entrante ~0.5 en el medio");
 
         m_clips[ib].startUs = bStart0;          // restaura
+    }
+
+    // 7) Remapeo de velocidad: sourceUs escala con speed.
+    {
+        const int ci = indexOfClip(v1sorted().first().id);
+        const qint64 st = m_clips[ci].startUs, dur = m_clips[ci].durationUs;
+        m_clips[ci].speed = 2.0;
+        const qint64 off = dur / 4;
+        setPlayheadUs(st + off);
+        qint64 src = -1;
+        for (const auto &r : clipsAt(playheadUs())) if (r.trackIndex == 2) src = r.sourceUs;
+        check(src == qint64(off * 2.0), "velocidad 2x: sourceUs = 2·offset");
+        m_clips[ci].speed = 1.0;
+        setPlayheadUs(0);
     }
 
     setSnapEnabled(snapWas);
