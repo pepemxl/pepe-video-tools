@@ -47,6 +47,10 @@ Window {
                 Compositor.togglePlay()
                 e.accepted = true; return
             }
+            if (e.modifiers & Qt.ControlModifier && e.key === Qt.Key_T) {  // añadir título
+                TimelineModel.addTitleAtPlayhead()
+                e.accepted = true; return
+            }
             switch (e.key) {
             case Qt.Key_A: timeline.currentTool = 0; break;
             case Qt.Key_T: timeline.currentTool = 1; break;

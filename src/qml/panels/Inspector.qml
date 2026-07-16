@@ -151,6 +151,68 @@ Rectangle {
             ColumnLayout {
                 id: col; width: parent.width; spacing: 0
 
+                // ---- Título (solo para clips de título) ----
+                ColumnLayout {
+                    visible: TimelineModel.selIsTitle
+                    Layout.fillWidth: true; Layout.margins: 12; spacing: 9
+                    Text { text: "Título"; color: Theme.textHi; font.pixelSize: 11; font.weight: Font.DemiBold; font.family: Theme.sans }
+                    // Texto editable
+                    Rectangle {
+                        Layout.fillWidth: true; height: 30; radius: 4; color: Theme.sunken
+                        border.color: tin.activeFocus ? Theme.amber : Theme.line; border.width: 1
+                        TextInput {
+                            id: tin; anchors.fill: parent; anchors.margins: 7; verticalAlignment: Text.AlignVCenter
+                            color: Theme.textHi; font.pixelSize: 12; font.family: Theme.sans; clip: true; selectByMouse: true
+                            text: TimelineModel.selTitleText
+                            onTextEdited: TimelineModel.setSelTitleText(text)
+                        }
+                    }
+                    NumRow { label: "Tamaño"; value: TimelineModel.selTitleSize; sensitivity: 0.002
+                             display: (TimelineModel.selTitleSize * 100).toFixed(1) + " %"
+                             onEdited: (v) => TimelineModel.setSelTitleSize(v) }
+                    // Alineación
+                    RowLayout { Layout.fillWidth: true; spacing: 6
+                        Text { text: "Alinear"; color: Theme.textMid; font.pixelSize: 11; font.family: Theme.sans; Layout.preferredWidth: 64 }
+                        Repeater {
+                            model: [ { l: "◧", v: 0 }, { l: "▣", v: 1 }, { l: "◨", v: 2 } ]
+                            delegate: Rectangle {
+                                required property var modelData
+                                Layout.fillWidth: true; height: 24; radius: 4
+                                readonly property bool on: TimelineModel.selTitleAlign === modelData.v
+                                color: on ? Theme.amber : Theme.sunken; border.color: Theme.line; border.width: 1
+                                Text { anchors.centerIn: parent; text: modelData.l; font.pixelSize: 13; color: parent.on ? Theme.amberInk : Theme.textMid }
+                                TapHandler { onTapped: TimelineModel.setSelTitleAlign(modelData.v) }
+                            }
+                        }
+                    }
+                    // Color
+                    RowLayout { Layout.fillWidth: true; spacing: 6
+                        Text { text: "Color"; color: Theme.textMid; font.pixelSize: 11; font.family: Theme.sans; Layout.preferredWidth: 64 }
+                        Repeater {
+                            model: ["#ffffff", "#101216", "#e2a24b", "#5b8dd6", "#5fbf87"]
+                            delegate: Rectangle {
+                                required property string modelData
+                                width: 22; height: 22; radius: 4; color: modelData
+                                border.color: TimelineModel.selTitleColor === modelData ? Theme.amber : Theme.line2
+                                border.width: TimelineModel.selTitleColor === modelData ? 2 : 1
+                                TapHandler { onTapped: TimelineModel.setSelTitleColor(modelData) }
+                            }
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
+                    // Barra (lower third)
+                    RowLayout { Layout.fillWidth: true; spacing: 8
+                        Text { text: "Barra (lower third)"; color: Theme.textMid; font.pixelSize: 11; font.family: Theme.sans }
+                        Item { Layout.fillWidth: true }
+                        Rectangle { width: 40; height: 20; radius: 10; border.color: Theme.line; border.width: 1
+                            color: TimelineModel.selTitleBar ? Theme.amber : Theme.sunken
+                            Rectangle { width: 16; height: 16; radius: 8; color: Theme.textHi; y: 2
+                                x: TimelineModel.selTitleBar ? 22 : 2; Behavior on x { NumberAnimation { duration: 90 } } }
+                            TapHandler { onTapped: TimelineModel.setSelTitleBar(!TimelineModel.selTitleBar) } }
+                    }
+                }
+                Rectangle { visible: TimelineModel.selIsTitle; Layout.fillWidth: true; height: 1; color: Theme.lineSoft }
+
                 // ---- Transformar ----
                 ColumnLayout {
                     Layout.fillWidth: true; Layout.margins: 12; spacing: 9

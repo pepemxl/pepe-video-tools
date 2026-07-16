@@ -1,9 +1,19 @@
 #include "timelinemodel.h"
 
+#include <QFile>
+#include <QRegularExpression>
 #include <QUndoCommand>
 #include <QVariantMap>
 #include <algorithm>
 #include <functional>
+
+#ifdef Q_OS_WIN
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#  include <commdlg.h>
+#endif
 
 // ---- Comando genérico (redo/undo como lambdas) ----
 class TimelineCommand : public QUndoCommand
@@ -59,6 +69,15 @@ void TimelineModel::seed()
     // A3 ambiente
     add(5, "Ambiente_mercado",   "audio", "#2d5540", "#3c7052", "#4d9970", us(0.06), us(0.88));
 
+    // Texto de los clips de título del seed (lower third de ejemplo).
+    for (Clip &c : m_clips)
+        if (c.kind == QLatin1String("title")) {
+            c.title.text = QStringLiteral("Mercado de Abastos");
+            c.title.bar = true;
+            c.title.sizePt = 0.075;
+            c.transform.posY = 0.28; // tercio inferior
+        }
+
     m_playheadUs = us(0.52);
 
     // Hook de prueba: asigna un archivo real a los clips de V1 (pista 2) para
@@ -94,7 +113,7 @@ QVector<TimelineModel::RenderClip> TimelineModel::clipsAt(qint64 us) const
         rt.opacity = evalKf(c.transform.kfOpacity, c.transform.opacity, srcUs) * opFactor;
         rt.kfPosX.clear(); rt.kfPosY.clear(); rt.kfScale.clear();
         rt.kfRotation.clear(); rt.kfOpacity.clear();
-        return { c.trackIndex, c.kind, c.fill, c.mediaPath, srcUs, rt, c.color };
+        return { c.trackIndex, c.kind, c.fill, c.mediaPath, srcUs, rt, c.color, c.title };
     };
 
     // Pistas de vídeo de abajo (índice mayor, V1) hacia arriba (índice menor, V3),
@@ -126,6 +145,26 @@ QVector<TimelineModel::RenderClip> TimelineModel::clipsAt(qint64 us) const
             out.push_back(resolved(*A, us, 1.0));                 // saliente debajo
         }
         out.push_back(resolved(*B, us, f));                       // entrante encima (crossfade)
+    }
+
+    // Subtítulo activo: se pinta encima de todo como un título en el tercio inferior.
+    if (m_subsEnabled) {
+        for (const Subtitle &s : m_subtitles) {
+            if (us >= s.startUs && us < s.endUs) {
+                RenderClip rc{};
+                rc.kind = QStringLiteral("title");
+                rc.sourceUs = us;
+                rc.transform.posY = 0.40;             // tercio inferior
+                rc.title.text = s.text;
+                rc.title.sizePt = 0.055;
+                rc.title.color = QStringLiteral("#ffffff");
+                rc.title.align = 1;                   // centrado
+                rc.title.bar = true;
+                rc.title.barColor = QStringLiteral("#b0000000");
+                out.push_back(rc);
+                break;                                // un subtítulo a la vez
+            }
+        }
     }
     return out;
 }
@@ -573,6 +612,236 @@ void TimelineModel::setSelAudioMute(bool m)
     m_clips[i].audio.mute = m;
     bumpSelection();
     emit audioChanged();
+}
+
+// ---- Título del clip seleccionado ----
+bool TimelineModel::selIsTitle() const
+{
+    const int i = indexOfClip(m_selectedId);
+    return i >= 0 && m_clips[i].kind == QLatin1String("title");
+}
+QString TimelineModel::selTitleText() const
+{
+    const int i = indexOfClip(m_selectedId);
+    return i >= 0 ? m_clips[i].title.text : QString();
+}
+double TimelineModel::selTitleSize() const
+{
+    const int i = indexOfClip(m_selectedId);
+    return i >= 0 ? m_clips[i].title.sizePt : 0.09;
+}
+QString TimelineModel::selTitleColor() const
+{
+    const int i = indexOfClip(m_selectedId);
+    return i >= 0 ? m_clips[i].title.color : QStringLiteral("#ffffff");
+}
+int TimelineModel::selTitleAlign() const
+{
+    const int i = indexOfClip(m_selectedId);
+    return i >= 0 ? m_clips[i].title.align : 1;
+}
+bool TimelineModel::selTitleBar() const
+{
+    const int i = indexOfClip(m_selectedId);
+    return i >= 0 && m_clips[i].title.bar;
+}
+void TimelineModel::setSelTitleText(const QString &text)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0 || m_clips[i].title.text == text) return;
+    m_clips[i].title.text = text;
+    bumpSelection();   // recompón (el compositor escucha selectionChanged)
+}
+void TimelineModel::setSelTitleSize(double v)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return;
+    v = qBound(0.02, v, 0.5);
+    if (m_clips[i].title.sizePt == v) return;
+    m_clips[i].title.sizePt = v;
+    bumpSelection();
+}
+void TimelineModel::setSelTitleColor(const QString &color)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0 || m_clips[i].title.color == color) return;
+    m_clips[i].title.color = color;
+    bumpSelection();
+}
+void TimelineModel::setSelTitleAlign(int align)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return;
+    align = qBound(0, align, 2);
+    if (m_clips[i].title.align == align) return;
+    m_clips[i].title.align = align;
+    bumpSelection();
+}
+void TimelineModel::setSelTitleBar(bool bar)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0 || m_clips[i].title.bar == bar) return;
+    m_clips[i].title.bar = bar;
+    bumpSelection();
+}
+void TimelineModel::addTitleAtPlayhead()
+{
+    Clip t;
+    t.id = m_nextId++;
+    t.trackIndex = 0;                 // V3
+    t.name = QStringLiteral("Título");
+    t.kind = QStringLiteral("title");
+    t.fill = QStringLiteral("#4a3f6b");
+    t.border = QStringLiteral("#6a5a94");
+    t.startUs = m_playheadUs;
+    t.durationUs = qMin(m_totalUs / 20, m_totalUs - m_playheadUs); // ~15 s por defecto
+    if (t.durationUs < kMinClipUs) t.durationUs = kMinClipUs;
+    t.inUs = 0;
+    const quint64 id = t.id;
+    m_undo.push(new TimelineCommand(
+        QStringLiteral("Añadir título"),
+        [this, t]() { doInsert(t, m_clips.size()); emit changed(); },
+        [this, id]() { const int r = indexOfClip(id); if (r >= 0) doRemoveAt(r); emit changed(); }));
+    selectClip(id);
+}
+
+// ---- Subtítulos (.srt) ----
+void TimelineModel::setSubtitlesEnabled(bool on)
+{
+    if (m_subsEnabled == on) return;
+    m_subsEnabled = on;
+    emit subtitlesChanged();
+    emit playheadChanged();   // refresca activeSubtitle y recompón
+}
+
+QString TimelineModel::activeSubtitle() const
+{
+    if (!m_subsEnabled) return QString();
+    for (const Subtitle &s : m_subtitles)
+        if (m_playheadUs >= s.startUs && m_playheadUs < s.endUs)
+            return s.text;
+    return QString();
+}
+
+QVector<TimelineModel::Subtitle> TimelineModel::parseSrt(const QString &content)
+{
+    QVector<Subtitle> out;
+    QString c = content;
+    if (c.startsWith(QChar(0xFEFF))) c.remove(0, 1);            // BOM
+    c.replace(QLatin1String("\r\n"), QLatin1String("\n"));
+    c.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+
+    static const QRegularExpression blankLine(QStringLiteral("\n[ \t]*\n"));
+    static const QRegularExpression tc(QStringLiteral(
+        "(\\d{1,2}):(\\d{2}):(\\d{2})[,\\.](\\d{1,3})\\s*-->\\s*"
+        "(\\d{1,2}):(\\d{2}):(\\d{2})[,\\.](\\d{1,3})"));
+
+    auto toUs = [](int h, int m, int s, int ms) {
+        return ((qint64(h) * 3600 + m * 60 + s) * 1000 + ms) * 1000LL;
+    };
+
+    const QStringList blocks = c.split(blankLine, Qt::SkipEmptyParts);
+    for (const QString &b : blocks) {
+        const QStringList lines = b.split(QLatin1Char('\n'));
+        int tcLine = -1;
+        QRegularExpressionMatch m;
+        for (int i = 0; i < lines.size(); ++i) {
+            m = tc.match(lines.at(i));
+            if (m.hasMatch()) { tcLine = i; break; }
+        }
+        if (tcLine < 0) continue;
+        // Milisegundos: rellena a la derecha hasta 3 dígitos (",5" = 500 ms).
+        const qint64 st = toUs(m.captured(1).toInt(), m.captured(2).toInt(),
+                               m.captured(3).toInt(), m.captured(4).leftJustified(3, '0').toInt());
+        const qint64 en = toUs(m.captured(5).toInt(), m.captured(6).toInt(),
+                               m.captured(7).toInt(), m.captured(8).leftJustified(3, '0').toInt());
+        QStringList textLines;
+        for (int i = tcLine + 1; i < lines.size(); ++i) textLines << lines.at(i);
+        Subtitle s{ st, en, textLines.join(QLatin1Char('\n')).trimmed() };
+        if (s.endUs > s.startUs && !s.text.isEmpty()) out.push_back(s);
+    }
+    std::sort(out.begin(), out.end(),
+              [](const Subtitle &a, const Subtitle &b) { return a.startUs < b.startUs; });
+    return out;
+}
+
+QString TimelineModel::serializeSrt(const QVector<Subtitle> &subs)
+{
+    auto fmt = [](qint64 us) {
+        qint64 ms = us / 1000;
+        const int h = int(ms / 3600000); ms %= 3600000;
+        const int mi = int(ms / 60000);  ms %= 60000;
+        const int s = int(ms / 1000);
+        const int m = int(ms % 1000);
+        return QStringLiteral("%1:%2:%3,%4")
+            .arg(h, 2, 10, QChar('0')).arg(mi, 2, 10, QChar('0'))
+            .arg(s, 2, 10, QChar('0')).arg(m, 3, 10, QChar('0'));
+    };
+    QString out;
+    for (int i = 0; i < subs.size(); ++i) {
+        out += QString::number(i + 1) + QLatin1Char('\n');
+        out += fmt(subs.at(i).startUs) + QLatin1String(" --> ") + fmt(subs.at(i).endUs) + QLatin1Char('\n');
+        out += subs.at(i).text + QLatin1String("\n\n");
+    }
+    return out;
+}
+
+bool TimelineModel::importSrt(const QString &path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return false;
+    m_subtitles = parseSrt(QString::fromUtf8(f.readAll()));
+    f.close();
+    emit subtitlesChanged();
+    emit playheadChanged();   // recompón el PROGRAMA con el subtítulo activo
+    return true;
+}
+
+bool TimelineModel::exportSrt(const QString &path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text))
+        return false;
+    f.write(serializeSrt(m_subtitles).toUtf8());
+    f.close();
+    return true;
+}
+
+void TimelineModel::openImportSrtDialog()
+{
+#ifdef Q_OS_WIN
+    QVector<wchar_t> buf(4096, 0);
+    OPENFILENAMEW ofn;
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.lpstrFilter = L"Subtítulos (*.srt)\0*.srt\0Todos los archivos\0*.*\0\0";
+    ofn.lpstrFile = buf.data();
+    ofn.nMaxFile = buf.size();
+    ofn.lpstrTitle = L"Importar subtítulos";
+    ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_HIDEREADONLY;
+    if (GetOpenFileNameW(&ofn))
+        importSrt(QString::fromWCharArray(buf.data()));
+#endif
+}
+
+void TimelineModel::openExportSrtDialog()
+{
+#ifdef Q_OS_WIN
+    QVector<wchar_t> buf(4096, 0);
+    lstrcpynW(buf.data(), L"subtitulos.srt", buf.size());
+    OPENFILENAMEW ofn;
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.lpstrFilter = L"Subtítulos (*.srt)\0*.srt\0\0";
+    ofn.lpstrFile = buf.data();
+    ofn.nMaxFile = buf.size();
+    ofn.lpstrTitle = L"Exportar subtítulos";
+    ofn.lpstrDefExt = L"srt";
+    ofn.Flags = OFN_EXPLORER | OFN_OVERWRITEPROMPT | OFN_HIDEREADONLY;
+    if (GetSaveFileNameW(&ofn))
+        exportSrt(QString::fromWCharArray(buf.data()));
+#endif
 }
 
 QVector<TimelineModel::AudioClip> TimelineModel::audioClips() const
@@ -1131,6 +1400,36 @@ void TimelineModel::runSelfTestIfRequested()
         for (const auto &r : clipsAt(playheadUs())) if (r.trackIndex == 2) src = r.sourceUs;
         check(src == qint64(off * 2.0), "velocidad 2x: sourceUs = 2·offset");
         m_clips[ci].speed = 1.0;
+        setPlayheadUs(0);
+    }
+
+    // 8) Subtítulos: parseo SRT, round-trip y render inyectado en clipsAt.
+    {
+        const QString srt = QStringLiteral(
+            "1\n00:00:01,000 --> 00:00:04,000\nHola mundo\n\n"
+            "2\n00:00:05,500 --> 00:00:08,200\nSegunda línea\nmultilínea\n");
+        QVector<Subtitle> subs = parseSrt(srt);
+        check(subs.size() == 2, "srt: dos subtítulos parseados");
+        check(subs.size() == 2 && subs[0].startUs == 1000000 && subs[0].endUs == 4000000,
+              "srt: tiempos del primero");
+        check(subs.size() == 2 && subs[1].text == QStringLiteral("Segunda línea\nmultilínea"),
+              "srt: texto multilínea");
+        QVector<Subtitle> rt = parseSrt(serializeSrt(subs));
+        check(rt.size() == 2 && rt[1].startUs == subs[1].startUs && rt[1].text == subs[1].text,
+              "srt: round-trip serialize→parse");
+        m_subtitles = subs;
+        setPlayheadUs(2000000);   // dentro del primer subtítulo
+        bool found = false;
+        for (const auto &r : clipsAt(playheadUs()))
+            if (r.kind == QLatin1String("title") && r.title.text == QStringLiteral("Hola mundo"))
+                found = true;
+        check(found, "srt: subtítulo activo inyectado en el render");
+        setPlayheadUs(4500000);   // hueco entre subtítulos
+        bool none = true;
+        for (const auto &r : clipsAt(playheadUs()))
+            if (r.title.text == QStringLiteral("Hola mundo")) none = false;
+        check(none, "srt: sin subtítulo fuera de intervalo");
+        m_subtitles.clear();
         setPlayheadUs(0);
     }
 

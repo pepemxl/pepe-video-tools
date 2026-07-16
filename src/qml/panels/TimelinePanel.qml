@@ -75,6 +75,43 @@ Rectangle {
 
                 Item { Layout.fillWidth: true }
 
+                // Añadir título (Ctrl+T)
+                Rectangle {
+                    width: ttRow.width + 18; height: 28; radius: 5
+                    color: ttHover.hovered ? Theme.hover : "transparent"; border.color: Theme.line; border.width: 1
+                    HoverHandler { id: ttHover }
+                    TapHandler { onTapped: TimelineModel.addTitleAtPlayhead() }
+                    Row { id: ttRow; anchors.centerIn: parent; spacing: 5
+                        Text { text: "T"; font.pixelSize: 12; font.weight: Font.Bold; font.family: Theme.sans
+                               color: Theme.textHi; anchors.verticalCenter: parent.verticalCenter }
+                        Text { text: "+ Título"; font.pixelSize: 11; font.family: Theme.sans
+                               color: Theme.textMid; anchors.verticalCenter: parent.verticalCenter } }
+                }
+
+                // Subtítulos: toggle CC + contador
+                Rectangle {
+                    width: srtRow.width + 16; height: 28; radius: 5; border.color: Theme.line; border.width: 1
+                    color: TimelineModel.subtitlesEnabled ? Theme.blue : Theme.hover
+                    TapHandler { onTapped: TimelineModel.subtitlesEnabled = !TimelineModel.subtitlesEnabled }
+                    Row { id: srtRow; anchors.centerIn: parent; spacing: 5
+                        Text { text: "CC"; font.pixelSize: 11; font.weight: Font.Bold; font.family: Theme.sans
+                               color: TimelineModel.subtitlesEnabled ? "#0c1420" : Theme.textMid; anchors.verticalCenter: parent.verticalCenter }
+                        Text { text: TimelineModel.subtitleCount; font.pixelSize: 10; font.family: Theme.mono
+                               color: TimelineModel.subtitlesEnabled ? "#0c1420" : Theme.textDim; anchors.verticalCenter: parent.verticalCenter } }
+                }
+                // Importar SRT
+                Rectangle { width: 26; height: 28; radius: 5; border.color: Theme.line; border.width: 1
+                    color: impHover.hovered ? Theme.hover : "transparent"
+                    HoverHandler { id: impHover }
+                    TapHandler { onTapped: TimelineModel.openImportSrtDialog() }
+                    Text { anchors.centerIn: parent; text: "↓"; font.pixelSize: 14; color: Theme.textMid } }
+                // Exportar SRT
+                Rectangle { width: 26; height: 28; radius: 5; border.color: Theme.line; border.width: 1
+                    color: expHover.hovered ? Theme.hover : "transparent"
+                    HoverHandler { id: expHover }
+                    TapHandler { onTapped: TimelineModel.openExportSrtDialog() }
+                    Text { anchors.centerIn: parent; text: "↑"; font.pixelSize: 14; color: Theme.textMid } }
+
                 // Marcador (añade en el playhead)
                 Rectangle {
                     width: 28; height: 28; radius: 5; color: mkHover.hovered ? Theme.hover : "transparent"

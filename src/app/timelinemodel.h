@@ -20,6 +20,10 @@ class TimelineModel : public QObject
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY changed)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY changed)
     Q_PROPERTY(int clipCount READ clipCount NOTIFY changed)
+    // Subtítulos (.srt)
+    Q_PROPERTY(int subtitleCount READ subtitleCount NOTIFY subtitlesChanged)
+    Q_PROPERTY(bool subtitlesEnabled READ subtitlesEnabled WRITE setSubtitlesEnabled NOTIFY subtitlesChanged)
+    Q_PROPERTY(QString activeSubtitle READ activeSubtitle NOTIFY playheadChanged)
     // Transformación del clip seleccionado (para el Inspector).
     Q_PROPERTY(bool hasSelection READ hasSelection NOTIFY selectionChanged)
     Q_PROPERTY(QString selectedName READ selectedName NOTIFY selectionChanged)
@@ -44,6 +48,13 @@ class TimelineModel : public QObject
     Q_PROPERTY(double selAudioGain READ selAudioGain NOTIFY selectionChanged)
     Q_PROPERTY(double selPan READ selPan NOTIFY selectionChanged)
     Q_PROPERTY(bool selAudioMute READ selAudioMute NOTIFY selectionChanged)
+    // Título del clip seleccionado (para el Inspector).
+    Q_PROPERTY(bool selIsTitle READ selIsTitle NOTIFY selectionChanged)
+    Q_PROPERTY(QString selTitleText READ selTitleText NOTIFY selectionChanged)
+    Q_PROPERTY(double selTitleSize READ selTitleSize NOTIFY selectionChanged)
+    Q_PROPERTY(QString selTitleColor READ selTitleColor NOTIFY selectionChanged)
+    Q_PROPERTY(int selTitleAlign READ selTitleAlign NOTIFY selectionChanged)
+    Q_PROPERTY(bool selTitleBar READ selTitleBar NOTIFY selectionChanged)
 
 public:
     explicit TimelineModel(QObject *parent = nullptr);
@@ -93,6 +104,15 @@ public:
         QVector<Keyframe> gainKf;
         QVector<Keyframe> panKf;
     };
+    // Título de texto renderizado como capa por el compositor (para kind == "title").
+    struct Title {
+        QString text = QStringLiteral("Título");
+        double sizePt = 0.09;                        // fracción de la altura de salida
+        QString color = QStringLiteral("#ffffff");
+        int align = 1;                               // 0=izquierda, 1=centro, 2=derecha
+        bool bar = false;                            // barra de fondo (lower third)
+        QString barColor = QStringLiteral("#cc0e0f13");
+    };
     struct Clip {
         quint64 id;
         int trackIndex;
@@ -109,6 +129,7 @@ public:
         Transform transform;
         Color color;
         Audio audio;
+        Title title;
     };
     // Instantánea de un clip con audio para la mezcla (consumida por el motor de audio).
     struct AudioClip {
@@ -129,6 +150,12 @@ public:
         QString color;
         QString note;
     };
+    // Un subtítulo: intervalo de tiempo + texto (puede ser multilínea).
+    struct Subtitle {
+        qint64 startUs;
+        qint64 endUs;
+        QString text;
+    };
     // Clip resuelto para el compositor en un instante dado.
     struct RenderClip {
         int trackIndex;
@@ -138,6 +165,7 @@ public:
         qint64 sourceUs;    // tiempo dentro del origen (inUs + offset)
         Transform transform;
         Color color;
+        Title title;        // texto del título (si kind == "title")
     };
 
     QVariantList tracks() const;
@@ -158,6 +186,13 @@ public:
     bool canUndo() const { return m_undo.canUndo(); }
     bool canRedo() const { return m_undo.canRedo(); }
     int clipCount() const { return int(m_clips.size()); }
+    int subtitleCount() const { return int(m_subtitles.size()); }
+    bool subtitlesEnabled() const { return m_subsEnabled; }
+    void setSubtitlesEnabled(bool on);
+    QString activeSubtitle() const;
+    // Parseo/serialización SRT (estáticos, para pruebas).
+    static QVector<Subtitle> parseSrt(const QString &content);
+    static QString serializeSrt(const QVector<Subtitle> &subs);
 
     bool hasSelection() const { return indexOfClip(m_selectedId) >= 0; }
     QString selectedName() const;
@@ -180,6 +215,12 @@ public:
     double selAudioGain() const;
     double selPan() const;
     bool selAudioMute() const;
+    bool selIsTitle() const;
+    QString selTitleText() const;
+    double selTitleSize() const;
+    QString selTitleColor() const;
+    int selTitleAlign() const;
+    bool selTitleBar() const;
 
     // Edición (con undo/redo)
     Q_INVOKABLE void selectClip(quint64 id);
@@ -216,6 +257,20 @@ public:
     // Mute/solo por pista (índice de pista). Afectan a la mezcla completa.
     Q_INVOKABLE void setTrackMute(int trackIndex, bool m);
     Q_INVOKABLE void setTrackSolo(int trackIndex, bool s);
+    // Título del clip seleccionado.
+    Q_INVOKABLE void setSelTitleText(const QString &text);
+    Q_INVOKABLE void setSelTitleSize(double v);
+    Q_INVOKABLE void setSelTitleColor(const QString &color);
+    Q_INVOKABLE void setSelTitleAlign(int align);
+    Q_INVOKABLE void setSelTitleBar(bool bar);
+    // Inserta un nuevo clip de título en la pista V3 (índice 0) en el playhead.
+    Q_INVOKABLE void addTitleAtPlayhead();
+
+    // Subtítulos (.srt): importar/exportar (con diálogo nativo en Windows) y toggle.
+    Q_INVOKABLE bool importSrt(const QString &path);
+    Q_INVOKABLE bool exportSrt(const QString &path);
+    Q_INVOKABLE void openImportSrtDialog();
+    Q_INVOKABLE void openExportSrtDialog();
     Q_INVOKABLE void splitAtFraction(quint64 id, double timelineFraction);
     Q_INVOKABLE void removeSelected();
     Q_INVOKABLE void moveClipToFraction(quint64 id, int trackIndex, double startFraction);
@@ -246,7 +301,8 @@ signals:
     void markersChanged();
     void snapChanged();
     void selectionChanged();
-    void audioChanged();   // cambió algo relevante para la mezcla de audio (rehornear)
+    void audioChanged();       // cambió algo relevante para la mezcla de audio (rehornear)
+    void subtitlesChanged();   // cambió la lista de subtítulos (recompón el PROGRAMA)
 
 private:
     friend class TimelineCommand;
@@ -273,6 +329,8 @@ private:
     QVector<Track> m_tracks;
     QVector<Clip> m_clips;
     QVector<Marker> m_markers;
+    QVector<Subtitle> m_subtitles;
+    bool m_subsEnabled = true;
     qint64 m_totalUs = 300LL * 1000000; // ventana de 5 min
     qint64 m_playheadUs = 0;
     quint64 m_selectedId = 0;

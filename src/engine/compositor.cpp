@@ -3,6 +3,8 @@
 #include "framegrabber.h"
 
 #include <QColor>
+#include <QFont>
+#include <QFontMetrics>
 #include <QPainter>
 #include <QThread>
 #include <QTimer>
@@ -97,6 +99,46 @@ void CompositorWorker::composeFrame(const RenderClipList &clips)
     emit frameReady(hasContent ? img : QImage(), hasContent);
 }
 
+// Dibuja el título de texto de un clip con su transformación (posición/escala/rotación/opacidad
+// ya aplicadas por el llamador salvo la posición, que se resuelve aquí desde posX/posY).
+void CompositorWorker::drawTitle(QPainter &p, const TimelineModel::RenderClip &rc) const
+{
+    const TimelineModel::Title &tt = rc.title;
+    if (tt.text.isEmpty())
+        return;
+    const TimelineModel::Transform &t = rc.transform;
+
+    const int fontPx = qMax(8, int(tt.sizePt * m_outSize.height() * t.scale));
+    QFont f;                       // familia por defecto del sistema (Segoe UI en Windows)
+    f.setPixelSize(fontPx);
+    f.setBold(true);
+    p.setFont(f);
+    QFontMetrics fm(f);
+
+    const QPointF center(m_outSize.width() * (0.5 + t.posX),
+                         m_outSize.height() * (0.5 + t.posY));
+    const int flags = Qt::TextWordWrap | Qt::AlignVCenter |
+        (tt.align == 0 ? Qt::AlignLeft : tt.align == 2 ? Qt::AlignRight : Qt::AlignHCenter);
+
+    // Caja de texto centrada en el origen (tras trasladar al centro): ancho del lienzo con margen.
+    const double margin = m_outSize.width() * 0.06;
+    const QRectF box(-m_outSize.width() / 2.0 + margin, -m_outSize.height() / 2.0,
+                     m_outSize.width() - 2 * margin, double(m_outSize.height()));
+    const QRectF tb = fm.boundingRect(box.toRect(), flags, tt.text); // rect real del texto
+
+    p.save();
+    p.translate(center);
+    if (t.rotation != 0.0)
+        p.rotate(t.rotation);
+    if (tt.bar) {
+        const double pad = fontPx * 0.3;
+        p.fillRect(tb.adjusted(-pad * 1.5, -pad, pad * 1.5, pad), QColor(tt.barColor));
+    }
+    p.setPen(QColor(tt.color));
+    p.drawText(box, flags, tt.text);
+    p.restore();
+}
+
 QImage CompositorWorker::renderFrame(const RenderClipList &clips, bool &hasContent)
 {
     QImage out(m_outSize, QImage::Format_RGBA8888);
@@ -115,7 +157,9 @@ QImage CompositorWorker::renderFrame(const RenderClipList &clips, bool &hasConte
         if (!frame.isNull())
             gradeImage(frame, rc.color); // corrección de color primaria
         p.setOpacity(t.opacity);
-        if (!frame.isNull()) {
+        if (rc.kind == QLatin1String("title")) {
+            drawTitle(p, rc);
+        } else if (!frame.isNull()) {
             const double fw = frame.width(), fh = frame.height();
             // Recorte del origen (fracciones por borde).
             const double cw = fw * qMax(0.02, 1.0 - t.cropL - t.cropR);
@@ -207,7 +251,58 @@ Compositor::Compositor(QObject *parent) : QObject(parent)
             chk(wc.red() > 100 && wc.blue() < 200, "temperatura cálida = +rojo / −azul");
         }
 
+        // Título: el texto blanco produce píxeles claros sobre fondo negro.
+        {
+            CompositorWorker tt2(QSize(256, 128));
+            TimelineModel::Title ttl;
+            ttl.text = QStringLiteral("ABC"); ttl.sizePt = 0.4; ttl.color = QStringLiteral("#ffffff");
+            TimelineModel::RenderClip rc{ 0, "title", "#000000", QString(), 0,
+                                          TimelineModel::Transform{}, TimelineModel::Color{}, ttl };
+            QImage ti = tt2.renderFrame({ rc }, hc);
+            int lit = 0;
+            for (int y = 0; y < ti.height(); ++y)
+                for (int x = 0; x < ti.width(); ++x)
+                    if (ti.pixelColor(x, y).red() > 200) ++lit;
+            chk(hc && lit > 20, "título: el texto blanco pinta píxeles");
+
+            // Barra de lower-third: fondo no negro alrededor del texto.
+            TimelineModel::Title ttb = ttl; ttb.bar = true; ttb.barColor = QStringLiteral("#ff2244aa");
+            TimelineModel::RenderClip rcb{ 0, "title", "#000000", QString(), 0,
+                                           TimelineModel::Transform{}, TimelineModel::Color{}, ttb };
+            QImage tib = tt2.renderFrame({ rcb }, hc);
+            int barPix = 0;
+            for (int y = 0; y < tib.height(); ++y)
+                for (int x = 0; x < tib.width(); ++x) {
+                    QColor pc = tib.pixelColor(x, y);
+                    if (pc.blue() > 120 && pc.red() < 120) ++barPix;
+                }
+            chk(barPix > 50, "título: barra de fondo (lower third) visible");
+        }
+
         qWarning("[COMP selftest] %d OK, %d FALLO", pass, fail);
+    }
+
+    // Volcado visual: renderiza un título con barra sobre un fondo y guarda un PNG.
+    if (qEnvironmentVariableIsSet("PVS_COMP_DUMP")) {
+        CompositorWorker w(QSize(640, 360));
+        bool hc = false;
+        TimelineModel::RenderClip bg{ 2, "video", "#2f5560", QString(), 0,
+                                      TimelineModel::Transform{}, TimelineModel::Color{}, TimelineModel::Title{} };
+        TimelineModel::Title ttl;
+        ttl.text = QStringLiteral("Mercado de Abastos"); ttl.bar = true; ttl.sizePt = 0.09;
+        TimelineModel::Transform tf; tf.posY = 0.28;
+        TimelineModel::RenderClip title{ 0, "title", "#000000", QString(), 0, tf,
+                                         TimelineModel::Color{}, ttl };
+        // Subtítulo en el tercio inferior (mismo camino de render que .srt).
+        TimelineModel::Title sub;
+        sub.text = QStringLiteral("— Bienvenidos al mercado"); sub.bar = true; sub.sizePt = 0.055;
+        sub.barColor = QStringLiteral("#b0000000");
+        TimelineModel::Transform sf; sf.posY = 0.40;
+        TimelineModel::RenderClip subC{ 0, "title", "#000000", QString(), 0, sf,
+                                        TimelineModel::Color{}, sub };
+        QImage f = w.renderFrame({ bg, title, subC }, hc);
+        f.save(qEnvironmentVariable("PVS_COMP_DUMP"));
+        qWarning("[COMP dump] guardado en %s", qUtf8Printable(qEnvironmentVariable("PVS_COMP_DUMP")));
     }
 }
 
@@ -228,6 +323,7 @@ void Compositor::setTimeline(TimelineModel *timeline)
         connect(m_timeline, &TimelineModel::playheadChanged, this, &Compositor::scheduleComposite);
         connect(m_timeline, &TimelineModel::changed, this, &Compositor::scheduleComposite);
         connect(m_timeline, &TimelineModel::selectionChanged, this, &Compositor::scheduleComposite);
+        connect(m_timeline, &TimelineModel::subtitlesChanged, this, &Compositor::scheduleComposite);
         scheduleComposite();
 
         // Hook de prueba: autoarranque de la reproducción del PROGRAMA tras cargar la UI.

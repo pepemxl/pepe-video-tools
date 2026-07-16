@@ -32,6 +32,9 @@ public:
     // por LUT de canal. Público y estático para pruebas.
     static void gradeImage(QImage &img, const TimelineModel::Color &c);
 
+    // Dibuja el título de texto de un clip (kind == "title") con su transformación.
+    void drawTitle(QPainter &p, const TimelineModel::RenderClip &rc) const;
+
 public slots:
     void composeFrame(const RenderClipList &clips);
 
