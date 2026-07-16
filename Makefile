@@ -46,7 +46,8 @@ export QML_IMPORT_PATH := $(QT_DIR)/qml
 export QML2_IMPORT_PATH := $(QT_DIR)/qml
 
 .PHONY: all help configure build rebuild run run-wait clean distclean deploy \
-        selftest selftest-audio selftest-comp selftest-tl
+        selftest selftest-audio selftest-comp selftest-tl selftest-export selftest-wave \
+        selftest-proj
 
 all: build
 
@@ -58,6 +59,8 @@ help:
 	@echo   rebuild     Recompila desde cero
 	@echo   run         Ejecuta la aplicacion
 	@echo   selftest    Auto-test de audio (deterministico, sin ventana)
+	@echo   selftest-wave  Auto-test de formas de onda (deterministico, sin ventana)
+	@echo   selftest-proj  Auto-test de proyecto guardar/abrir (deterministico, sin ventana)
 	@echo   deploy      Copia DLLs/plugins de Qt junto al .exe (windeployqt)
 	@echo   clean       Borra los objetos de compilacion
 	@echo   distclean   Borra por completo el directorio de build
@@ -94,6 +97,18 @@ run-wait: build
 # "QFontDatabase: Cannot find font directory".
 selftest selftest-audio: build
 	set "PVS_AUDIO_SELFTEST=1" && set "QT_QPA_PLATFORM=offscreen" && set "QT_QPA_FONTDIR=C:\Windows\Fonts" && set "QT_FORCE_STDERR_LOGGING=1" && "$(EXE_WIN)"
+
+## selftest-export: compone y codifica ~2 s a un MP4 temporal (H.264/AAC); termina solo
+selftest-export: build
+	set "PVS_EXPORT_SELFTEST=1" && set "QT_QPA_PLATFORM=offscreen" && set "QT_QPA_FONTDIR=C:\Windows\Fonts" && set "QT_FORCE_STDERR_LOGGING=1" && "$(EXE_WIN)"
+
+## selftest-wave: envolvente de PCM real (formas de onda del timeline); termina solo
+selftest-wave: build
+	set "PVS_WAVE_SELFTEST=1" && set "QT_QPA_PLATFORM=offscreen" && set "QT_QPA_FONTDIR=C:\Windows\Fonts" && set "QT_FORCE_STDERR_LOGGING=1" && "$(EXE_WIN)"
+
+## selftest-proj: guardar/abrir proyecto (round-trip, dirty); termina solo
+selftest-proj: build
+	set "PVS_PROJ_SELFTEST=1" && set "QT_QPA_PLATFORM=offscreen" && set "QT_QPA_FONTDIR=C:\Windows\Fonts" && set "QT_FORCE_STDERR_LOGGING=1" && "$(EXE_WIN)"
 
 ## selftest-comp: auto-test del compositor (abre la app; cierrala para terminar)
 selftest-comp: build

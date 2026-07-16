@@ -46,6 +46,9 @@ if /I "%TARGET%"=="selftest"       goto :selftest
 if /I "%TARGET%"=="selftest-audio" goto :selftest
 if /I "%TARGET%"=="selftest-comp"  goto :selftest_comp
 if /I "%TARGET%"=="selftest-tl"    goto :selftest_tl
+if /I "%TARGET%"=="selftest-export" goto :selftest_export
+if /I "%TARGET%"=="selftest-wave"  goto :selftest_wave
+if /I "%TARGET%"=="selftest-proj"  goto :selftest_proj
 if /I "%TARGET%"=="deploy"         goto :deploy
 if /I "%TARGET%"=="clean"          goto :clean
 if /I "%TARGET%"=="distclean"      goto :distclean
@@ -64,6 +67,8 @@ echo    rebuild     Recompila desde cero
 echo    run         Ejecuta la app (desacoplada; no bloquea la terminal)
 echo    run-wait    Ejecuta la app en primer plano (bloquea hasta cerrarla)
 echo    selftest    Auto-test de audio (deterministico, sin ventana)
+echo    selftest-wave   Auto-test de formas de onda (deterministico, sin ventana)
+echo    selftest-proj   Auto-test de proyecto guardar/abrir (deterministico, sin ventana)
 echo    selftest-comp / selftest-tl   Auto-tests que abren la app (cierrala para terminar)
 echo    deploy      Copia DLLs/plugins de Qt junto al .exe (windeployqt)
 echo    clean       Borra los objetos de compilacion
@@ -115,9 +120,36 @@ set "QT_FORCE_STDERR_LOGGING=1"
 "%EXE%"
 goto :end
 
+:selftest_export
+call :do_build || goto :fail
+set "PVS_EXPORT_SELFTEST=1"
+set "QT_QPA_PLATFORM=offscreen"
+set "QT_QPA_FONTDIR=C:\Windows\Fonts"
+set "QT_FORCE_STDERR_LOGGING=1"
+"%EXE%"
+goto :end
+
 :selftest_tl
 call :do_build || goto :fail
 set "PVS_TL_SELFTEST=1"
+set "QT_FORCE_STDERR_LOGGING=1"
+"%EXE%"
+goto :end
+
+:selftest_wave
+call :do_build || goto :fail
+set "PVS_WAVE_SELFTEST=1"
+set "QT_QPA_PLATFORM=offscreen"
+set "QT_QPA_FONTDIR=C:\Windows\Fonts"
+set "QT_FORCE_STDERR_LOGGING=1"
+"%EXE%"
+goto :end
+
+:selftest_proj
+call :do_build || goto :fail
+set "PVS_PROJ_SELFTEST=1"
+set "QT_QPA_PLATFORM=offscreen"
+set "QT_QPA_FONTDIR=C:\Windows\Fonts"
 set "QT_FORCE_STDERR_LOGGING=1"
 "%EXE%"
 goto :end

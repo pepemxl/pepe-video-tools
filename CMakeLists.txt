@@ -17,6 +17,8 @@ qt_add_executable(PepeVideoStudio
     src/app/mediapoolmodel.cpp
     src/app/timelinemodel.h
     src/app/timelinemodel.cpp
+    src/app/projectmodel.h
+    src/app/projectmodel.cpp
     src/app/videocontroller.h
     src/app/videocontroller.cpp
     src/engine/videodecoder.h
@@ -33,6 +35,10 @@ qt_add_executable(PepeVideoStudio
     src/engine/scopeview.cpp
     src/engine/audioengine.h
     src/engine/audioengine.cpp
+    src/engine/exporter.h
+    src/engine/exporter.cpp
+    src/engine/waveformprovider.h
+    src/engine/waveformprovider.cpp
 )
 
 qt_add_qml_module(PepeVideoStudio
