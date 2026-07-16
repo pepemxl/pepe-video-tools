@@ -88,8 +88,17 @@ Rectangle {
         property real from: -1
         property real to: 1
         property real defaultVal: 0
+        property string prop            // propiedad para keyframes (vacío = sin automatización)
         signal moved(real v)
+        readonly property bool animated: { TimelineModel.hasSelection; return sl.prop !== "" && TimelineModel.isKeyframed(sl.prop) }
+        readonly property bool kfHere: { TimelineModel.hasSelection; TimelineModel.playheadUs; return sl.prop !== "" && TimelineModel.hasKeyframeAtPlayhead(sl.prop) }
         Layout.fillWidth: true; spacing: 8
+        Rectangle {
+            visible: sl.prop !== ""; width: 8; height: 8; rotation: 45
+            color: sl.animated && sl.kfHere ? Theme.amber : "transparent"
+            border.color: sl.animated ? Theme.amber : Theme.textFaint; border.width: 1.5
+            TapHandler { onTapped: TimelineModel.toggleKeyframe(sl.prop) }
+        }
         Text { text: sl.label; color: Theme.textMid; font.pixelSize: 10; font.family: Theme.sans; Layout.preferredWidth: 56 }
         Rectangle {
             id: tr; Layout.fillWidth: true; height: 5; radius: 3; color: Theme.sunken
@@ -238,7 +247,7 @@ Rectangle {
                                  ? (20*Math.log10(TimelineModel.selAudioGain)).toFixed(1) + " dB" : "−∞ dB"
                         onEdited: (v) => TimelineModel.setSelAudioGain(v)
                     }
-                    CSlider { label: "Pan"; from: -1; to: 1; defaultVal: 0; value: TimelineModel.selPan
+                    CSlider { label: "Pan"; from: -1; to: 1; defaultVal: 0; prop: "audioPan"; value: TimelineModel.selPan
                               onMoved: (v) => TimelineModel.setSelPan(v) }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: Theme.lineSoft }

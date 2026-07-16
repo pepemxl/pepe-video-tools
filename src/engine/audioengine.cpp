@@ -226,6 +226,23 @@ QVector<float> AudioPlayer::decodeClipFloat(const AudioMixClip &clip)
     return out;
 }
 
+// decodeClipFloat con caché: la parte cara (decodificar+remuestrear) no depende de
+// ganancia/pan/mute, así que editar esos parámetros reutiliza el PCM ya decodificado.
+QVector<float> AudioPlayer::decodeCached(const AudioMixClip &clip)
+{
+    const QString key = clip.mediaPath + '|' + QString::number(clip.inUs) + '|'
+                        + QString::number(clip.durationUs) + '|'
+                        + QString::number(clip.speed, 'f', 4);
+    auto it = m_clipCache.constFind(key);
+    if (it != m_clipCache.constEnd())
+        return it.value();
+    if (m_clipCache.size() > 48)      // cota simple de memoria
+        m_clipCache.clear();
+    QVector<float> pcm = decodeClipFloat(clip);
+    m_clipCache.insert(key, pcm);
+    return pcm;
+}
+
 // Hornea la mezcla: suma todos los clips (ganancia/automatización/pan/velocidad) en un
 // master float, guarda la envolvente de pico por pista y convierte el master a S16.
 void AudioPlayer::bake(const QVector<AudioMixClip> &clips, qint64 endUs)
@@ -248,24 +265,31 @@ void AudioPlayer::bake(const QVector<AudioMixClip> &clips, qint64 endUs)
     m_env.resize(nTracks);
     for (auto &e : m_env) e.fill(0.0f, int(envLen));
 
+    // Ley de balance: unidad al centro, atenúa el canal opuesto hacia los extremos.
+    auto balance = [](double pan, double &gL, double &gR) {
+        gL = pan <= 0.0 ? 1.0 : 1.0 - pan;
+        gR = pan >= 0.0 ? 1.0 : 1.0 + pan;
+    };
+
     for (const AudioMixClip &c : clips) {
         if (c.mute) continue;
-        QVector<float> pcm = decodeClipFloat(c);
+        QVector<float> pcm = decodeCached(c);   // reutiliza PCM decodificado si no cambió
         const qint64 outSamples = pcm.size() / 2;
         if (outSamples <= 0) continue;
         const qint64 startSample = qint64((c.startUs / 1e6) * kOutRate);
-        // Ley de balance: unidad en el centro, atenúa el canal opuesto hacia los extremos.
-        const double gL = c.pan <= 0.0 ? 1.0 : 1.0 - c.pan;
-        const double gR = c.pan >= 0.0 ? 1.0 : 1.0 + c.pan;
+        double sgL, sgR; balance(c.pan, sgL, sgR); // ganancias estáticas de pan
         QVector<float> &env = m_env[qBound(0, c.trackIndex, nTracks - 1)];
-        const bool hasKf = !c.gainKf.isEmpty();
+        const bool hasGainKf = !c.gainKf.isEmpty();
+        const bool hasPanKf = !c.panKf.isEmpty();
+        const bool needSrc = hasGainKf || hasPanKf;
         for (qint64 k = 0; k < outSamples; ++k) {
             const qint64 idx = startSample + k;
             if (idx < 0 || idx >= totalSamples) continue;
-            double g = c.gain;
-            if (hasKf) {
+            double g = c.gain, gL = sgL, gR = sgR;
+            if (needSrc) {
                 const qint64 srcUs = c.inUs + qint64((k / double(kOutRate)) * 1e6 * c.speed);
-                g = evalGainKf(c.gainKf, c.gain, srcUs);
+                if (hasGainKf) g = evalGainKf(c.gainKf, c.gain, srcUs);
+                if (hasPanKf) balance(evalGainKf(c.panKf, c.pan, srcUs), gL, gR);
             }
             const float l = pcm[int(k * 2)] * float(g * gL);
             const float r = pcm[int(k * 2 + 1)] * float(g * gR);
@@ -284,18 +308,22 @@ void AudioPlayer::bake(const QVector<AudioMixClip> &clips, qint64 endUs)
         out[i] = int16_t(std::clamp(v, -32768, 32767));
     }
 
-    m_lufs = computeLufs(m_master, kOutRate);
+    m_lufs = kWeightAnalyze(m_master, kOutRate, kEnvHop, m_lufsEnv);
 
     if (!qEnvironmentVariableIsEmpty("PVS_AUDIO_DEBUG"))
         qInfo("[AUDIO] horneado: %lld clips, fin=%.1fs, master=%lld frames, LUFS=%.1f",
               qint64(clips.size()), endUs / 1e6, totalSamples, m_lufs);
 }
 
-// LUFS integrado aproximado (BS.1770: K-weighting + bloques de 400 ms con puerta absoluta).
-double AudioPlayer::computeLufs(const QByteArray &masterS16, int rate)
+// Filtra el master con K-weighting (BS.1770). Devuelve el LUFS integrado (bloques de 400 ms
+// con puerta absoluta) y llena shortEnv con el loudness a corto plazo (ventana de 400 ms)
+// por hop de envolvente, para el medidor en vivo.
+double AudioPlayer::kWeightAnalyze(const QByteArray &masterS16, int rate, int envHop,
+                                   QVector<float> &shortEnv)
 {
+    shortEnv.clear();
     const qint64 frames = masterS16.size() / 4;
-    if (frames <= 0) return -70.0;
+    if (frames <= 0 || envHop <= 0) return -70.0;
     const auto *s = reinterpret_cast<const int16_t *>(masterS16.constData());
 
     // Coeficientes K-weighting a 48 kHz (etapa shelving + paso-alto).
@@ -304,28 +332,39 @@ double AudioPlayer::computeLufs(const QByteArray &masterS16, int rate)
     Biquad hL{ 1.0, -2.0, 1.0, -1.99004745483398, 0.99007225036621 };
     Biquad hR = hL;
 
-    const qint64 block = qint64(0.4 * rate); // 400 ms
-    if (block <= 0) return -70.0;
-    double blockSum = 0.0;
-    qint64 blockN = 0;
-    QVector<double> means; // energía media por bloque (kept)
+    // Suma de energía K-weighted por hop (z = (Σl²+Σr²)/frames).
+    const qint64 hops = (frames + envHop - 1) / envHop;
+    QVector<double> hopSum(int(hops), 0.0);
+    QVector<int> hopFrames(int(hops), 0);
     for (qint64 i = 0; i < frames; ++i) {
-        double l = s[i * 2] / 32768.0;
-        double r = s[i * 2 + 1] / 32768.0;
-        l = hL.process(sL.process(l));
-        r = hR.process(sR.process(r));
-        blockSum += l * l + r * r;
-        if (++blockN >= block) {
-            const double z = blockSum / blockN;
-            const double loud = -0.691 + 10.0 * std::log10(z + 1e-12);
-            if (loud > -70.0) means.push_back(z);       // puerta absoluta
-            blockSum = 0.0; blockN = 0;
-        }
+        double l = hL.process(sL.process(s[i * 2] / 32768.0));
+        double r = hR.process(sR.process(s[i * 2 + 1] / 32768.0));
+        const int h = int(i / envHop);
+        hopSum[h] += l * l + r * r;
+        hopFrames[h] += 1;
     }
-    if (means.isEmpty()) return -70.0;
-    double sum = 0.0;
-    for (double z : means) sum += z;
-    return -0.691 + 10.0 * std::log10(sum / means.size() + 1e-12);
+
+    // Loudness a corto plazo: ventana deslizante de 400 ms (en hops).
+    const int win = qMax(1, int(qint64(0.4 * rate) / envHop));
+    shortEnv.resize(int(hops));
+    double wSum = 0.0; qint64 wFrames = 0;
+    for (int h = 0; h < hops; ++h) {
+        wSum += hopSum[h]; wFrames += hopFrames[h];
+        if (h >= win) { wSum -= hopSum[h - win]; wFrames -= hopFrames[h - win]; }
+        const double z = wFrames > 0 ? wSum / wFrames : 0.0;
+        shortEnv[h] = float(z > 0.0 ? -0.691 + 10.0 * std::log10(z) : -70.0);
+    }
+
+    // Integrado: bloques no solapados de 400 ms con puerta absoluta a −70 LUFS.
+    double sum = 0.0; int kept = 0;
+    for (int b = 0; b + win <= hops; b += win) {
+        double bs = 0.0; qint64 bf = 0;
+        for (int h = b; h < b + win; ++h) { bs += hopSum[h]; bf += hopFrames[h]; }
+        const double z = bf > 0 ? bs / bf : 0.0;
+        if (z > 0.0 && -0.691 + 10.0 * std::log10(z) > -70.0) { sum += z; ++kept; }
+    }
+    if (kept == 0) return -70.0;
+    return -0.691 + 10.0 * std::log10(sum / kept);
 }
 
 double AudioPlayer::envMax(int trackIndex) const
@@ -333,6 +372,13 @@ double AudioPlayer::envMax(int trackIndex) const
     if (trackIndex < 0 || trackIndex >= m_env.size()) return 0.0;
     double mx = 0.0;
     for (float v : m_env[trackIndex]) mx = qMax(mx, double(v));
+    return mx;
+}
+
+double AudioPlayer::lufsShortMax() const
+{
+    double mx = -70.0;
+    for (float v : m_lufsEnv) mx = qMax(mx, double(v));
     return mx;
 }
 
@@ -412,7 +458,8 @@ void AudioPlayer::pump()
     const qint64 ei = (m_cursor / 4) / kEnvHop;
     for (const auto &e : m_env)
         peaks.push_back(ei < e.size() ? double(e[int(ei)]) : 0.0);
-    emit meters(peaks, mL, mR);
+    const double shortLufs = ei < m_lufsEnv.size() ? double(m_lufsEnv[int(ei)]) : -70.0;
+    emit meters(peaks, mL, mR, shortLufs);
 }
 
 void AudioPlayer::stop()
@@ -426,7 +473,7 @@ void AudioPlayer::stop()
     }
     QVariantList zeros;
     for (int i = 0; i < m_env.size(); ++i) zeros.push_back(0.0);
-    emit meters(zeros, 0.0, 0.0);
+    emit meters(zeros, 0.0, 0.0, -70.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -449,10 +496,11 @@ AudioEngine::AudioEngine(QObject *parent) : QObject(parent)
     connect(this, &AudioEngine::requestStop, m_player, &AudioPlayer::stop);
 
     connect(m_player, &AudioPlayer::meters, this,
-            [this](const QVariantList &tp, double l, double r) {
+            [this](const QVariantList &tp, double l, double r, double shortLufs) {
                 m_trackPeaks = tp;
                 m_peakL = l;
                 m_peakR = r;
+                m_lufsShort = shortLufs;
                 emit levelChanged();
             });
     connect(m_player, &AudioPlayer::mixReady, this, [this](double lufs) {
@@ -554,6 +602,21 @@ double masterPeak(const QByteArray &m, int channel /*0=L,1=R,-1=ambos*/)
     return mx;
 }
 
+// Pico de un canal en el rango de tiempo [fromMs, toMs).
+double masterPeakRange(const QByteArray &m, int channel, double fromMs, double toMs)
+{
+    const qint64 frames = m.size() / 4;
+    const auto *s = reinterpret_cast<const int16_t *>(m.constData());
+    const qint64 a = qBound<qint64>(0, qint64(fromMs / 1000.0 * 48000), frames);
+    const qint64 b = qBound<qint64>(0, qint64(toMs / 1000.0 * 48000), frames);
+    double mx = 0.0;
+    for (qint64 i = a; i < b; ++i) {
+        if (channel != 1) mx = qMax(mx, std::fabs(s[i * 2] / 32768.0));
+        if (channel != 0) mx = qMax(mx, std::fabs(s[i * 2 + 1] / 32768.0));
+    }
+    return mx;
+}
+
 } // namespace
 
 int runAudioSelfTestIfRequested()
@@ -626,6 +689,37 @@ int runAudioSelfTestIfRequested()
         p.setMix({ clip(sil, 3, 0, 400000, 0, 1.0, 1.0, 0.0) }, 400000);
         check(masterPeak(p.master(), -1) < 0.02, "silencio: pico ≈ 0");
         check(p.lufs() <= -60.0, "silencio: LUFS ≈ puerta");
+    }
+
+    // 6) Mute del clip → el master queda en silencio.
+    {
+        AudioPlayer p;
+        AudioMixClip c = clip(tone, 3, 0, 400000, 0, 1.0, 1.0, 0.0);
+        c.mute = true;
+        p.setMix({ c }, 400000);
+        check(masterPeak(p.master(), -1) < 0.02, "mute del clip: master en silencio");
+    }
+
+    // 7) Automatización de pan: rampa de izquierda (−1) a derecha (+1) a lo largo del clip.
+    {
+        AudioPlayer p;
+        AudioMixClip c = clip(tone, 3, 0, 500000, 0, 1.0, 1.0, 0.0);
+        c.panKf = { { 0, -1.0 }, { 500000, 1.0 } }; // sourceUs → pan
+        p.setMix({ c }, 500000);
+        const double lStart = masterPeakRange(p.master(), 0, 0, 50);
+        const double rStart = masterPeakRange(p.master(), 1, 0, 50);
+        const double lEnd = masterPeakRange(p.master(), 0, 450, 500);
+        const double rEnd = masterPeakRange(p.master(), 1, 450, 500);
+        // La rampa mueve el balance: L decrece y R crece a lo largo del clip.
+        check(lStart > 0.4 && lStart > lEnd + 0.3, "pan automatizado: L decrece (izq→der)");
+        check(rEnd > 0.4 && rEnd > rStart + 0.3, "pan automatizado: R crece (izq→der)");
+    }
+
+    // 8) Envolvente de loudness a corto plazo poblada para un tono.
+    {
+        AudioPlayer p;
+        p.setMix({ clip(tone, 3, 0, 600000, 0, 1.0, 1.0, 0.0) }, 600000);
+        check(p.lufsShortMax() > -30.0, "LUFS a corto plazo: envolvente poblada");
     }
 
     QFile::remove(tone);

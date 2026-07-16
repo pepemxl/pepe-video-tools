@@ -59,6 +59,8 @@ int main(int argc, char *argv[])
             m.mute = a.mute;
             for (const TimelineModel::Keyframe &k : a.gainKf)
                 m.gainKf.push_back({ k.sourceUs, k.value });
+            for (const TimelineModel::Keyframe &k : a.panKf)
+                m.panKf.push_back({ k.sourceUs, k.value });
             mix.push_back(m);
         }
         audio.setMixData(mix, timelineModel.contentEndUs());

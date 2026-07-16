@@ -497,33 +497,35 @@ double TimelineModel::selAudioGain() const
 double TimelineModel::selPan() const
 {
     const int i = indexOfClip(m_selectedId);
-    return i >= 0 ? m_clips[i].audio.pan : 0.0;
+    if (i < 0) return 0.0;
+    const Clip &c = m_clips[i];
+    return evalKf(c.audio.panKf, c.audio.pan, srcAtPlayhead(c));
 }
 bool TimelineModel::selAudioMute() const
 {
     const int i = indexOfClip(m_selectedId);
     return i >= 0 && m_clips[i].audio.mute;
 }
+// Aplica un valor a una automatización de audio: al keyframe del playhead si está animada
+// (actualiza el cercano o inserta), o al valor estático si no hay keyframes.
+static void applyAudioKf(QVector<TimelineModel::Keyframe> &kf, double &staticVal, qint64 src, double v)
+{
+    if (kf.isEmpty()) { staticVal = v; return; }
+    const qint64 tol = 20000;
+    for (int i = 0; i < kf.size(); ++i)
+        if (qAbs(kf[i].sourceUs - src) < tol) { kf[i].value = v; return; }
+    kf.push_back({ src, v });
+    std::sort(kf.begin(), kf.end(),
+              [](const TimelineModel::Keyframe &a, const TimelineModel::Keyframe &b) { return a.sourceUs < b.sourceUs; });
+}
+
 void TimelineModel::setSelAudioGain(double v)
 {
     const int i = indexOfClip(m_selectedId);
     if (i < 0) return;
     v = qBound(0.0, v, 4.0);
     Clip &c = m_clips[i];
-    if (c.audio.gainKf.isEmpty()) {
-        c.audio.gain = v;
-    } else {
-        const qint64 src = srcAtPlayhead(c);
-        const qint64 tol = 20000;
-        bool hit = false;
-        for (int k = 0; k < c.audio.gainKf.size(); ++k)
-            if (qAbs(c.audio.gainKf[k].sourceUs - src) < tol) { c.audio.gainKf[k].value = v; hit = true; break; }
-        if (!hit) {
-            c.audio.gainKf.push_back({ src, v });
-            std::sort(c.audio.gainKf.begin(), c.audio.gainKf.end(),
-                      [](const Keyframe &a, const Keyframe &b) { return a.sourceUs < b.sourceUs; });
-        }
-    }
+    applyAudioKf(c.audio.gainKf, c.audio.gain, srcAtPlayhead(c), v);
     bumpSelection();
     emit audioChanged();
 }
@@ -532,10 +534,36 @@ void TimelineModel::setSelPan(double v)
     const int i = indexOfClip(m_selectedId);
     if (i < 0) return;
     v = qBound(-1.0, v, 1.0);
-    if (m_clips[i].audio.pan == v) return;
-    m_clips[i].audio.pan = v;
+    Clip &c = m_clips[i];
+    applyAudioKf(c.audio.panKf, c.audio.pan, srcAtPlayhead(c), v);
     bumpSelection();
     emit audioChanged();
+}
+void TimelineModel::setTrackMute(int trackIndex, bool m)
+{
+    if (trackIndex < 0 || trackIndex >= m_tracks.size()) return;
+    if (m_tracks[trackIndex].mute == m) return;
+    m_tracks[trackIndex].mute = m;
+    emit audioChanged();
+}
+void TimelineModel::setTrackSolo(int trackIndex, bool s)
+{
+    if (trackIndex < 0 || trackIndex >= m_tracks.size()) return;
+    if (m_tracks[trackIndex].solo == s) return;
+    m_tracks[trackIndex].solo = s;
+    emit audioChanged();
+}
+
+QVariantList TimelineModel::audioTracks() const
+{
+    QVariantList out;
+    for (int t = 0; t < m_tracks.size(); ++t) {
+        const Track &tr = m_tracks[t];
+        out.append(QVariantMap{
+            { "index", t }, { "name", tr.name }, { "kind", tr.kind },
+            { "mute", tr.mute }, { "solo", tr.solo } });
+    }
+    return out;
 }
 void TimelineModel::setSelAudioMute(bool m)
 {
@@ -549,12 +577,20 @@ void TimelineModel::setSelAudioMute(bool m)
 
 QVector<TimelineModel::AudioClip> TimelineModel::audioClips() const
 {
+    // Si alguna pista de audio está en solo, solo esas suenan.
+    bool anySolo = false;
+    for (const Track &t : m_tracks)
+        if (t.solo && t.kind == QLatin1String("audio")) { anySolo = true; break; }
+
     QVector<AudioClip> out;
     for (const Clip &c : m_clips) {
         if (c.mediaPath.isEmpty() || c.kind == QLatin1String("title"))
             continue;
+        const Track &tr = m_tracks.at(c.trackIndex);
+        // Mute efectivo: mute de clip, o mute de pista, o (hay solo y esta pista no lo está).
+        const bool eff = c.audio.mute || tr.mute || (anySolo && !tr.solo);
         out.push_back({ c.mediaPath, c.trackIndex, c.startUs, c.durationUs, c.inUs,
-                        c.speed, c.audio.gain, c.audio.pan, c.audio.mute, c.audio.gainKf });
+                        c.speed, c.audio.gain, c.audio.pan, eff, c.audio.gainKf, c.audio.panKf });
     }
     return out;
 }
@@ -563,17 +599,20 @@ void TimelineModel::toggleKeyframe(const QString &prop)
 {
     const int i = indexOfClip(m_selectedId);
     if (i < 0) return;
-    // Automatización de ganancia de audio (lista propia en Clip::Audio).
-    if (prop == QLatin1String("audioGain")) {
+    // Automatización de audio (listas propias en Clip::Audio).
+    if (prop == QLatin1String("audioGain") || prop == QLatin1String("audioPan")) {
         Clip &c = m_clips[i];
+        const bool isPan = prop == QLatin1String("audioPan");
+        QVector<Keyframe> &kfa = isPan ? c.audio.panKf : c.audio.gainKf;
+        const double sv = isPan ? c.audio.pan : c.audio.gain;
         const qint64 src = srcAtPlayhead(c);
         const qint64 tol = 20000;
-        for (int k = 0; k < c.audio.gainKf.size(); ++k)
-            if (qAbs(c.audio.gainKf[k].sourceUs - src) < tol) {
-                c.audio.gainKf.remove(k); bumpSelection(); emit audioChanged(); return;
+        for (int k = 0; k < kfa.size(); ++k)
+            if (qAbs(kfa[k].sourceUs - src) < tol) {
+                kfa.remove(k); bumpSelection(); emit audioChanged(); return;
             }
-        c.audio.gainKf.push_back({ src, evalKf(c.audio.gainKf, c.audio.gain, src) });
-        std::sort(c.audio.gainKf.begin(), c.audio.gainKf.end(),
+        kfa.push_back({ src, evalKf(kfa, sv, src) });
+        std::sort(kfa.begin(), kfa.end(),
                   [](const Keyframe &a, const Keyframe &b) { return a.sourceUs < b.sourceUs; });
         bumpSelection();
         emit audioChanged();
@@ -600,6 +639,8 @@ bool TimelineModel::isKeyframed(const QString &prop) const
     if (i < 0) return false;
     if (prop == QLatin1String("audioGain"))
         return !m_clips[i].audio.gainKf.isEmpty();
+    if (prop == QLatin1String("audioPan"))
+        return !m_clips[i].audio.panKf.isEmpty();
     const QVector<Keyframe> *kf = kfVec(m_clips[i].transform, prop);
     return kf && !kf->isEmpty();
 }
@@ -610,7 +651,8 @@ bool TimelineModel::hasKeyframeAtPlayhead(const QString &prop) const
     if (i < 0) return false;
     const QVector<Keyframe> *kf =
         prop == QLatin1String("audioGain") ? &m_clips[i].audio.gainKf
-                                           : kfVec(m_clips[i].transform, prop);
+        : prop == QLatin1String("audioPan") ? &m_clips[i].audio.panKf
+                                            : kfVec(m_clips[i].transform, prop);
     if (!kf) return false;
     const qint64 src = srcAtPlayhead(m_clips[i]);
     for (const Keyframe &k : *kf)

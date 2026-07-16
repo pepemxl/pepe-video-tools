@@ -12,6 +12,7 @@ class TimelineModel : public QObject
 {
     Q_OBJECT
     Q_PROPERTY(QVariantList tracks READ tracks NOTIFY changed)
+    Q_PROPERTY(QVariantList audioTracks READ audioTracks NOTIFY audioChanged)
     Q_PROPERTY(QVariantList markers READ markers NOTIFY markersChanged)
     Q_PROPERTY(double playheadFraction READ playheadFraction NOTIFY playheadChanged)
     Q_PROPERTY(qint64 playheadUs READ playheadUs NOTIFY playheadChanged)
@@ -52,6 +53,8 @@ public:
         QString kind;       // "video" | "audio"
         QString idColor;    // color de la etiqueta
         int height;
+        bool mute = false;  // silenciar la pista en la mezcla
+        bool solo = false;  // aislar: si alguna pista está en solo, solo suenan las solo
     };
     // Un keyframe: valor de una propiedad en un tiempo de origen (sourceUs).
     struct Keyframe {
@@ -88,6 +91,7 @@ public:
         double pan = 0.0;
         bool mute = false;
         QVector<Keyframe> gainKf;
+        QVector<Keyframe> panKf;
     };
     struct Clip {
         quint64 id;
@@ -118,6 +122,7 @@ public:
         double pan;
         bool mute;
         QVector<Keyframe> gainKf;
+        QVector<Keyframe> panKf;
     };
     struct Marker {
         qint64 timeUs;
@@ -136,6 +141,7 @@ public:
     };
 
     QVariantList tracks() const;
+    QVariantList audioTracks() const;   // estado mute/solo por pista (para el mezclador)
     QVariantList markers() const;
     // Clips de vídeo activos en el tiempo us, ordenados de abajo (V1) a arriba (V3)
     // para pintarlos en ese orden. Uso del compositor (no expuesto a QML).
@@ -207,6 +213,9 @@ public:
     Q_INVOKABLE void setSelAudioGain(double v);
     Q_INVOKABLE void setSelPan(double v);
     Q_INVOKABLE void setSelAudioMute(bool m);
+    // Mute/solo por pista (índice de pista). Afectan a la mezcla completa.
+    Q_INVOKABLE void setTrackMute(int trackIndex, bool m);
+    Q_INVOKABLE void setTrackSolo(int trackIndex, bool s);
     Q_INVOKABLE void splitAtFraction(quint64 id, double timelineFraction);
     Q_INVOKABLE void removeSelected();
     Q_INVOKABLE void moveClipToFraction(quint64 id, int trackIndex, double startFraction);

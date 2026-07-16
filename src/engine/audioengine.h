@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QHash>
 #include <QMetaType>
 #include <QObject>
 #include <QPair>
@@ -30,6 +31,7 @@ struct AudioMixClip {
     double pan = 0.0;        // -1 izq … +1 der
     bool mute = false;
     QVector<QPair<qint64, double>> gainKf; // automatización de ganancia (sourceUs, valor)
+    QVector<QPair<qint64, double>> panKf;  // automatización de pan (sourceUs, valor)
 };
 Q_DECLARE_METATYPE(AudioMixClip)
 
@@ -56,6 +58,7 @@ public:
     double lufs() const { return m_lufs; }
     int trackCount() const { return int(m_env.size()); }
     double envMax(int trackIndex) const; // pico máximo de la envolvente de una pista
+    double lufsShortMax() const;         // máximo de la envolvente de loudness a corto plazo
 
 public slots:
     void setMix(const QVector<AudioMixClip> &clips, qint64 endUs);
@@ -63,7 +66,7 @@ public slots:
     void stop();
 
 signals:
-    void meters(const QVariantList &trackPeaks, double masterL, double masterR);
+    void meters(const QVariantList &trackPeaks, double masterL, double masterR, double shortLufs);
     void mixReady(double lufs);
     void finished();
 
@@ -72,7 +75,11 @@ private:
     bool ensureSwr();
     void seekMs(qint64 ms);
     void bake(const QVector<AudioMixClip> &clips, qint64 endUs);
-    static double computeLufs(const QByteArray &masterS16, int rate);
+    // Filtra el master con K-weighting: devuelve el LUFS integrado (puerta) y llena la
+    // envolvente de loudness a corto plazo (ventana de 400 ms) por hop de envolvente.
+    static double kWeightAnalyze(const QByteArray &masterS16, int rate,
+                                 int envHop, QVector<float> &shortEnv);
+    QVector<float> decodeCached(const AudioMixClip &clip); // decodeClipFloat con caché
 
     // Decodificador abierto (para openSource/decodeChunk/decodeClipFloat).
     AVFormatContext *m_fmt = nullptr;
@@ -87,7 +94,9 @@ private:
     // Mezcla horneada.
     QByteArray m_master;                 // PCM S16 estéreo intercalado a 48 kHz
     QVector<QVector<float>> m_env;       // envolvente de pico por pista (hop de 10 ms)
+    QVector<float> m_lufsEnv;            // loudness a corto plazo por hop (para el medidor en vivo)
     double m_lufs = -70.0;
+    QHash<QString, QVector<float>> m_clipCache; // PCM decodificado por clip (evita re-decodificar)
 
     // Reproducción.
     QAudioSink *m_sink = nullptr;
@@ -108,6 +117,7 @@ class AudioEngine : public QObject
     Q_PROPERTY(double peakR READ peakR NOTIFY levelChanged)
     Q_PROPERTY(QVariantList trackPeaks READ trackPeaks NOTIFY levelChanged)
     Q_PROPERTY(double lufs READ lufs NOTIFY lufsChanged)
+    Q_PROPERTY(double lufsShort READ lufsShort NOTIFY levelChanged)
     Q_PROPERTY(bool playing READ playing NOTIFY playingChanged)
 public:
     explicit AudioEngine(QObject *parent = nullptr);
@@ -120,6 +130,7 @@ public:
     double peakR() const { return m_peakR; }
     QVariantList trackPeaks() const { return m_trackPeaks; }
     double lufs() const { return m_lufs; }
+    double lufsShort() const { return m_lufsShort; }
     bool playing() const { return m_playing; }
     Q_INVOKABLE double trackPeak(int trackIndex) const;
 
@@ -144,6 +155,7 @@ private:
     double m_peakL = 0.0, m_peakR = 0.0;
     QVariantList m_trackPeaks;
     double m_lufs = -70.0;
+    double m_lufsShort = -70.0;
     bool m_playing = false;
 };
 

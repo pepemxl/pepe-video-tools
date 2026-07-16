@@ -346,7 +346,9 @@ Rectangle {
                         Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.line }
                         Text { anchors.left: parent.left; anchors.leftMargin: 10; anchors.verticalCenter: parent.verticalCenter; text: "Mezclador"; color: Theme.textHi; font.pixelSize: 11; font.weight: Font.DemiBold; font.family: Theme.sans }
                         Text { anchors.right: parent.right; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter
-                            text: (Audio.lufs <= -60 ? "−∞" : Audio.lufs.toFixed(1)) + " LUFS"
+                            // En reproducción muestra el loudness momentáneo (corto plazo); en reposo, el integrado.
+                            readonly property real lu: Audio.playing ? Audio.lufsShort : Audio.lufs
+                            text: (lu <= -60 ? "−∞" : lu.toFixed(1)) + (Audio.playing ? " LUFS-M" : " LUFS-I")
                             color: Theme.textDim; font.pixelSize: 10; font.family: Theme.sans }
                     }
                     RowLayout {
@@ -359,6 +361,7 @@ Rectangle {
                                 { id: "MAIN", col: Theme.amber, trk: -1, cap: 0.28, db: "0.0", main: true }
                             ]
                             delegate: ColumnLayout {
+                                id: chan
                                 required property var modelData
                                 // Nivel real del motor de audio: MAIN = pico del master; pistas = envolvente A1–A3.
                                 readonly property real lvl: modelData.main
@@ -383,9 +386,25 @@ Rectangle {
                                 Text { Layout.alignment: Qt.AlignHCenter
                                     text: lvl > 0.0001 ? (20*Math.log10(lvl)).toFixed(1) : "−∞"
                                     color: modelData.main ? Theme.amber : Theme.textMid; font.pixelSize: 8; font.family: Theme.mono }
-                                Row { Layout.alignment: Qt.AlignHCenter; spacing: 3
-                                    Repeater { model: ["M","S"]; delegate: Rectangle { required property string modelData; width: 15; height: 14; radius: 3; color: Theme.hover2
-                                        Text { anchors.centerIn: parent; text: modelData; font.pixelSize: 8; color: Theme.textDim } } } }
+                                Row { Layout.alignment: Qt.AlignHCenter; spacing: 3; visible: chan.modelData.trk >= 0
+                                    Repeater { model: ["M","S"]
+                                        delegate: Rectangle {
+                                            required property string modelData
+                                            readonly property bool isMute: modelData === "M"
+                                            readonly property var at: TimelineModel.audioTracks[chan.modelData.trk]
+                                            readonly property bool on: at ? (isMute ? at.mute : at.solo) : false
+                                            width: 15; height: 14; radius: 3
+                                            color: on ? (isMute ? Theme.amber : Theme.blue) : Theme.hover2
+                                            Text { anchors.centerIn: parent; text: parent.modelData; font.pixelSize: 8
+                                                   color: parent.on ? "#101216" : Theme.textDim }
+                                            TapHandler {
+                                                onTapped: parent.isMute
+                                                    ? TimelineModel.setTrackMute(chan.modelData.trk, !parent.at.mute)
+                                                    : TimelineModel.setTrackSolo(chan.modelData.trk, !parent.at.solo)
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
