@@ -22,10 +22,13 @@ if not defined FFMPEG_ROOT set "FFMPEG_ROOT=C:/FFMPEG"
 if not defined BUILD_DIR   set "BUILD_DIR=build/mingw"
 if not defined CONFIG      set "CONFIG=Debug"
 
-rem Qt, el compilador y Ninja deben estar en el PATH para configurar/compilar y
-rem para que la app cargue las DLLs de Qt en tiempo de ejecucion.
+rem Qt, el compilador y Ninja en el PATH (para configurar/compilar y cargar las DLLs).
+rem Importante: al fijar QT_PLUGIN_PATH hay que fijar TAMBIEN QML_IMPORT_PATH, o Qt deja
+rem de autodetectar los modulos QML (QtQuick.Controls) y los menus no cargarian.
 set "PATH=%QT_DIR%\bin;%MINGW_DIR%\bin;%NINJA_DIR%;%PATH%"
 set "QT_PLUGIN_PATH=%QT_DIR%\plugins"
+set "QML_IMPORT_PATH=%QT_DIR%\qml"
+set "QML2_IMPORT_PATH=%QT_DIR%\qml"
 
 rem Ruta del ejecutable con barras invertidas (para poder lanzarlo desde cmd).
 set "EXE=%BUILD_DIR:/=\%\PepeVideoStudio.exe"
@@ -38,6 +41,7 @@ if /I "%TARGET%"=="configure"      goto :configure
 if /I "%TARGET%"=="build"          goto :build
 if /I "%TARGET%"=="rebuild"        goto :rebuild
 if /I "%TARGET%"=="run"            goto :run
+if /I "%TARGET%"=="run-wait"       goto :run-wait
 if /I "%TARGET%"=="selftest"       goto :selftest
 if /I "%TARGET%"=="selftest-audio" goto :selftest
 if /I "%TARGET%"=="selftest-comp"  goto :selftest_comp
@@ -57,7 +61,8 @@ echo PepeVideo Studio - objetivos disponibles:
 echo    configure   Genera el proyecto (CMake + Ninja)
 echo    build       Compila (configura si hace falta)  [por defecto]
 echo    rebuild     Recompila desde cero
-echo    run         Ejecuta la aplicacion
+echo    run         Ejecuta la app (desacoplada; no bloquea la terminal)
+echo    run-wait    Ejecuta la app en primer plano (bloquea hasta cerrarla)
 echo    selftest    Auto-test de audio (deterministico, sin ventana)
 echo    selftest-comp / selftest-tl   Auto-tests que abren la app (cierrala para terminar)
 echo    deploy      Copia DLLs/plugins de Qt junto al .exe (windeployqt)
@@ -81,6 +86,13 @@ call :do_build
 goto :end
 
 :run
+call :do_build || goto :fail
+rem Lanza la app desacoplada (start) para que la terminal no quede bloqueada
+rem esperando a que se cierre la ventana. Usa "make run-wait" para bloquear.
+start "PepeVideo Studio" "%EXE%"
+goto :end
+
+:run-wait
 call :do_build || goto :fail
 "%EXE%"
 goto :end

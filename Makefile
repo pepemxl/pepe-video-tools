@@ -37,12 +37,15 @@ EXE     = $(BUILD_DIR)/PepeVideoStudio.exe
 EXE_WIN = $(subst /,\,$(EXE))
 CACHE   = $(BUILD_DIR)/CMakeCache.txt
 
-# Qt, el compilador y Ninja deben estar en el PATH para configurar, compilar y
-# ejecutar (las DLLs de Qt se cargan desde $(QT_DIR)/bin en tiempo de ejecucion).
+# Qt, el compilador y Ninja en el PATH (para configurar, compilar y cargar las DLLs).
+# Al fijar QT_PLUGIN_PATH hay que fijar TAMBIEN QML_IMPORT_PATH, o Qt deja de
+# autodetectar los modulos QML (QtQuick.Controls) y los menus no cargarian.
 export PATH := $(QT_DIR)/bin;$(MINGW_DIR)/bin;$(NINJA_DIR);$(PATH)
 export QT_PLUGIN_PATH := $(QT_DIR)/plugins
+export QML_IMPORT_PATH := $(QT_DIR)/qml
+export QML2_IMPORT_PATH := $(QT_DIR)/qml
 
-.PHONY: all help configure build rebuild run clean distclean deploy \
+.PHONY: all help configure build rebuild run run-wait clean distclean deploy \
         selftest selftest-audio selftest-comp selftest-tl
 
 all: build
@@ -77,8 +80,12 @@ build: $(CACHE)
 ## rebuild: limpia y recompila
 rebuild: clean build
 
-## run: ejecuta la aplicacion compilada
+## run: ejecuta la aplicacion (desacoplada; la terminal no queda bloqueada)
 run: build
+	start "PepeVideo Studio" "$(EXE_WIN)"
+
+## run-wait: ejecuta la app en primer plano (bloquea hasta cerrarla)
+run-wait: build
 	"$(EXE_WIN)"
 
 ## selftest: auto-test de audio (decodificacion/mezcla/LUFS); termina solo

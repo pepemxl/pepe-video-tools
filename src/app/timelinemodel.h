@@ -272,6 +272,8 @@ public:
     Q_INVOKABLE void openImportSrtDialog();
     Q_INVOKABLE void openExportSrtDialog();
     Q_INVOKABLE void splitAtFraction(quint64 id, double timelineFraction);
+    // Corta el clip seleccionado por el playhead (si este cae dentro del clip).
+    Q_INVOKABLE void splitSelectedAtPlayhead();
     Q_INVOKABLE void removeSelected();
     Q_INVOKABLE void moveClipToFraction(quint64 id, int trackIndex, double startFraction);
     // Recorta el clip arrastrando un borde. leftEdge = borde izquierdo (entrada);
@@ -294,6 +296,8 @@ public:
     // Playhead
     Q_INVOKABLE void setPlayheadFraction(double f);
     Q_INVOKABLE void setPlayheadUs(qint64 us);
+    Q_INVOKABLE void goToStart() { setPlayheadUs(0); }
+    Q_INVOKABLE void goToEnd() { setPlayheadUs(contentEndUs()); }
 
 signals:
     void changed();

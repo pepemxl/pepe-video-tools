@@ -969,6 +969,17 @@ void TimelineModel::splitAtFraction(quint64 id, double timelineFraction)
         }));
 }
 
+void TimelineModel::splitSelectedAtPlayhead()
+{
+    const int idx = indexOfClip(m_selectedId);
+    if (idx < 0)
+        return;
+    const Clip &c = m_clips.at(idx);
+    if (m_playheadUs <= c.startUs || m_playheadUs >= c.startUs + c.durationUs)
+        return; // el playhead no cae dentro del clip seleccionado
+    splitAtFraction(m_selectedId, double(m_playheadUs) / m_totalUs);
+}
+
 void TimelineModel::removeSelected()
 {
     const int idx = indexOfClip(m_selectedId);

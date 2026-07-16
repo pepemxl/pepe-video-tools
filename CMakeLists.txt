@@ -41,6 +41,7 @@ qt_add_qml_module(PepeVideoStudio
         src/qml/Main.qml
         src/qml/components/TitleBar.qml
         src/qml/components/TopBar.qml
+        src/qml/components/MenuButton.qml
         src/qml/components/StatusBar.qml
         src/qml/panels/MediaPool.qml
         src/qml/panels/MonitorsRow.qml

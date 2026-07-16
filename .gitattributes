@@ -1,0 +1,8 @@
+# Los .bat de Windows requieren finales de línea CRLF o cmd.exe corrompe la
+# resolución de etiquetas goto/call. Forzar CRLF al hacer checkout.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Los Makefiles y scripts POSIX usan LF.
+Makefile text eol=lf
+*.sh text eol=lf
