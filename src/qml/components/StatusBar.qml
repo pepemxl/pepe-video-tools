@@ -1,11 +1,67 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls.Basic as C
 import PepeVideo
 
 // Barra de estado / exportación.
 Rectangle {
+    id: sbRoot
     height: 38
     color: Theme.bg3
+
+    // Presets de exportación (nombre + resolución + fps + bitrate).
+    readonly property var exportPresets: [
+        { n: "YouTube 1080p", w: 1920, h: 1080, fps: 30.0, mbps: 12 },
+        { n: "YouTube 4K",    w: 3840, h: 2160, fps: 30.0, mbps: 40 },
+        { n: "Vimeo 1080p",   w: 1920, h: 1080, fps: 30.0, mbps: 16 },
+        { n: "Borrador 720p", w: 1280, h: 720,  fps: 30.0, mbps: 8 }
+    ]
+
+    // Chip con desplegable (se abre hacia arriba). Sin opciones = solo informativo.
+    component Chip: Rectangle {
+        id: chip
+        property string label
+        property color labelColor: Theme.text
+        property var options: []      // etiquetas del desplegable
+        property string current: ""   // opción marcada como activa
+        signal picked(int index)
+        readonly property bool interactive: options.length > 0 && !Export.running
+        height: 26; width: chipContent.width + 18; radius: 5
+        color: chipHover.hovered && interactive ? Theme.hover : Theme.sunken
+        border.color: chipPop.visible ? Theme.amber : Theme.line; border.width: 1
+        HoverHandler { id: chipHover }
+        TapHandler { enabled: chip.interactive; onTapped: chipPop.open() }
+        Row {
+            id: chipContent; anchors.centerIn: parent; spacing: 5
+            Text { text: chip.label; color: chip.labelColor; font.pixelSize: 10; font.family: Theme.sans; anchors.verticalCenter: parent.verticalCenter }
+            Text { visible: chip.options.length > 0; text: "▾"; color: Theme.textFaint; font.pixelSize: 10; anchors.verticalCenter: parent.verticalCenter }
+        }
+        C.Popup {
+            id: chipPop
+            y: -implicitHeight - 6
+            padding: 4
+            background: Rectangle { color: Theme.panel2; border.color: Theme.line; border.width: 1; radius: 6 }
+            contentItem: Column {
+                spacing: 1
+                Repeater {
+                    model: chip.options
+                    delegate: Rectangle {
+                        required property string modelData
+                        required property int index
+                        readonly property bool isCurrent: modelData === chip.current
+                        width: 150; height: 24; radius: 4
+                        color: optHover.hovered ? Theme.hover : "transparent"
+                        HoverHandler { id: optHover }
+                        TapHandler { onTapped: { chip.picked(index); chipPop.close() } }
+                        Text { x: 8; anchors.verticalCenter: parent.verticalCenter; text: modelData
+                               color: parent.isCurrent ? Theme.amber : Theme.textHi
+                               font.pixelSize: 11; font.family: Theme.sans
+                               font.weight: parent.isCurrent ? Font.DemiBold : Font.Normal }
+                    }
+                }
+            }
+        }
+    }
 
     Rectangle { anchors.top: parent.top; width: parent.width; height: 1; color: Theme.line }
 
@@ -45,23 +101,36 @@ Rectangle {
 
         Text { text: "Exportar:"; color: Theme.textDim; font.pixelSize: 11; font.family: Theme.sans }
 
-        Repeater {
-            model: [
-                { t: "MP4 · H.264", c: Theme.text },
-                { t: "1920×1080",  c: Theme.text },
-                { t: "24 Mb/s",    c: Theme.text },
-                { t: "Preset: YouTube 1080p", c: Theme.blue }
-            ]
-            delegate: Rectangle {
-                required property var modelData
-                height: 26; width: chipRow.width + 18; radius: 5
-                color: Theme.sunken; border.color: Theme.line; border.width: 1
-                Row {
-                    id: chipRow; anchors.centerIn: parent; spacing: 5
-                    Text { text: modelData.t; color: modelData.c; font.pixelSize: 10; font.family: Theme.sans; anchors.verticalCenter: parent.verticalCenter }
-                    Text { text: "▾"; color: Theme.textFaint; font.pixelSize: 10; anchors.verticalCenter: parent.verticalCenter }
-                }
-            }
+        // Formato (fijo: único códec de salida disponible)
+        Chip { label: "MP4 · H.264" }
+        // Resolución
+        Chip {
+            label: Export.outWidth + "×" + Export.outHeight
+            current: label
+            options: ["1280×720", "1920×1080", "2560×1440", "3840×2160"]
+            onPicked: (i) => { const p = options[i].split("×"); Export.setResolution(parseInt(p[0]), parseInt(p[1])) }
+        }
+        // Fotogramas por segundo
+        Chip {
+            label: (Export.outFps % 1 !== 0 ? Export.outFps.toFixed(2) : Export.outFps.toFixed(0)) + " fps"
+            current: label
+            options: ["23.98 fps", "24 fps", "25 fps", "29.97 fps", "30 fps", "60 fps"]
+            onPicked: (i) => Export.outFps = parseFloat(options[i])
+        }
+        // Bitrate de vídeo
+        Chip {
+            label: Export.videoMbps + " Mb/s"
+            current: label
+            options: ["8 Mb/s", "12 Mb/s", "16 Mb/s", "24 Mb/s", "40 Mb/s"]
+            onPicked: (i) => Export.videoMbps = parseInt(options[i])
+        }
+        // Preset (fija resolución + fps + bitrate de una vez)
+        Chip {
+            label: "Preset: " + Export.presetName
+            labelColor: Theme.blue
+            current: Export.presetName
+            options: sbRoot.exportPresets.map(p => p.n)
+            onPicked: (i) => { const p = sbRoot.exportPresets[i]; Export.applyPreset(p.n, p.w, p.h, p.fps, p.mbps) }
         }
 
         // Botón exportar (abre el diálogo nativo de guardado y renderiza en 2.º plano).

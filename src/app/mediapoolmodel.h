@@ -23,6 +23,13 @@ struct MediaItem {
     QString thumb;       // ruta de miniatura (vacío mientras se genera)
     QString tex;         // color placeholder cuando no hay miniatura
     bool inUse = false;
+    int bin = -1;        // índice del bin (carpeta) al que pertenece; -1 = sin bin
+};
+
+// Un bin (carpeta) del Media Pool.
+struct MediaBin {
+    QString name;
+    QString color;   // color de la etiqueta
 };
 
 // Modelo del Media Pool: importa medios reales con ffprobe/ffmpeg.
@@ -33,6 +40,10 @@ class MediaPoolModel : public QAbstractListModel
     // Filtro de búsqueda (caja "Buscar clips…"): solo se muestran los medios cuyo
     // nombre contiene el texto (sin distinguir mayúsculas). Vacío = todos.
     Q_PROPERTY(QString filter READ filter WRITE setFilter NOTIFY filterChanged)
+    // Bins (carpetas): lista {name, color, count, index} y bin activo (-1 = todos).
+    // El bin activo filtra la rejilla junto con el texto de búsqueda.
+    Q_PROPERTY(QVariantList bins READ bins NOTIFY binsChanged)
+    Q_PROPERTY(int currentBin READ currentBin WRITE setCurrentBin NOTIFY currentBinChanged)
     Q_PROPERTY(int selectedIndex READ selectedIndex WRITE setSelectedIndex NOTIFY selectedChanged)
     Q_PROPERTY(QString selectedName READ selectedName NOTIFY selectedChanged)
     Q_PROPERTY(QString selectedLine1 READ selectedLine1 NOTIFY selectedChanged)
@@ -42,7 +53,7 @@ public:
     enum Roles {
         NameRole = Qt::UserRole + 1,
         PathRole, KindRole, DurationRole, ResolutionRole,
-        FpsRole, CodecRole, BitrateRole, ThumbRole, TexRole, InUseRole
+        FpsRole, CodecRole, BitrateRole, ThumbRole, TexRole, InUseRole, IdRole
     };
 
     explicit MediaPoolModel(QObject *parent = nullptr);
@@ -73,11 +84,29 @@ public:
     QStringList mediaPaths() const;
     bool containsPath(const QString &path) const;
 
+    // --- Bins (carpetas) ---
+    QVariantList bins() const;
+    int currentBin() const { return m_currentBin; }
+    void setCurrentBin(int bin);
+    // Crea un bin (nombre vacío = "Bin N"); devuelve su índice.
+    Q_INVOKABLE int addBin(const QString &name);
+    // Elimina un bin: sus medios quedan sin bin y los índices superiores bajan.
+    Q_INVOKABLE void removeBin(int index);
+    // Asigna el medio `id` al bin `binIndex` (-1 = quitar del bin).
+    Q_INVOKABLE void moveToBin(quint64 id, int binIndex);
+    // Persistencia (proyecto): nombres de bins, bin de una ruta y restauración.
+    QStringList binNames() const;
+    void setBins(const QStringList &names);
+    QString binNameOfPath(const QString &path) const;
+    void setPathBin(const QString &path, int binIndex);
+
 signals:
     void countChanged();
     void filterChanged();
     void selectedChanged();
     void mediaImported();      // se añadió un medio (el proyecto se marca sucio)
+    void binsChanged();        // cambió la ESTRUCTURA de bins/asignaciones (ensucia)
+    void currentBinChanged();  // cambió el bin activo (solo vista, no ensucia)
     void importError(const QString &message);
 
 private:
@@ -90,11 +119,16 @@ private:
     void generateThumbnail(quint64 id, const QString &path, const QString &kind, double atSeconds);
 
     QVector<MediaItem> m_items;
+    QVector<MediaBin> m_bins;
     QVector<int> m_visible;    // filas visibles → índice en m_items
     QString m_filter;
+    int m_currentBin = -1;     // bin activo (-1 = todos)
     int m_selected = 0;        // índice del elemento seleccionado en m_items
     quint64 m_nextId = 1;
     QString m_ffprobe;
     QString m_ffmpeg;
     QString m_cacheDir;
 };
+
+// Auto-test (PVS_POOL_SELFTEST). Devuelve 0 (OK) / 1 (fallo) / -1 (no solicitado).
+int runPoolSelfTestIfRequested();

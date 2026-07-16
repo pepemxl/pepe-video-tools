@@ -469,11 +469,14 @@ Rectangle {
                         anchors.fill: parent
                         keys: ["application/x-pvs-media"]
                         onDropped: (drop) => {
-                            var path = drop.getDataAsString("application/x-pvs-media")
-                            if (!path) return
-                            var kind = drop.getDataAsString("text/pvs-kind")
-                            var nm = drop.getDataAsString("text/pvs-name")
-                            var durStr = drop.getDataAsString("text/pvs-dur")
+                            // Los arrastres internos NO entregan mimeData: el payload viaja
+                            // como propiedades del item de origen (drop.source, el fantasma).
+                            var src = drop.source
+                            if (!src || src.mediaName === undefined) return
+                            var path = src.mediaPath
+                            var kind = src.mediaKind
+                            var nm = src.mediaName
+                            var durStr = src.mediaDur
                             var us = 0
                             if (durStr && durStr.indexOf(":") >= 0) {
                                 var pp = durStr.split(":"); us = (parseInt(pp[0]) * 60 + parseInt(pp[1])) * 1000000

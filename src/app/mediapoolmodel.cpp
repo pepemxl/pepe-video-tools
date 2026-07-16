@@ -79,17 +79,28 @@ MediaPoolModel::MediaPoolModel(QObject *parent)
         importPath(demo);
 }
 
+// Paleta de colores para etiquetas de bins (cíclica).
+static const char *kBinColors[] = { "#5b8dd6", "#4a9e6b", "#c98a3e", "#8a6bc0", "#c96a6a" };
+static constexpr int kBinColorCount = 5;
+
 void MediaPoolModel::seedDemo()
 {
-    // Elementos de muestra (sin miniatura real) para no arrancar vacío.
+    // Bins de muestra + elementos (sin miniatura real) para no arrancar vacío.
+    m_bins = {
+        { QStringLiteral("Cámara A · Diálogo"), QString::fromLatin1(kBinColors[0]) },
+        { QStringLiteral("B-roll · Mercado"),   QString::fromLatin1(kBinColors[1]) },
+        { QStringLiteral("Drone"),              QString::fromLatin1(kBinColors[2]) },
+        { QStringLiteral("Música"),             QString::fromLatin1(kBinColors[3]) },
+    };
     const struct { const char *name; const char *kind; const char *dur; const char *res;
-                   const char *fps; const char *codec; const char *br; const char *tex; bool used; } demo[] = {
-        {"A017_mercado",    "video", "00:14", "3840×2160", "29.97", "H.265", "132 Mb/s", "#26303a", false},
-        {"A012_entrevista", "video", "02:41", "3840×2160", "29.97", "H.265", "128 Mb/s", "#2a2632", false},
-        {"B009_puesto",     "video", "00:22", "3840×2160", "29.97", "H.265", "148 Mb/s", "#26303a", true},
-        {"Drone_zocalo",    "video", "01:08", "3840×2160", "29.97", "H.265", "120 Mb/s", "#233028", false},
-        {"A020_calle",      "video", "00:37", "3840×2160", "29.97", "H.265", "130 Mb/s", "#26303a", false},
-        {"Musica_intro",    "audio", "03:12", "",          "",      "WAV",   "1536 kb/s","#2b2632", false},
+                   const char *fps; const char *codec; const char *br; const char *tex;
+                   bool used; int bin; } demo[] = {
+        {"A017_mercado",    "video", "00:14", "3840×2160", "29.97", "H.265", "132 Mb/s", "#26303a", false, 1},
+        {"A012_entrevista", "video", "02:41", "3840×2160", "29.97", "H.265", "128 Mb/s", "#2a2632", false, 0},
+        {"B009_puesto",     "video", "00:22", "3840×2160", "29.97", "H.265", "148 Mb/s", "#26303a", true,  1},
+        {"Drone_zocalo",    "video", "01:08", "3840×2160", "29.97", "H.265", "120 Mb/s", "#233028", false, 2},
+        {"A020_calle",      "video", "00:37", "3840×2160", "29.97", "H.265", "130 Mb/s", "#26303a", false, 1},
+        {"Musica_intro",    "audio", "03:12", "",          "",      "WAV",   "1536 kb/s","#2b2632", false, 3},
     };
     for (const auto &d : demo) {
         MediaItem it;
@@ -103,6 +114,7 @@ void MediaPoolModel::seedDemo()
         it.bitrate = QString::fromUtf8(d.br);
         it.tex = QString::fromUtf8(d.tex);
         it.inUse = d.used;
+        it.bin = d.bin;
         m_items.push_back(it);
     }
     rebuildVisible();
@@ -132,6 +144,7 @@ QVariant MediaPoolModel::data(const QModelIndex &index, int role) const
     case ThumbRole:      return it.thumb;
     case TexRole:        return it.tex;
     case InUseRole:      return it.inUse;
+    case IdRole:         return QVariant::fromValue(it.id);
     default:             return {};
     }
 }
@@ -142,7 +155,7 @@ QHash<int, QByteArray> MediaPoolModel::roleNames() const
         {NameRole, "nm"}, {PathRole, "path"}, {KindRole, "kind"},
         {DurationRole, "dur"}, {ResolutionRole, "res"}, {FpsRole, "fps"},
         {CodecRole, "codec"}, {BitrateRole, "bitrate"}, {ThumbRole, "thumb"},
-        {TexRole, "tex"}, {InUseRole, "used"}
+        {TexRole, "tex"}, {InUseRole, "used"}, {IdRole, "mid"}
     };
 }
 
@@ -158,6 +171,8 @@ void MediaPoolModel::setSelectedIndex(int i)
 
 bool MediaPoolModel::matchesFilter(const MediaItem &it) const
 {
+    if (m_currentBin >= 0 && it.bin != m_currentBin)
+        return false;
     return m_filter.isEmpty() || it.name.contains(m_filter, Qt::CaseInsensitive);
 }
 
@@ -300,6 +315,125 @@ bool MediaPoolModel::containsPath(const QString &path) const
     return false;
 }
 
+// ---------------------------------------------------------------------------
+// Bins (carpetas)
+// ---------------------------------------------------------------------------
+
+QVariantList MediaPoolModel::bins() const
+{
+    QVariantList out;
+    for (int b = 0; b < m_bins.size(); ++b) {
+        int n = 0;
+        for (const MediaItem &it : m_items)
+            if (it.bin == b)
+                ++n;
+        out.append(QVariantMap{
+            { "index", b }, { "name", m_bins[b].name },
+            { "color", m_bins[b].color }, { "count", n } });
+    }
+    return out;
+}
+
+void MediaPoolModel::setCurrentBin(int bin)
+{
+    bin = qBound(-1, bin, int(m_bins.size()) - 1);
+    if (bin == m_currentBin)
+        return;
+    m_currentBin = bin;
+    emit currentBinChanged();
+    rebuildVisible();
+}
+
+int MediaPoolModel::addBin(const QString &name)
+{
+    MediaBin b;
+    b.name = name.trimmed().isEmpty()
+                 ? QStringLiteral("Bin %1").arg(m_bins.size() + 1)
+                 : name.trimmed();
+    b.color = QString::fromLatin1(kBinColors[m_bins.size() % kBinColorCount]);
+    m_bins.push_back(b);
+    emit binsChanged();
+    return int(m_bins.size()) - 1;
+}
+
+void MediaPoolModel::removeBin(int index)
+{
+    if (index < 0 || index >= m_bins.size())
+        return;
+    m_bins.remove(index);
+    // Sus medios quedan sin bin; los índices superiores bajan una posición.
+    for (MediaItem &it : m_items) {
+        if (it.bin == index) it.bin = -1;
+        else if (it.bin > index) --it.bin;
+    }
+    if (m_currentBin == index)
+        setCurrentBin(-1);
+    else if (m_currentBin > index)
+        m_currentBin -= 1;   // mismo bin activo, índice corrido (sin refiltrar)
+    emit binsChanged();
+    rebuildVisible();
+}
+
+void MediaPoolModel::moveToBin(quint64 id, int binIndex)
+{
+    const int row = rowForId(id);
+    if (row < 0 || binIndex < -1 || binIndex >= m_bins.size() || m_items[row].bin == binIndex)
+        return;
+    m_items[row].bin = binIndex;
+    emit binsChanged();
+    rebuildVisible();   // puede entrar/salir de la vista del bin activo
+}
+
+QStringList MediaPoolModel::binNames() const
+{
+    QStringList out;
+    for (const MediaBin &b : m_bins)
+        out.append(b.name);
+    return out;
+}
+
+void MediaPoolModel::setBins(const QStringList &names)
+{
+    m_bins.clear();
+    for (const QString &n : names) {
+        MediaBin b;
+        b.name = n;
+        b.color = QString::fromLatin1(kBinColors[m_bins.size() % kBinColorCount]);
+        m_bins.push_back(b);
+    }
+    // Asignaciones fuera de rango quedan sin bin; la vista vuelve a "todos".
+    for (MediaItem &it : m_items)
+        if (it.bin >= m_bins.size())
+            it.bin = -1;
+    m_currentBin = -1;
+    emit binsChanged();
+    emit currentBinChanged();
+    rebuildVisible();
+}
+
+QString MediaPoolModel::binNameOfPath(const QString &path) const
+{
+    for (const MediaItem &it : m_items)
+        if (!it.path.isEmpty() && it.path == path)
+            return it.bin >= 0 && it.bin < m_bins.size() ? m_bins[it.bin].name : QString();
+    return {};
+}
+
+void MediaPoolModel::setPathBin(const QString &path, int binIndex)
+{
+    if (binIndex < -1 || binIndex >= m_bins.size())
+        return;
+    for (int i = 0; i < m_items.size(); ++i)
+        if (!m_items[i].path.isEmpty() && m_items[i].path == path) {
+            if (m_items[i].bin != binIndex) {
+                m_items[i].bin = binIndex;
+                emit binsChanged();
+                rebuildVisible();
+            }
+            return;
+        }
+}
+
 void MediaPoolModel::importPath(const QString &path)
 {
     const QFileInfo fi(path);
@@ -413,4 +547,61 @@ void MediaPoolModel::generateThumbnail(quint64 id, const QString &path, const QS
             emit selectedChanged();
     });
     proc->start(m_ffmpeg, args);
+}
+
+// ---------------------------------------------------------------------------
+// Auto-test (PVS_POOL_SELFTEST)
+// ---------------------------------------------------------------------------
+
+int runPoolSelfTestIfRequested()
+{
+    if (qEnvironmentVariableIsEmpty("PVS_POOL_SELFTEST"))
+        return -1;
+
+    int failures = 0;
+    auto check = [&](bool ok, const char *name) {
+        qInfo("[POOL-SELFTEST] %-52s %s", name, ok ? "OK" : "FAIL");
+        if (!ok) ++failures;
+    };
+
+    MediaPoolModel pool;
+    check(pool.bins().size() == 4, "arranque: 4 bins de demo");
+    check(pool.count() == 6, "arranque: 6 medios visibles (todos)");
+
+    // 1) Filtrar por bin: Drone (indice 2) tiene 1 medio.
+    pool.setCurrentBin(2);
+    check(pool.count() == 1, "bin Drone activo -> 1 medio visible");
+    // Texto + bin se combinan: 'a017' no esta en Drone.
+    pool.setFilter(QStringLiteral("a017"));
+    check(pool.count() == 0, "bin Drone + filtro 'a017' -> 0");
+    pool.setCurrentBin(-1);
+    check(pool.count() == 1, "todos + filtro 'a017' -> 1");
+    pool.setFilter(QString());
+
+    // 2) Crear un bin y mover un medio (por id) a el.
+    const int nuevo = pool.addBin(QStringLiteral("Selectos"));
+    check(nuevo == 4 && pool.bins().size() == 5, "addBin crea el 5o bin");
+    const quint64 firstId = pool.data(pool.index(0), MediaPoolModel::IdRole).toULongLong();
+    pool.moveToBin(firstId, nuevo);
+    pool.setCurrentBin(nuevo);
+    check(pool.count() == 1, "medio movido al bin nuevo (visible al filtrar)");
+    const QVariantMap binInfo = pool.bins().at(nuevo).toMap();
+    check(binInfo.value("count").toInt() == 1, "contador del bin nuevo = 1");
+
+    // 3) Eliminar un bin reindexa: el bin 'Selectos' (4) pasa a ser el 3.
+    pool.removeBin(0);   // fuera 'Camara A' (su medio queda sin bin)
+    check(pool.bins().size() == 4, "removeBin: quedan 4 bins");
+    check(pool.currentBin() == nuevo - 1, "bin activo reindexado (4 -> 3)");
+    check(pool.count() == 1, "el medio movido sigue visible en su bin");
+    pool.setCurrentBin(-1);
+    check(pool.count() == 6, "todos: los 6 medios siguen ahi");
+
+    // 4) Persistencia por nombres: setBins restaura la lista y limpia el activo.
+    pool.setBins({ QStringLiteral("Uno"), QStringLiteral("Dos") });
+    check(pool.binNames() == QStringList({ QStringLiteral("Uno"), QStringLiteral("Dos") }),
+          "setBins reemplaza la lista");
+    check(pool.currentBin() == -1 && pool.count() == 6, "tras setBins: vista en 'todos'");
+
+    qInfo("[POOL-SELFTEST] resultado: %s (%d fallos)", failures ? "FALLO" : "OK", failures);
+    return failures ? 1 : 0;
 }

@@ -263,6 +263,42 @@ void Exporter::setStatus(const QString &s)
     m_status = s; emit statusChanged();
 }
 
+// ---- Ajustes de salida (chips de la StatusBar) ----
+void Exporter::bumpCustom()
+{
+    m_preset = QStringLiteral("Personalizado");
+    emit settingsChanged();
+}
+
+void Exporter::setResolution(int w, int h)
+{
+    if (w <= 0 || h <= 0 || (w == m_outW && h == m_outH)) return;
+    m_outW = w; m_outH = h;
+    bumpCustom();
+}
+
+void Exporter::setOutFps(double fps)
+{
+    if (fps <= 0 || qFuzzyCompare(fps, m_outFps)) return;
+    m_outFps = fps;
+    bumpCustom();
+}
+
+void Exporter::setVideoMbps(int mbps)
+{
+    if (mbps <= 0 || mbps == m_mbps) return;
+    m_mbps = mbps;
+    bumpCustom();
+}
+
+void Exporter::applyPreset(const QString &name, int w, int h, double fps, int mbps)
+{
+    if (w <= 0 || h <= 0 || fps <= 0 || mbps <= 0) return;
+    m_outW = w; m_outH = h; m_outFps = fps; m_mbps = mbps;
+    m_preset = name;
+    emit settingsChanged();
+}
+
 void Exporter::exportTimeline(const QString &path, int width, int height,
                               double fps, double seconds)
 {
@@ -276,6 +312,7 @@ void Exporter::exportTimeline(const QString &path, int width, int height,
     ExportJob job;
     job.path = path;
     job.width = width; job.height = height; job.fps = fps;
+    job.videoBitrate = m_mbps * 1'000'000;
     job.durationUs = durUs;
 
     // Instantánea de vídeo: RenderClipList por fotograma (en el hilo de GUI, seguro).
@@ -323,7 +360,7 @@ void Exporter::openExportDialog()
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
     if (GetSaveFileNameW(&ofn)) {
         const QString path = QString::fromWCharArray(file);
-        exportTimeline(path, 1920, 1080, 30.0, 0.0);
+        exportTimeline(path, m_outW, m_outH, m_outFps, 0.0);   // ajustes de los chips
     }
 #else
     setStatus(QStringLiteral("Diálogo de exportación solo disponible en Windows."));
@@ -362,7 +399,20 @@ int runExportSelfTestIfRequested()
 
     const QFileInfo fi(job.path);
     const bool exists = fi.exists() && fi.size() > 1024;
-    const bool pass = done && ok && exists;
+
+    // Ajustes de salida (chips): preset → valores; cambio manual → "Personalizado".
+    Exporter ex;
+    ex.applyPreset(QStringLiteral("YouTube 4K"), 3840, 2160, 30.0, 40);
+    const bool presetOk = ex.outWidth() == 3840 && ex.outHeight() == 2160
+                          && ex.videoMbps() == 40
+                          && ex.presetName() == QStringLiteral("YouTube 4K");
+    ex.setVideoMbps(24);
+    const bool customOk = ex.videoMbps() == 24
+                          && ex.presetName() == QStringLiteral("Personalizado");
+    qInfo("[EXPORT selftest] ajustes: preset=%s manual=%s",
+          presetOk ? "OK" : "FALLO", customOk ? "OK" : "FALLO");
+
+    const bool pass = done && ok && exists && presetOk && customOk;
     qInfo("[EXPORT selftest] ok=%d archivo=%s tam=%lld  => %s",
           int(ok), qUtf8Printable(job.path), exists ? fi.size() : -1,
           pass ? "PASS" : "FALLO");

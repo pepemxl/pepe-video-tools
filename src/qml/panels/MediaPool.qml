@@ -61,13 +61,34 @@ Rectangle {
         RowLayout {
             visible: poolTabs.current === 0
             Layout.fillWidth: true; Layout.margins: 8; spacing: 6
+            // Búsqueda real: filtra el Media Pool por nombre (MediaPoolModel.filter).
             Rectangle {
                 Layout.fillWidth: true; height: 28; radius: 5
-                color: Theme.sunken; border.color: Theme.line; border.width: 1
-                Row {
-                    anchors.left: parent.left; anchors.leftMargin: 8; anchors.verticalCenter: parent.verticalCenter; spacing: 6
-                    Rectangle { width: 11; height: 11; radius: 6; color: "transparent"; border.color: Theme.textFaint; border.width: 1.5; anchors.verticalCenter: parent.verticalCenter }
-                    Text { text: "Buscar clips…"; color: Theme.textFaint; font.pixelSize: 11; font.family: Theme.sans; anchors.verticalCenter: parent.verticalCenter }
+                color: Theme.sunken
+                border.color: searchInput.activeFocus ? Theme.amber : Theme.line; border.width: 1
+                Rectangle { width: 11; height: 11; radius: 6; color: "transparent"
+                    border.color: Theme.textFaint; border.width: 1.5
+                    anchors.left: parent.left; anchors.leftMargin: 8; anchors.verticalCenter: parent.verticalCenter }
+                TextInput {
+                    id: searchInput
+                    anchors.fill: parent; anchors.leftMargin: 25; anchors.rightMargin: 22
+                    verticalAlignment: Text.AlignVCenter; clip: true; selectByMouse: true
+                    color: Theme.textHi; font.pixelSize: 11; font.family: Theme.sans
+                    onTextChanged: MediaPoolModel.filter = text
+                    // Esc limpia la búsqueda y suelta el foco (los atajos vuelven a la app).
+                    Keys.onEscapePressed: { text = ""; focus = false }
+                }
+                Text { visible: searchInput.text === "" && !searchInput.activeFocus
+                       text: "Buscar clips…"; color: Theme.textFaint; font.pixelSize: 11; font.family: Theme.sans
+                       anchors.left: parent.left; anchors.leftMargin: 25; anchors.verticalCenter: parent.verticalCenter }
+                // Botón ✕ para limpiar
+                Rectangle {
+                    visible: searchInput.text !== ""
+                    width: 14; height: 14; radius: 7; color: clearHover.hovered ? Theme.hover : "transparent"
+                    anchors.right: parent.right; anchors.rightMargin: 6; anchors.verticalCenter: parent.verticalCenter
+                    HoverHandler { id: clearHover }
+                    TapHandler { onTapped: searchInput.text = "" }
+                    Text { anchors.centerIn: parent; text: "✕"; color: Theme.textDim; font.pixelSize: 9 }
                 }
             }
             Rectangle {
@@ -78,35 +99,81 @@ Rectangle {
             }
         }
 
-        // Bins
+        // Bins reales: clic filtra la rejilla; arrastrar un tile a un bin lo asigna.
         ColumnLayout {
             visible: poolTabs.current === 0
             Layout.fillWidth: true; Layout.leftMargin: 8; Layout.rightMargin: 8; spacing: 1
+            // Raíz "Todos los medios" (proyecto) + botón de nuevo bin
             Rectangle {
-                Layout.fillWidth: true; height: 24; radius: 4; color: "#2a2c33"
+                Layout.fillWidth: true; height: 24; radius: 4
+                color: MediaPoolModel.currentBin === -1 ? "#2a2c33" : (allHover.hovered ? Theme.hover2 : "transparent")
+                HoverHandler { id: allHover }
+                TapHandler { onTapped: MediaPoolModel.currentBin = -1 }
                 Row {
                     anchors.left: parent.left; anchors.leftMargin: 6; anchors.verticalCenter: parent.verticalCenter; spacing: 7
                     Text { text: "▾"; color: Theme.amber; font.pixelSize: 10; anchors.verticalCenter: parent.verticalCenter }
-                    Text { text: "Vlog 04 · Oaxaca"; color: Theme.textHi; font.pixelSize: 11; font.family: Theme.sans; anchors.verticalCenter: parent.verticalCenter }
+                    Text { text: Project.baseName; color: Theme.textHi; font.pixelSize: 11; font.family: Theme.sans; anchors.verticalCenter: parent.verticalCenter }
                 }
-                Text { text: MediaPoolModel.count + " clips"; color: Theme.textFaint; font.pixelSize: 10; anchors.right: parent.right; anchors.rightMargin: 6; anchors.verticalCenter: parent.verticalCenter }
+                Row {
+                    anchors.right: parent.right; anchors.rightMargin: 4; anchors.verticalCenter: parent.verticalCenter; spacing: 4
+                    Text { text: MediaPoolModel.count + " clips"; color: Theme.textFaint; font.pixelSize: 10; anchors.verticalCenter: parent.verticalCenter }
+                    // Nuevo bin
+                    Rectangle {
+                        width: 16; height: 16; radius: 3
+                        color: addBinHover.hovered ? Theme.hover : "transparent"
+                        anchors.verticalCenter: parent.verticalCenter
+                        HoverHandler { id: addBinHover }
+                        TapHandler { onTapped: MediaPoolModel.addBin("") }
+                        Text { anchors.centerIn: parent; text: "+"; color: Theme.textMid; font.pixelSize: 12 }
+                    }
+                }
             }
             Repeater {
-                model: [
-                    { n: "Cámara A · Diálogo", c: "#5b8dd6" },
-                    { n: "B-roll · Mercado",   c: "#4a9e6b" },
-                    { n: "Drone",              c: "#c98a3e" },
-                    { n: "Música",             c: "#8a6bc0" }
-                ]
+                model: MediaPoolModel.bins
                 delegate: Rectangle {
+                    id: binRow
                     required property var modelData
+                    readonly property bool active: MediaPoolModel.currentBin === modelData.index
                     Layout.fillWidth: true; height: 22; radius: 4
-                    color: bh.hovered ? Theme.hover2 : "transparent"
+                    color: active ? "#2f3138" : (bh.hovered || binDrop.containsDrag ? Theme.hover2 : "transparent")
+                    border.color: binDrop.containsDrag ? Theme.amber : "transparent"; border.width: 1
                     HoverHandler { id: bh }
+                    // Clic: filtra por este bin (clic de nuevo = volver a todos).
+                    TapHandler { onTapped: MediaPoolModel.currentBin = binRow.active ? -1 : binRow.modelData.index }
+                    // Soltar un medio aquí lo asigna al bin.
+                    DropArea {
+                        id: binDrop
+                        anchors.fill: parent
+                        keys: ["application/x-pvs-media"]
+                        onDropped: (drop) => {
+                            if (drop.source && drop.source.mediaId !== undefined)
+                                MediaPoolModel.moveToBin(drop.source.mediaId, binRow.modelData.index)
+                        }
+                    }
                     Row {
                         anchors.left: parent.left; anchors.leftMargin: 22; anchors.verticalCenter: parent.verticalCenter; spacing: 7
-                        Rectangle { width: 8; height: 8; radius: 2; color: modelData.c; anchors.verticalCenter: parent.verticalCenter }
-                        Text { text: modelData.n; color: Theme.textMid; font.pixelSize: 11; font.family: Theme.sans; anchors.verticalCenter: parent.verticalCenter }
+                        Rectangle { width: 8; height: 8; radius: 2; color: binRow.modelData.color; anchors.verticalCenter: parent.verticalCenter }
+                        Text { text: binRow.modelData.name
+                               color: binRow.active ? Theme.textHi : Theme.textMid
+                               font.pixelSize: 11; font.family: Theme.sans
+                               font.weight: binRow.active ? Font.DemiBold : Font.Normal
+                               anchors.verticalCenter: parent.verticalCenter }
+                    }
+                    // Contador (o ✕ para eliminar el bin, al pasar el ratón)
+                    Text {
+                        visible: !bh.hovered
+                        text: binRow.modelData.count
+                        color: Theme.textFaint; font.pixelSize: 10; font.family: Theme.mono
+                        anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter
+                    }
+                    Rectangle {
+                        visible: bh.hovered
+                        width: 14; height: 14; radius: 3
+                        color: delBinHover.hovered ? Theme.red : "transparent"
+                        anchors.right: parent.right; anchors.rightMargin: 5; anchors.verticalCenter: parent.verticalCenter
+                        HoverHandler { id: delBinHover }
+                        TapHandler { onTapped: MediaPoolModel.removeBin(binRow.modelData.index) }
+                        Text { anchors.centerIn: parent; text: "✕"; color: delBinHover.hovered ? "#ffffff" : Theme.textDim; font.pixelSize: 9 }
                     }
                 }
             }
@@ -120,6 +187,13 @@ Rectangle {
             visible: poolTabs.current === 0
             Layout.fillWidth: true; Layout.fillHeight: true; Layout.margins: 8
             clip: true
+            // Sin resultados con el filtro activo
+            Text {
+                visible: MediaPoolModel.count === 0 && MediaPoolModel.filter !== ""
+                anchors.centerIn: parent
+                text: "Sin resultados para «" + MediaPoolModel.filter + "»"
+                color: Theme.textFaint; font.pixelSize: 11; font.family: Theme.sans
+            }
             cellWidth: (272 - 16) / 2; cellHeight: cellWidth * 9 / 16 + 20
             model: MediaPoolModel
             delegate: Column {
@@ -132,6 +206,7 @@ Rectangle {
                 required property string thumb
                 required property string path
                 required property bool used
+                required property var mid
                 readonly property bool selected: MediaPoolModel.selectedIndex === index
                 width: grid.cellWidth - 8
                 spacing: 3
@@ -153,19 +228,21 @@ Rectangle {
                     Text { visible: cell.dur !== ""; text: cell.dur; color: "#c6c9d0"; font.pixelSize: 8; font.family: Theme.mono
                            anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: 2 }
 
-                    // Fantasma de arrastre: transporta los datos del medio a la línea de tiempo.
+                    // Fantasma de arrastre: transporta los datos del medio a la línea de
+                    // tiempo y a los bins. OJO: los arrastres internos de Qt Quick NO
+                    // entregan Drag.mimeData al DropArea (solo drags "Automatic"); el
+                    // payload viaja como PROPIEDADES de este item (drop.source).
                     Item {
                         id: dragGhost
                         width: 120; height: 68
+                        readonly property string mediaPath: cell.path
+                        readonly property string mediaName: cell.nm
+                        readonly property string mediaKind: cell.kind
+                        readonly property string mediaDur: cell.dur
+                        readonly property var mediaId: cell.mid
                         Drag.active: tileMA.drag.active
                         Drag.hotSpot.x: width / 2; Drag.hotSpot.y: height / 2
                         Drag.keys: ["application/x-pvs-media"]
-                        Drag.mimeData: ({
-                            "application/x-pvs-media": cell.path,
-                            "text/pvs-name": cell.nm,
-                            "text/pvs-kind": cell.kind,
-                            "text/pvs-dur": cell.dur
-                        })
                         Rectangle {
                             anchors.fill: parent; radius: 4; visible: dragGhost.Drag.active
                             color: "#e61c1d22"; border.color: Theme.amber; border.width: 1
@@ -178,6 +255,9 @@ Rectangle {
                         id: tileMA
                         anchors.fill: parent
                         drag.target: dragGhost
+                        // Evita que el GridView (Flickable) robe el grab en arrastres
+                        // largos: sin esto el drag se cancela y el drop nunca llega.
+                        preventStealing: true
                         onPressed: { dragGhost.x = 0; dragGhost.y = 0; MediaPoolModel.selectedIndex = cell.index }
                         onReleased: dragGhost.Drag.drop()
                         onDoubleClicked: if (cell.path !== "") VideoController.open(cell.path)

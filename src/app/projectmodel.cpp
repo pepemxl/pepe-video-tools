@@ -46,8 +46,10 @@ void ProjectModel::setSources(TimelineModel *timeline, MediaPoolModel *pool)
         connect(m_timeline, &TimelineModel::markersChanged, this, &ProjectModel::markDirty);
         connect(m_timeline, &TimelineModel::subtitlesChanged, this, &ProjectModel::markDirty);
     }
-    if (m_pool)   // importar un medio ensucia el proyecto (filtrar la vista NO)
+    if (m_pool) {  // importar/editar bins ensucia el proyecto (filtrar la vista NO)
         connect(m_pool, &MediaPoolModel::mediaImported, this, &ProjectModel::markDirty);
+        connect(m_pool, &MediaPoolModel::binsChanged, this, &ProjectModel::markDirty);
+    }
     m_initial = projectJson();   // instantánea para "Nuevo proyecto"
 }
 
@@ -107,10 +109,15 @@ QJsonObject ProjectModel::projectJson() const
     if (m_timeline)
         o.insert("timeline", m_timeline->toJson());
     if (m_pool) {
+        // Medios reales con su bin (por nombre, robusto a reordenaciones).
         QJsonArray media;
         for (const QString &p : m_pool->mediaPaths())
-            media.append(p);
+            media.append(QJsonObject{ { "path", p }, { "bin", m_pool->binNameOfPath(p) } });
         o.insert("media", media);
+        QJsonArray bins;
+        for (const QString &n : m_pool->binNames())
+            bins.append(n);
+        o.insert("bins", bins);
     }
     return o;
 }
@@ -127,13 +134,29 @@ bool ProjectModel::applyProjectJson(const QJsonObject &o)
     m_seqFps = seq.value("fps").toDouble(29.97);
     m_seqCS = seq.value("colorSpace").toString(QStringLiteral("Rec.709"));
 
-    // Reimporta los medios que falten ANTES del timeline (los clips los referencian).
-    if (m_pool)
-        for (const QJsonValue &v : o.value("media").toArray()) {
-            const QString p = v.toString();
-            if (!p.isEmpty() && QFileInfo::exists(p) && !m_pool->containsPath(p))
-                m_pool->importPath(p);
+    // Restaura los bins y reimporta los medios que falten ANTES del timeline
+    // (los clips los referencian). Cada medio recupera su bin por nombre.
+    if (m_pool) {
+        if (o.contains("bins")) {
+            QStringList names;
+            for (const QJsonValue &v : o.value("bins").toArray())
+                names.append(v.toString());
+            m_pool->setBins(names);
         }
+        const QStringList binNames = m_pool->binNames();
+        for (const QJsonValue &v : o.value("media").toArray()) {
+            // v1: cadena con la ruta; v2: objeto { path, bin }.
+            const QString p = v.isObject() ? v.toObject().value("path").toString()
+                                           : v.toString();
+            if (p.isEmpty())
+                continue;
+            if (QFileInfo::exists(p) && !m_pool->containsPath(p))
+                m_pool->importPath(p);
+            if (v.isObject())
+                m_pool->setPathBin(p, int(binNames.indexOf(
+                    v.toObject().value("bin").toString())));
+        }
+    }
 
     bool ok = true;
     if (m_timeline && o.contains("timeline"))
@@ -256,8 +279,9 @@ int runProjectSelfTestIfRequested()
     };
 
     TimelineModel tl;
+    MediaPoolModel pool;
     ProjectModel proj;
-    proj.setSources(&tl, nullptr);
+    proj.setSources(&tl, &pool);
     const QString path = QDir::tempPath() + "/pvs_proj_selftest.pvsproj";
 
     check(proj.displayName() == QStringLiteral("Sin título.pvsproj"),
@@ -304,9 +328,20 @@ int runProjectSelfTestIfRequested()
     tl.splitAtFraction(anyId, anyMid);
     check(proj.dirty(), "edicion estructural (cortar) -> sucio");
 
-    // 6) Nuevo proyecto restaura la instantanea inicial y queda sin ruta.
+    // 6) Bins del Media Pool: crear ensucia y la lista persiste por nombre.
+    proj.saveToPath(path);
+    pool.addBin(QStringLiteral("Prueba"));
+    check(proj.dirty(), "crear un bin -> sucio");
+    check(proj.saveToPath(path), "guardar con bins");
+    pool.setBins({ QStringLiteral("Otro") });   // simula otro estado antes de reabrir
+    check(proj.loadFromPath(path), "reabrir el proyecto con bins");
+    check(pool.binNames().size() == 5 && pool.binNames().contains(QStringLiteral("Prueba")),
+          "bins restaurados del proyecto (4 demo + 'Prueba')");
+
+    // 7) Nuevo proyecto restaura la instantanea inicial y queda sin ruta.
     proj.newProject();
     check(proj.filePath().isEmpty() && !proj.dirty(), "nuevo proyecto: sin ruta y limpio");
+    check(pool.binNames().size() == 4, "nuevo proyecto: bins de demo restaurados");
 
     QFile::remove(path);
     qInfo("[PROJ-SELFTEST] resultado: %s (%d fallos)", failures ? "FALLO" : "OK", failures);

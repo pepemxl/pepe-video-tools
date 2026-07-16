@@ -33,6 +33,9 @@ int main(int argc, char *argv[])
     // Auto-test de proyecto (guardar/abrir/round-trip/dirty).
     if (const int rc = runProjectSelfTestIfRequested(); rc >= 0)
         return rc;
+    // Auto-test del Media Pool (filtro + bins).
+    if (const int rc = runPoolSelfTestIfRequested(); rc >= 0)
+        return rc;
 
     // Tipos y singletons expuestos a QML en el módulo PepeVideo.
     Theme theme;
