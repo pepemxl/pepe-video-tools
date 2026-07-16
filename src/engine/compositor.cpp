@@ -6,6 +6,62 @@
 #include <QPainter>
 #include <QThread>
 #include <QTimer>
+#include <cmath>
+
+// ===================== Corrección de color (LUT por canal) =====================
+void CompositorWorker::gradeImage(QImage &img, const TimelineModel::Color &c)
+{
+    if (c.isIdentity() || img.isNull())
+        return;
+    if (img.format() != QImage::Format_RGBA8888)
+        img = img.convertToFormat(QImage::Format_RGBA8888);
+
+    // Rueda (x,y) → ajuste por canal: arriba=rojo, abajo-izq=verde, abajo-der=azul.
+    auto wheel = [](double x, double y, double &r, double &g, double &b) {
+        r = y;
+        g = -0.866 * x - 0.5 * y;
+        b = 0.866 * x - 0.5 * y;
+    };
+    double lR, lG, lB, gR, gG, gB, mR, mG, mB;
+    wheel(c.liftX, c.liftY, lR, lG, lB);
+    wheel(c.gainX, c.gainY, gR, gG, gB);
+    wheel(c.gammaX, c.gammaY, mR, mG, mB);
+
+    const double off[3] = { c.temp * 0.2, c.tint * 0.2, -c.temp * 0.2 };  // temp cálido: +R -B
+    const double lift[3] = { lR * 0.3, lG * 0.3, lB * 0.3 };
+    const double gain[3] = { 1.0 + gR * 0.5, 1.0 + gG * 0.5, 1.0 + gB * 0.5 };
+    const double gam[3]  = { 1.0 + mR * 0.5, 1.0 + mG * 0.5, 1.0 + mB * 0.5 };
+
+    quint8 lut[3][256];
+    for (int ch = 0; ch < 3; ++ch) {
+        const double invGamma = 1.0 / qMax(0.1, gam[ch]);
+        for (int i = 0; i < 256; ++i) {
+            double v = i / 255.0 + off[ch];
+            v = v + lift[ch] * (1.0 - v);   // lift (sombras)
+            v = v * gain[ch];               // gain (altas)
+            v = qBound(0.0, v, 1.0);
+            v = std::pow(v, invGamma);      // gamma (medios)
+            lut[ch][i] = quint8(qBound(0.0, v, 1.0) * 255.0 + 0.5);
+        }
+    }
+
+    const double sat = c.sat;
+    const int W = img.width(), H = img.height();
+    for (int y = 0; y < H; ++y) {
+        uchar *line = img.scanLine(y);
+        for (int x = 0; x < W; ++x) {
+            uchar *px = line + x * 4;
+            int r = lut[0][px[0]], g = lut[1][px[1]], b = lut[2][px[2]];
+            if (sat != 1.0) {
+                const double L = 0.299 * r + 0.587 * g + 0.114 * b;
+                r = qBound(0, int(L + (r - L) * sat + 0.5), 255);
+                g = qBound(0, int(L + (g - L) * sat + 0.5), 255);
+                b = qBound(0, int(L + (b - L) * sat + 0.5), 255);
+            }
+            px[0] = uchar(r); px[1] = uchar(g); px[2] = uchar(b);
+        }
+    }
+}
 
 // ===================== CompositorWorker (hilo de trabajo) =====================
 
@@ -56,6 +112,8 @@ QImage CompositorWorker::renderFrame(const RenderClipList &clips, bool &hasConte
             if (FrameGrabber *g = grabberFor(rc.mediaPath))
                 frame = g->frameAt(rc.sourceUs / 1000);
         }
+        if (!frame.isNull())
+            gradeImage(frame, rc.color); // corrección de color primaria
         p.setOpacity(t.opacity);
         if (!frame.isNull()) {
             const double fw = frame.width(), fh = frame.height();
@@ -133,6 +191,21 @@ Compositor::Compositor(QObject *parent) : QObject(parent)
         QColor c = tester.renderFrame({ { 2, "video", "#ff0000", QString(), 0, tr },
                                         { 0, "video", "#00ff00", QString(), 0, tg } }, hc).pixelColor(32, 32);
         chk(c.red() > 90 && c.red() < 170 && c.green() > 90 && c.green() < 170, "mezcla verde 50% sobre rojo");
+
+        // Corrección de color: saturación 0 → gris; temperatura cálida → +rojo/−azul.
+        {
+            QImage src(8, 8, QImage::Format_RGBA8888);
+            src.fill(QColor(100, 150, 200));
+            TimelineModel::Color desat; desat.sat = 0.0;
+            QImage g0 = src; CompositorWorker::gradeImage(g0, desat);
+            QColor gc = g0.pixelColor(4, 4);
+            chk(qAbs(gc.red() - gc.green()) < 3 && qAbs(gc.green() - gc.blue()) < 3, "saturación 0 = gris");
+
+            TimelineModel::Color warm; warm.temp = 1.0;
+            QImage gw = src; CompositorWorker::gradeImage(gw, warm);
+            QColor wc = gw.pixelColor(4, 4);
+            chk(wc.red() > 100 && wc.blue() < 200, "temperatura cálida = +rojo / −azul");
+        }
 
         qWarning("[COMP selftest] %d OK, %d FALLO", pass, fail);
     }

@@ -28,6 +28,10 @@ public:
     // Compone el fotograma de forma sincrónica (sin emitir). Público para pruebas.
     QImage renderFrame(const RenderClipList &clips, bool &hasContent);
 
+    // Aplica corrección de color primaria (lift/gamma/gain + temp/tint/sat) in situ,
+    // por LUT de canal. Público y estático para pruebas.
+    static void gradeImage(QImage &img, const TimelineModel::Color &c);
+
 public slots:
     void composeFrame(const RenderClipList &clips);
 
