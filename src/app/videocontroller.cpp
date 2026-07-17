@@ -1,4 +1,5 @@
 #include "videocontroller.h"
+#include "demodata.h"
 #include "../engine/videodecoder.h"
 
 #include <QFileInfo>
@@ -38,8 +39,11 @@ VideoController::VideoController(QObject *parent) : QObject(parent)
     connect(m_thread, &QThread::finished, m_decoder, &QObject::deleteLater);
     m_thread->start();
 
-    // Autoapertura de demostración para pruebas.
-    const QString demo = qEnvironmentVariable("PVS_DEMO_MEDIA");
+    // Autoapertura de demostración: PVS_DEMO_MEDIA=<ruta>, o con PVS_DEMO=1
+    // el primer vídeo de LOCAL_DATA/.
+    QString demo = qEnvironmentVariable("PVS_DEMO_MEDIA");
+    if (demo.isEmpty() && pvsEnvSet("PVS_DEMO"))
+        demo = pvsFirstLocalVideo();
     if (!demo.isEmpty()) {
         m_pendingPlay = true;   // reproduce en cuanto 'opened' confirme
         open(demo);

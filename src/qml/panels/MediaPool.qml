@@ -1,11 +1,91 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls.Basic as C
 import PepeVideo
 
 // Panel izquierdo: Media Pool (Fase 1: medios reales vía MediaPoolModel).
 Rectangle {
+    id: poolRoot
     width: 272
     color: Theme.panel
+
+    // Elimina un medio del pool. Si está EN USO (hay clips en la línea de
+    // tiempo con esa ruta) pide confirmación: se eliminarán también los clips.
+    // Sin clips asociados, se elimina directo y sin aviso.
+    function removeMedia(mid, name, path) {
+        const n = path !== "" ? TimelineModel.clipCountForMedia(path) : 0
+        if (n > 0) {
+            delDlg.mediaId = mid
+            delDlg.mediaName = name
+            delDlg.mediaPath = path
+            delDlg.clipCount = n
+            delDlg.open()
+        } else {
+            MediaPoolModel.removeItem(mid)
+        }
+    }
+
+    // Advertencia de medio EN USO.
+    C.Popup {
+        id: delDlg
+        property var mediaId: 0
+        property string mediaName: ""
+        property string mediaPath: ""
+        property int clipCount: 0
+        anchors.centerIn: C.Overlay.overlay
+        modal: true
+        padding: 16
+        background: Rectangle { color: Theme.panel2; border.color: Theme.line; border.width: 1; radius: 8 }
+        C.Overlay.modal: Rectangle { color: "#a0000000" }
+        contentItem: Column {
+            spacing: 10
+            width: 300
+            Text {
+                width: parent.width
+                text: "«" + delDlg.mediaName + "» está EN USO"
+                color: Theme.textHi; font.pixelSize: 12; font.family: Theme.sans; font.weight: Font.DemiBold
+                wrapMode: Text.Wrap
+            }
+            Text {
+                width: parent.width
+                text: "Se eliminarán también " + delDlg.clipCount
+                      + (delDlg.clipCount === 1 ? " clip que lo usa" : " clips que lo usan")
+                      + " en la línea de tiempo."
+                color: Theme.textMid; font.pixelSize: 11; font.family: Theme.sans
+                wrapMode: Text.Wrap
+            }
+            Row {
+                anchors.right: parent.right
+                spacing: 8
+                Rectangle {
+                    width: cancelTxt.width + 24; height: 26; radius: 5
+                    color: cancelHover.hovered ? Theme.hover : Theme.sunken
+                    border.color: Theme.line; border.width: 1
+                    HoverHandler { id: cancelHover }
+                    TapHandler { onTapped: delDlg.close() }
+                    Text { id: cancelTxt; anchors.centerIn: parent; text: "Cancelar"
+                           color: Theme.textHi; font.pixelSize: 11; font.family: Theme.sans }
+                }
+                Rectangle {
+                    width: okTxt.width + 24; height: 26; radius: 5
+                    color: okHover.hovered ? "#e05252" : Theme.red
+                    HoverHandler { id: okHover }
+                    TapHandler {
+                        onTapped: {
+                            // Una macro: medio + clips se deshacen con UN Ctrl+Z.
+                            TimelineModel.beginUndoMacro("Eliminar medio y sus clips")
+                            TimelineModel.removeClipsWithMedia(delDlg.mediaPath)
+                            MediaPoolModel.removeItem(delDlg.mediaId)
+                            TimelineModel.endUndoMacro()
+                            delDlg.close()
+                        }
+                    }
+                    Text { id: okTxt; anchors.centerIn: parent; text: "Eliminar todo"
+                           color: "#ffffff"; font.pixelSize: 11; font.family: Theme.sans; font.weight: Font.DemiBold }
+                }
+            }
+        }
+    }
 
     // Botón de preset reutilizable (Efectos/Títulos).
     component PresetBtn: Rectangle {
@@ -311,6 +391,25 @@ Rectangle {
                         onPressed: { dragGhost.x = 0; dragGhost.y = 0; MediaPoolModel.selectedIndex = cell.index }
                         onReleased: dragGhost.Drag.drop()
                         onDoubleClicked: if (cell.path !== "") VideoController.open(cell.path)
+                    }
+
+                    // ✕ eliminar medio (al pasar el ratón). Declarado DESPUÉS del
+                    // MouseArea del tile para quedar encima y capturar el clic.
+                    HoverHandler { id: tileHover }
+                    Rectangle {
+                        visible: tileHover.hovered
+                        anchors.top: parent.top; anchors.right: parent.right; anchors.margins: 2
+                        width: 14; height: 14; radius: 3
+                        color: delMA.containsMouse ? Theme.red : "#cc1c1d22"
+                        border.color: Theme.line; border.width: delMA.containsMouse ? 0 : 1
+                        Text { anchors.centerIn: parent; text: "✕"
+                               color: delMA.containsMouse ? "#ffffff" : Theme.textMid; font.pixelSize: 8 }
+                        MouseArea {
+                            id: delMA
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            onClicked: poolRoot.removeMedia(cell.mid, cell.nm, cell.path)
+                        }
                     }
                 }
                 Text { width: parent.width; text: cell.nm; elide: Text.ElideRight; font.pixelSize: 10; font.family: Theme.sans

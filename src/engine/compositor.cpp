@@ -87,18 +87,21 @@ CompositorWorker::~CompositorWorker()
     qDeleteAll(m_grabbers);
 }
 
-FrameGrabber *CompositorWorker::grabberFor(const QString &path)
+FrameGrabber *CompositorWorker::grabberFor(const QString &path, quint64 clipId)
 {
-    auto it = m_grabbers.find(path);
+    const QString key = path + QLatin1Char('\n') + QString::number(clipId);
+    auto it = m_grabbers.find(key);
     if (it != m_grabbers.end())
         return it.value();
 
     auto *g = new FrameGrabber;
+    if (m_extDev)
+        g->adoptDevice(m_extDev);   // sesión zero-copy en el device del scene graph
     if (!g->open(path)) {
         delete g;
         g = nullptr;
     }
-    m_grabbers.insert(path, g); // cachea también el fallo (nullptr) para no reintentar
+    m_grabbers.insert(key, g); // cachea también el fallo (nullptr) para no reintentar
     return g;
 }
 
@@ -142,20 +145,35 @@ ProgramLayers CompositorWorker::renderLayers(const RenderClipList &clips)
             p.setRenderHint(QPainter::Antialiasing, true);
             drawTitle(p, rc);
             p.end();
-            layer.rgba = tile;
+            layer.vf.rgba = tile;
+            layer.vf.width = tile.width();
+            layer.vf.height = tile.height();
         } else if (!rc.mediaPath.isEmpty()) {
-            if (FrameGrabber *g = grabberFor(rc.mediaPath))
-                layer.rgba = g->frameAt(rc.sourceUs / 1000);
-            layer.isVideoFrame = !layer.rgba.isNull();
+            if (FrameGrabber *g = grabberFor(rc.mediaPath, rc.clipId))
+                layer.vf = g->frameVfAt(rc.sourceUs / 1000);
+            layer.isVideoFrame = layer.vf.isValid();
         }
-        if (layer.rgba.isNull() && rc.kind != QLatin1String("title")) {
+        if (!layer.vf.isValid() && rc.kind != QLatin1String("title")) {
             QImage fill(1, 1, QImage::Format_RGBA8888);
             fill.fill(QColor(rc.fill));
-            layer.rgba = fill;
+            layer.vf.rgba = fill;
+            layer.vf.width = 1;
+            layer.vf.height = 1;
         }
         out.layers.push_back(layer);
     }
     return out;
+}
+
+void CompositorWorker::adoptDevice(void *d3dDevice)
+{
+    if (!d3dDevice || m_extDev == d3dDevice)
+        return;
+    m_extDev = d3dDevice;
+    // Los grabbers abiertos siguen en su dispositivo propio: se reabren en el
+    // siguiente acceso ya con el device adoptado (zero-copy).
+    qDeleteAll(m_grabbers);
+    m_grabbers.clear();
 }
 
 // Dibuja el título de texto de un clip con su transformación (posición/escala/rotación/opacidad
@@ -210,7 +228,7 @@ QImage CompositorWorker::renderFrame(const RenderClipList &clips, bool &hasConte
         const TimelineModel::Transform &t = rc.transform;
         QImage frame;
         if (!rc.mediaPath.isEmpty()) {
-            if (FrameGrabber *g = grabberFor(rc.mediaPath))
+            if (FrameGrabber *g = grabberFor(rc.mediaPath, rc.clipId))
                 frame = g->frameAt(rc.sourceUs / 1000);
         }
         if (!frame.isNull())
@@ -275,7 +293,8 @@ Compositor::Compositor(QObject *parent) : QObject(parent)
     connect(m_debounce, &QTimer::timeout, this, &Compositor::requestComposite);
 
     m_clock = new QTimer(this);
-    m_clock->setInterval(33);    // ~30 composiciones/s; el playhead usa tiempo real
+    m_clock->setTimerType(Qt::PreciseTimer);  // el coarse (±5 %) añade judder
+    m_clock->setInterval(33);    // por defecto ~30 Hz; setFrameRate lo alinea a la secuencia
     connect(m_clock, &QTimer::timeout, this, &Compositor::tick);
 
     // Worker en su propio hilo.
@@ -284,6 +303,7 @@ Compositor::Compositor(QObject *parent) : QObject(parent)
     m_worker->moveToThread(m_thread);
     connect(m_thread, &QThread::finished, m_worker, &QObject::deleteLater);
     connect(this, &Compositor::requestCompose, m_worker, &CompositorWorker::composeFrame);
+    connect(this, &Compositor::requestAdoptDevice, m_worker, &CompositorWorker::adoptDevice);
     connect(m_worker, &CompositorWorker::frameReady, this, &Compositor::onWorkerFrame);
     connect(m_worker, &CompositorWorker::layersReady, this, &Compositor::onWorkerLayers);
     m_thread->start();
@@ -457,6 +477,12 @@ void Compositor::onWorkerLayers(const ProgramLayers &layers)
     }
 }
 
+void Compositor::adoptGraphicsDevice(void *d3dDevice)
+{
+    if (m_gpuProg)
+        emit requestAdoptDevice(d3dDevice);
+}
+
 void Compositor::setAnalysisActive(bool on)
 {
     if (m_analysisActive == on)
@@ -538,6 +564,13 @@ void Compositor::saveStillDialog()
     if (GetSaveFileNameW(&ofn))
         saveStill(QString::fromWCharArray(buf.data()));
 #endif
+}
+
+void Compositor::setFrameRate(double fps)
+{
+    if (fps < 1.0 || fps > 240.0)
+        return;
+    m_clock->setInterval(qMax(1, int(std::lround(1000.0 / fps))));
 }
 
 void Compositor::tick()

@@ -1,11 +1,14 @@
 #pragma once
 
+#include <QAbstractListModel>
 #include <QJsonObject>
 #include <QObject>
 #include <QString>
 #include <QVariantList>
 #include <QVector>
 #include <QUndoStack>
+
+class TimelineTracksModel;
 
 // Modelo de la línea de tiempo (Fase 2): pistas y clips, edición no destructiva
 // con undo/redo. Se expone a QML como singleton PepeVideo.TimelineModel.
@@ -14,9 +17,15 @@ class TimelineModel : public QObject
     Q_OBJECT
     Q_PROPERTY(QVariantList tracks READ tracks NOTIFY changed)
     Q_PROPERTY(QVariantList audioTracks READ audioTracks NOTIFY audioChanged)
+    // Variantes QAbstractItemModel de tracks/audioTracks: dataChanged granular por
+    // pista, así los delegados del Repeater PERSISTEN entre ediciones (con las
+    // QVariantList, cada cambio destruía y recreaba todos los delegados).
+    Q_PROPERTY(QAbstractItemModel *tracksModel READ tracksModel CONSTANT)
+    Q_PROPERTY(QAbstractItemModel *audioTracksModel READ audioTracksModel CONSTANT)
     Q_PROPERTY(QVariantList markers READ markers NOTIFY markersChanged)
     Q_PROPERTY(double playheadFraction READ playheadFraction NOTIFY playheadChanged)
     Q_PROPERTY(qint64 playheadUs READ playheadUs NOTIFY playheadChanged)
+    Q_PROPERTY(qint64 contentEndUs READ contentEndUs NOTIFY changed)  // fin del último clip
     Q_PROPERTY(double totalUsMs READ totalUsMs NOTIFY changed)   // duración de la ventana en ms
     Q_PROPERTY(bool snapEnabled READ snapEnabled WRITE setSnapEnabled NOTIFY snapChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY changed)
@@ -187,10 +196,16 @@ public:
         // Barrido (transición "wipe"): fracción [0..1) del ancho visible del clip
         // entrante; -1 = sin barrido (el worker no recorta).
         double wipe = -1.0;
+        // Identidad del clip de origen: el worker mantiene un decodificador POR
+        // CLIP (no por archivo), para que dos clips del mismo medio en tiempos
+        // distintos no se roben la posición del decode secuencial.
+        quint64 clipId = 0;
     };
 
     QVariantList tracks() const;
     QVariantList audioTracks() const;   // estado mute/solo por pista (para el mezclador)
+    QAbstractItemModel *tracksModel();        // creado perezosamente (hijo del modelo)
+    QAbstractItemModel *audioTracksModel();
     QVariantList markers() const;
     // Clips de vídeo activos en el tiempo us, ordenados de abajo (V1) a arriba (V3)
     // para pintarlos en ese orden. Uso del compositor (no expuesto a QML).
@@ -329,6 +344,21 @@ public:
     // Corta el clip seleccionado por el playhead (si este cae dentro del clip).
     Q_INVOKABLE void splitSelectedAtPlayhead();
     Q_INVOKABLE void removeSelected();
+    // Desplaza el clip seleccionado ±deltaUs en su pista (Ctrl+←/→; sin imán),
+    // con undo. El solape resultante con un vecino crea transición, como al
+    // arrastrar.
+    Q_INVOKABLE void nudgeSelected(qint64 deltaUs);
+    // Medios del pool: nº de clips que usan esa ruta, y borrado de TODOS ellos
+    // en un solo comando (undoable). Para eliminar un medio del Media Pool.
+    Q_INVOKABLE int clipCountForMedia(const QString &path) const;
+    Q_INVOKABLE void removeClipsWithMedia(const QString &path);
+
+    // Pila de undo del proyecto. El MediaPool la comparte (setUndoStack) para
+    // que Ctrl+Z global también deshaga sus operaciones. Las macros agrupan
+    // varios comandos (p. ej. eliminar un medio Y sus clips) en un solo paso.
+    QUndoStack *undoStack() { return &m_undo; }
+    Q_INVOKABLE void beginUndoMacro(const QString &text) { m_undo.beginMacro(text); }
+    Q_INVOKABLE void endUndoMacro() { m_undo.endMacro(); }
     Q_INVOKABLE void moveClipToFraction(quint64 id, int trackIndex, double startFraction);
     // Recorta el clip arrastrando un borde. leftEdge = borde izquierdo (entrada);
     // deltaFraction es el desplazamiento del borde en fracción de la ventana total.
@@ -427,9 +457,39 @@ private:
     quint64 m_nextId = 1;
     bool m_snap = true;
     QUndoStack m_undo;
+    TimelineTracksModel *m_tracksModel = nullptr;       // perezosos (hijos)
+    TimelineTracksModel *m_audioTracksModel = nullptr;
 
     static constexpr qint64 kMinClipUs = 200000; // duración mínima de clip: 0.2 s
 };
 
 // Permite pasar RenderClip (y QVector<RenderClip>) por señales encoladas entre hilos.
 Q_DECLARE_METATYPE(TimelineModel::RenderClip)
+
+// Adaptador QAbstractListModel sobre tracks()/audioTracks(): una fila por pista con
+// un único rol ("trackData", expuesto también como `modelData` en los delegados por
+// ser el único). En cada cambio del timeline compara fila a fila y emite dataChanged
+// SOLO para las pistas que cambiaron (reset únicamente si varía el número de pistas):
+// los delegados del Repeater persisten en vez de recrearse con cada edición.
+class TimelineTracksModel : public QAbstractListModel
+{
+    Q_OBJECT
+public:
+    static constexpr int TrackDataRole = Qt::UserRole + 1;
+
+    TimelineTracksModel(TimelineModel *tm, bool audio, QObject *parent = nullptr);
+
+    int rowCount(const QModelIndex &parent = {}) const override
+    { return parent.isValid() ? 0 : int(m_rows.size()); }
+    QVariant data(const QModelIndex &index, int role) const override;
+    QHash<int, QByteArray> roleNames() const override
+    { return { { TrackDataRole, QByteArrayLiteral("trackData") } }; }
+
+private slots:
+    void refresh();
+
+private:
+    TimelineModel *m_tm;
+    bool m_audio;
+    QVariantList m_rows;
+};

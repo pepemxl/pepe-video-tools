@@ -1,4 +1,5 @@
 #include "timelinemodel.h"
+#include "demodata.h"
 
 #include <QFile>
 #include <QFileInfo>
@@ -49,6 +50,17 @@ void TimelineModel::seed()
         { "A2", "audio", "#8a6bc0", 48 },
         { "A3", "audio", "#4a9e6b", 40 },
     };
+
+    // La app arranca con la secuencia VACÍA. La data de demo solo se genera
+    // para los autotests que dependen de un proyecto poblado, con PVS_DEMO=1
+    // (que además usa los medios reales de LOCAL_DATA/) o con los hooks de
+    // prueba PVS_TL_MEDIA / PVS_TL_AUDIO.
+    const bool demoRequested = pvsEnvSet("PVS_DEMO")
+        || pvsEnvSet("PVS_TL_SELFTEST") || pvsEnvSet("PVS_PROG_SELFTEST")
+        || pvsEnvSet("PVS_PROJ_SELFTEST")
+        || pvsEnvSet("PVS_TL_MEDIA") || pvsEnvSet("PVS_TL_AUDIO");
+    if (!demoRequested)
+        return;
 
     const qint64 T = m_totalUs;
     auto us = [T](double frac) { return qint64(frac * T); };
@@ -101,6 +113,16 @@ void TimelineModel::seed()
         for (Clip &c : m_clips)
             if (c.trackIndex >= 3)
                 c.mediaPath = demoAudio;
+
+    // PVS_DEMO=1: los clips de demo usan el primer vídeo de LOCAL_DATA/ —
+    // vídeo en V1/V2 y su pista de audio en A1–A3 (si el archivo la trae).
+    if (pvsEnvSet("PVS_DEMO")) {
+        const QString localVideo = pvsFirstLocalVideo();
+        if (!localVideo.isEmpty())
+            for (Clip &c : m_clips)
+                if (c.mediaPath.isEmpty() && c.kind != QLatin1String("title"))
+                    c.mediaPath = localVideo;
+    }
 }
 
 QVector<TimelineModel::RenderClip> TimelineModel::clipsAt(qint64 us) const
@@ -132,7 +154,9 @@ QVector<TimelineModel::RenderClip> TimelineModel::clipsAt(qint64 us) const
         rc.kfTemp.clear(); rc.kfTint.clear(); rc.kfSat.clear();
         rc.kfLiftX.clear(); rc.kfLiftY.clear(); rc.kfGammaX.clear();
         rc.kfGammaY.clear(); rc.kfGainX.clear(); rc.kfGainY.clear();
-        return { c.trackIndex, c.kind, c.fill, c.mediaPath, srcUs, rt, rc, c.title };
+        RenderClip r{ c.trackIndex, c.kind, c.fill, c.mediaPath, srcUs, rt, rc, c.title };
+        r.clipId = c.id;
+        return r;
     };
 
     // Pistas de vídeo de abajo (índice mayor, V1) hacia arriba (índice menor, V3),
@@ -276,6 +300,61 @@ QVariantList TimelineModel::tracks() const
         out.append(tm);
     }
     return out;
+}
+
+QAbstractItemModel *TimelineModel::tracksModel()
+{
+    if (!m_tracksModel)
+        m_tracksModel = new TimelineTracksModel(this, false, this);
+    return m_tracksModel;
+}
+
+QAbstractItemModel *TimelineModel::audioTracksModel()
+{
+    if (!m_audioTracksModel)
+        m_audioTracksModel = new TimelineTracksModel(this, true, this);
+    return m_audioTracksModel;
+}
+
+// ==================== TimelineTracksModel (adaptador QAIM) ====================
+
+TimelineTracksModel::TimelineTracksModel(TimelineModel *tm, bool audio, QObject *parent)
+    : QAbstractListModel(parent), m_tm(tm), m_audio(audio)
+{
+    m_rows = m_audio ? m_tm->audioTracks() : m_tm->tracks();
+    // Mismas señales de las que dependían las propiedades QVariantList equivalentes.
+    if (m_audio) {
+        connect(m_tm, &TimelineModel::audioChanged, this, &TimelineTracksModel::refresh);
+    } else {
+        connect(m_tm, &TimelineModel::changed, this, &TimelineTracksModel::refresh);
+    }
+}
+
+QVariant TimelineTracksModel::data(const QModelIndex &index, int role) const
+{
+    if (!index.isValid() || index.row() < 0 || index.row() >= m_rows.size())
+        return {};
+    if (role == TrackDataRole || role == Qt::DisplayRole)
+        return m_rows.at(index.row());
+    return {};
+}
+
+void TimelineTracksModel::refresh()
+{
+    const QVariantList rows = m_audio ? m_tm->audioTracks() : m_tm->tracks();
+    if (rows.size() != m_rows.size()) {
+        beginResetModel();
+        m_rows = rows;
+        endResetModel();
+        return;
+    }
+    for (int i = 0; i < rows.size(); ++i) {
+        if (rows.at(i) != m_rows.at(i)) {
+            m_rows[i] = rows.at(i);
+            const QModelIndex idx = index(i, 0);
+            emit dataChanged(idx, idx, { TrackDataRole });
+        }
+    }
 }
 
 QVariantList TimelineModel::markers() const
@@ -1580,6 +1659,70 @@ void TimelineModel::removeSelected()
         }));
 }
 
+void TimelineModel::nudgeSelected(qint64 deltaUs)
+{
+    const int idx = indexOfClip(m_selectedId);
+    if (idx < 0 || deltaUs == 0)
+        return;
+    const quint64 id = m_selectedId;
+    const qint64 oldStart = m_clips[idx].startUs;
+    const qint64 newStart = qBound<qint64>(0, oldStart + deltaUs,
+                                           m_totalUs - m_clips[idx].durationUs);
+    if (newStart == oldStart)
+        return;
+    m_undo.push(new TimelineCommand(
+        QStringLiteral("Desplazar clip"),
+        [this, id, newStart]() {
+            const int i = indexOfClip(id);
+            if (i >= 0) { m_clips[i].startUs = newStart; emit changed(); }
+        },
+        [this, id, oldStart]() {
+            const int i = indexOfClip(id);
+            if (i >= 0) { m_clips[i].startUs = oldStart; emit changed(); }
+        }));
+}
+
+int TimelineModel::clipCountForMedia(const QString &path) const
+{
+    if (path.isEmpty())
+        return 0;
+    int n = 0;
+    for (const Clip &c : m_clips)
+        if (c.mediaPath == path)
+            ++n;
+    return n;
+}
+
+void TimelineModel::removeClipsWithMedia(const QString &path)
+{
+    if (path.isEmpty())
+        return;
+    // Instantánea de los clips afectados con su índice (ascendente) para el undo.
+    QVector<QPair<Clip, int>> removed;
+    for (int i = 0; i < m_clips.size(); ++i)
+        if (m_clips.at(i).mediaPath == path)
+            removed.push_back({ m_clips.at(i), i });
+    if (removed.isEmpty())
+        return;
+
+    m_undo.push(new TimelineCommand(
+        QStringLiteral("Eliminar clips del medio"),
+        [this, path]() {
+            for (int i = m_clips.size() - 1; i >= 0; --i)
+                if (m_clips.at(i).mediaPath == path) {
+                    if (m_clips.at(i).id == m_selectedId)
+                        m_selectedId = 0;
+                    doRemoveAt(i);
+                }
+            emit changed();
+        },
+        [this, removed]() {
+            for (const auto &r : removed)   // índices ascendentes: restaura en orden
+                doInsert(r.first, r.second);
+            emit changed();
+        }));
+}
+
 void TimelineModel::moveClipToFraction(quint64 id, int trackIndex, double startFraction)
 {
     const int idx = indexOfClip(id);
@@ -2402,6 +2545,59 @@ void TimelineModel::runSelfTestIfRequested()
         check(none, "srt: sin subtítulo fuera de intervalo");
         m_subtitles.clear();
         setPlayheadUs(0);
+    }
+
+    // 9) Modelo QAIM de pistas: una fila por pista y dataChanged granular.
+    {
+        QAbstractItemModel *tm2 = tracksModel();
+        check(tm2->rowCount() == m_tracks.size(), "tracksModel: una fila por pista");
+        int changedRow = -1;
+        int resets = 0;
+        QObject::connect(tm2, &QAbstractItemModel::dataChanged, tm2,
+                         [&changedRow](const QModelIndex &tl, const QModelIndex &,
+                                       const QList<int> &) { changedRow = tl.row(); });
+        QObject::connect(tm2, &QAbstractItemModel::modelReset, tm2,
+                         [&resets]() { ++resets; });
+        setTrackHidden(1, true);
+        check(changedRow == 1 && resets == 0,
+              "tracksModel: dataChanged granular solo en la pista cambiada");
+        const QVariantMap row = tm2->data(tm2->index(1, 0),
+                                          TimelineTracksModel::TrackDataRole).toMap();
+        check(row.value("hidden").toBool(), "tracksModel: la fila refleja el cambio");
+        setTrackHidden(1, false);
+        QObject::disconnect(tm2, nullptr, tm2, nullptr);
+    }
+
+    // 10) Medios: contar y eliminar los clips que usan una ruta (con undo).
+    {
+        const QString mp = QStringLiteral("selftest://medio.mp4");
+        const auto v = v1sorted();
+        const int nAntes = m_clips.size();
+        m_clips[indexOfClip(v[0].id)].mediaPath = mp;
+        m_clips[indexOfClip(v[1].id)].mediaPath = mp;
+        check(clipCountForMedia(mp) == 2, "clipCountForMedia cuenta los clips del medio");
+        removeClipsWithMedia(mp);
+        check(m_clips.size() == nAntes - 2 && clipCountForMedia(mp) == 0,
+              "removeClipsWithMedia elimina todos los clips del medio");
+        undo();
+        check(m_clips.size() == nAntes && clipCountForMedia(mp) == 2,
+              "undo restaura los clips del medio");
+        for (Clip &c : m_clips)   // limpia la ruta para no afectar pruebas posteriores
+            if (c.mediaPath == mp)
+                c.mediaPath.clear();
+    }
+
+    // 11) Nudge (Ctrl+←/→): desplaza el clip seleccionado, con undo y tope en 0.
+    {
+        const quint64 cid = v1sorted().first().id;   // el primer clip empieza en 0
+        selectClip(cid);
+        const qint64 st = clipById(cid).startUs;
+        nudgeSelected(-40000);   // tope: no puede cruzar el inicio de la secuencia
+        check(clipById(cid).startUs == st, "nudge no cruza el inicio de la secuencia");
+        nudgeSelected(33366);    // un fotograma a 29.97
+        check(clipById(cid).startUs == st + 33366, "nudge derecha desplaza el clip");
+        undo();
+        check(clipById(cid).startUs == st, "undo del nudge restaura la posición");
     }
 
     setSnapEnabled(snapWas);

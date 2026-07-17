@@ -6,6 +6,12 @@
 #include "compositor.h"   // ProgramLayers
 #include "videoframe.h"
 
+class QSGClipNode;
+class QSGOpacityNode;
+class QSGTransformNode;
+class QSGGeometryNode;
+class QSGImageNode;
+
 // Superficie de vídeo: compone el fotograma con el Scene Graph de Qt Quick (RHI),
 // centrado y con letterbox.
 //
@@ -62,6 +68,20 @@ private slots:
 private:
     QRectF targetRect(const QSizeF &frameSize) const;
     QSGNode *buildProgramNode(QSGNode *oldNode, bool softwareSg);
+
+    // Contabilidad por capa del subárbol del PROGRAMA: los nodos persisten entre
+    // fotogramas y las texturas solo se re-suben si cambia el contenido de la capa
+    // (clave por media+tiempo / parámetros del título / color de relleno).
+    struct LayerNodes {
+        QSGClipNode *clip = nullptr;        // opcional (wipe)
+        QSGOpacityNode *op = nullptr;
+        QSGTransformNode *xf = nullptr;
+        QSGGeometryNode *geom = nullptr;    // ruta hw (material)
+        QSGImageNode *img = nullptr;        // ruta software
+        int matKind = 0;                    // 1 RGBA·grade · 2 I420·gradeyuv · 3 NV12 · 4 imagen
+        QString contentKey;
+    };
+    QVector<LayerNodes> m_layerNodes;
 
     QObject *m_source = nullptr;
     QImage m_frame;              // ruta RGBA (compositor / reserva)

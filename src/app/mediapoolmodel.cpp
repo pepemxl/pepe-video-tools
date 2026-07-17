@@ -1,4 +1,5 @@
 #include "mediapoolmodel.h"
+#include "demodata.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -8,6 +9,8 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QStandardPaths>
+#include <QUndoCommand>
+#include <QUndoStack>
 
 #include <functional>
 
@@ -73,7 +76,17 @@ MediaPoolModel::MediaPoolModel(QObject *parent)
                  + QStringLiteral("/thumbs");
     QDir().mkpath(m_cacheDir);
 
-    seedDemo();
+    // La app arranca con el pool VACÍO. Los bins/medios de demo solo se
+    // generan para los autotests que los esperan o con PVS_DEMO=1.
+    if (pvsEnvSet("PVS_DEMO") || pvsEnvSet("PVS_POOL_SELFTEST") || pvsEnvSet("PVS_PROJ_SELFTEST"))
+        seedDemo();
+
+    // PVS_DEMO=1 importa además los medios reales de LOCAL_DATA/.
+    if (pvsEnvSet("PVS_DEMO")) {
+        const QStringList locals = pvsLocalDataMedia();
+        for (const QString &p : locals)
+            importPath(p);
+    }
 
     // Importación automática de demostración (para pruebas): PVS_DEMO_MEDIA=ruta
     const QString demo = QProcessEnvironment::systemEnvironment().value(QStringLiteral("PVS_DEMO_MEDIA"));
@@ -84,6 +97,46 @@ MediaPoolModel::MediaPoolModel(QObject *parent)
 // Paleta de colores para etiquetas de bins (cíclica).
 static const char *kBinColors[] = { "#5b8dd6", "#4a9e6b", "#c98a3e", "#8a6bc0", "#c96a6a" };
 static constexpr int kBinColorCount = 5;
+
+// Comando genérico del pool (redo/undo como lambdas), como TimelineCommand.
+namespace {
+class PoolCommand : public QUndoCommand
+{
+public:
+    PoolCommand(const QString &text, std::function<void()> redoFn, std::function<void()> undoFn)
+        : m_redo(std::move(redoFn)), m_undo(std::move(undoFn)) { setText(text); }
+    void redo() override { m_redo(); }
+    void undo() override { m_undo(); }
+private:
+    std::function<void()> m_redo, m_undo;
+};
+} // namespace
+
+void MediaPoolModel::pushPoolOp(const QString &text, std::function<void()> op)
+{
+    if (!m_undo) {   // sin pila compartida (tests unitarios): operación directa
+        op();
+        return;
+    }
+    // Instantánea de bins / asignaciones (por id, estable ante reordenes) / bin
+    // activo; el undo la restaura tal cual.
+    const QVector<MediaBin> bins = m_bins;
+    QHash<quint64, int> itemBins;
+    for (const MediaItem &it : m_items)
+        itemBins.insert(it.id, it.bin);
+    const int current = m_currentBin;
+    m_undo->push(new PoolCommand(
+        text, std::move(op),
+        [this, bins, itemBins, current]() {
+            m_bins = bins;
+            for (MediaItem &it : m_items)
+                it.bin = itemBins.value(it.id, -1);
+            m_currentBin = current;
+            emit binsChanged();
+            emit currentBinChanged();
+            rebuildVisible();
+        }));
+}
 
 void MediaPoolModel::seedDemo()
 {
@@ -365,15 +418,18 @@ void MediaPoolModel::setCurrentBin(int bin)
 
 int MediaPoolModel::addBin(const QString &name, int parent)
 {
-    MediaBin b;
-    b.name = name.trimmed().isEmpty()
-                 ? QStringLiteral("Bin %1").arg(m_bins.size() + 1)
-                 : name.trimmed();
-    b.color = QString::fromLatin1(kBinColors[m_bins.size() % kBinColorCount]);
-    b.parent = (parent >= -1 && parent < m_bins.size()) ? parent : -1;
-    m_bins.push_back(b);
-    emit binsChanged();
-    return int(m_bins.size()) - 1;
+    const int newIndex = int(m_bins.size());   // los bins se añaden al final
+    pushPoolOp(QStringLiteral("Crear bin"), [this, name, parent]() {
+        MediaBin b;
+        b.name = name.trimmed().isEmpty()
+                     ? QStringLiteral("Bin %1").arg(m_bins.size() + 1)
+                     : name.trimmed();
+        b.color = QString::fromLatin1(kBinColors[m_bins.size() % kBinColorCount]);
+        b.parent = (parent >= -1 && parent < m_bins.size()) ? parent : -1;
+        m_bins.push_back(b);
+        emit binsChanged();
+    });
+    return newIndex;
 }
 
 void MediaPoolModel::renameBin(int index, const QString &name)
@@ -381,32 +437,40 @@ void MediaPoolModel::renameBin(int index, const QString &name)
     const QString t = name.trimmed();
     if (index < 0 || index >= m_bins.size() || t.isEmpty() || m_bins[index].name == t)
         return;
-    m_bins[index].name = t;
-    emit binsChanged();
+    pushPoolOp(QStringLiteral("Renombrar bin"), [this, index, t]() {
+        if (index >= 0 && index < m_bins.size()) {
+            m_bins[index].name = t;
+            emit binsChanged();
+        }
+    });
 }
 
 void MediaPoolModel::removeBin(int index)
 {
     if (index < 0 || index >= m_bins.size())
         return;
-    const int promoted = m_bins[index].parent;   // < index (el padre se crea antes)
-    m_bins.remove(index);
-    // Los hijos del eliminado suben a su padre; los índices superiores bajan.
-    for (MediaBin &b : m_bins) {
-        if (b.parent == index) b.parent = promoted;
-        else if (b.parent > index) --b.parent;
-    }
-    // Sus medios quedan sin bin; los índices superiores bajan una posición.
-    for (MediaItem &it : m_items) {
-        if (it.bin == index) it.bin = -1;
-        else if (it.bin > index) --it.bin;
-    }
-    if (m_currentBin == index)
-        setCurrentBin(-1);
-    else if (m_currentBin > index)
-        m_currentBin -= 1;   // mismo bin activo, índice corrido (sin refiltrar)
-    emit binsChanged();
-    rebuildVisible();
+    pushPoolOp(QStringLiteral("Eliminar bin"), [this, index]() {
+        if (index < 0 || index >= m_bins.size())
+            return;
+        const int promoted = m_bins[index].parent;   // < index (el padre se crea antes)
+        m_bins.remove(index);
+        // Los hijos del eliminado suben a su padre; los índices superiores bajan.
+        for (MediaBin &b : m_bins) {
+            if (b.parent == index) b.parent = promoted;
+            else if (b.parent > index) --b.parent;
+        }
+        // Sus medios quedan sin bin; los índices superiores bajan una posición.
+        for (MediaItem &it : m_items) {
+            if (it.bin == index) it.bin = -1;
+            else if (it.bin > index) --it.bin;
+        }
+        if (m_currentBin == index)
+            setCurrentBin(-1);
+        else if (m_currentBin > index)
+            m_currentBin -= 1;   // mismo bin activo, índice corrido (sin refiltrar)
+        emit binsChanged();
+        rebuildVisible();
+    });
 }
 
 void MediaPoolModel::moveToBin(quint64 id, int binIndex)
@@ -414,9 +478,51 @@ void MediaPoolModel::moveToBin(quint64 id, int binIndex)
     const int row = rowForId(id);
     if (row < 0 || binIndex < -1 || binIndex >= m_bins.size() || m_items[row].bin == binIndex)
         return;
-    m_items[row].bin = binIndex;
-    emit binsChanged();
-    rebuildVisible();   // puede entrar/salir de la vista del bin activo
+    pushPoolOp(QStringLiteral("Mover al bin"), [this, id, binIndex]() {
+        const int r = rowForId(id);
+        if (r < 0 || binIndex < -1 || binIndex >= m_bins.size())
+            return;
+        m_items[r].bin = binIndex;
+        emit binsChanged();
+        rebuildVisible();   // puede entrar/salir de la vista del bin activo
+    });
+}
+
+void MediaPoolModel::removeItem(quint64 id)
+{
+    const int row = rowForId(id);
+    if (row < 0)
+        return;
+    const MediaItem item = m_items.at(row);   // copia para el undo
+    const int selPrev = m_selected;
+
+    auto redoFn = [this, id]() {
+        const int r = rowForId(id);
+        if (r < 0)
+            return;
+        m_items.removeAt(r);
+        // La selección guarda un índice de m_items: ajústala al desplazamiento.
+        if (m_selected == r)
+            m_selected = -1;
+        else if (m_selected > r)
+            --m_selected;
+        rebuildVisible();      // reset del modelo + countChanged + selectedChanged
+        emit binsChanged();    // los contadores de los bins cambian
+        emit mediaRemoved();   // el proyecto se marca sucio
+    };
+    if (!m_undo) {   // sin pila compartida (tests unitarios): directo
+        redoFn();
+        return;
+    }
+    m_undo->push(new PoolCommand(
+        QStringLiteral("Eliminar medio"), std::move(redoFn),
+        [this, item, row, selPrev]() {
+            m_items.insert(qMin(row, int(m_items.size())), item);
+            m_selected = selPrev;
+            rebuildVisible();
+            emit binsChanged();
+            emit mediaImported();   // reapareció un medio (el proyecto se ensucia)
+        }));
 }
 
 QStringList MediaPoolModel::binNames() const
@@ -699,6 +805,44 @@ int runPoolSelfTestIfRequested()
               && pool.bins().at(1).toMap().value("name") == QStringLiteral("Hijo")
               && pool.bins().at(1).toMap().value("depth").toInt() == 0,
           "removeBin promueve los hijos a la raiz");
+
+    // 9) Eliminar un medio del pool.
+    pool.setCurrentBin(-1);
+    const int nAntes = pool.count();
+    pool.setSelectedIndex(0);
+    const quint64 idDel = pool.data(pool.index(0), MediaPoolModel::IdRole).toULongLong();
+    pool.removeItem(idDel);
+    check(pool.count() == nAntes - 1, "removeItem: queda un medio menos");
+    check(pool.selectedIndex() == -1, "removeItem: la seleccion del eliminado se limpia");
+    pool.removeItem(idDel);   // id ya inexistente: no-op
+    check(pool.count() == nAntes - 1, "removeItem con id inexistente es no-op");
+
+    // 10) Undo del pool (pila compartida): medios y bins.
+    QUndoStack undoStack;
+    pool.setUndoStack(&undoStack);
+    const int nU = pool.count();
+    const quint64 idU = pool.data(pool.index(0), MediaPoolModel::IdRole).toULongLong();
+    pool.removeItem(idU);
+    check(pool.count() == nU - 1, "removeItem (undoable) elimina el medio");
+    undoStack.undo();
+    check(pool.count() == nU
+              && pool.data(pool.index(0), MediaPoolModel::IdRole).toULongLong() == idU,
+          "undo restaura el medio con su id y posicion");
+    undoStack.redo();
+    check(pool.count() == nU - 1, "redo vuelve a eliminarlo");
+    undoStack.undo();
+
+    const int nbU = pool.bins().size();
+    const int binU = pool.addBin(QStringLiteral("Temporal"));
+    check(pool.bins().size() == nbU + 1, "addBin (undoable) crea el bin");
+    pool.moveToBin(idU, binU);
+    check(pool.bins().at(binU).toMap().value("count").toInt() == 1,
+          "moveToBin (undoable) asigna el medio");
+    undoStack.undo();   // deshace moveToBin
+    check(pool.bins().at(binU).toMap().value("count").toInt() == 0,
+          "undo deshace la asignacion al bin");
+    undoStack.undo();   // deshace addBin
+    check(pool.bins().size() == nbU, "undo deshace la creacion del bin");
 
     qInfo("[POOL-SELFTEST] resultado: %s (%d fallos)", failures ? "FALLO" : "OK", failures);
     return failures ? 1 : 0;

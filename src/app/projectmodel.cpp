@@ -48,6 +48,7 @@ void ProjectModel::setSources(TimelineModel *timeline, MediaPoolModel *pool)
     }
     if (m_pool) {  // importar/editar bins ensucia el proyecto (filtrar la vista NO)
         connect(m_pool, &MediaPoolModel::mediaImported, this, &ProjectModel::markDirty);
+        connect(m_pool, &MediaPoolModel::mediaRemoved, this, &ProjectModel::markDirty);
         connect(m_pool, &MediaPoolModel::binsChanged, this, &ProjectModel::markDirty);
     }
     m_initial = projectJson();   // instantánea para "Nuevo proyecto"

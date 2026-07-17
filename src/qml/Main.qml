@@ -37,6 +37,18 @@ Window {
                 TimelineModel.addTitleAtPlayhead()
                 e.accepted = true; return
             }
+            // Ctrl+←/→: desplaza el clip seleccionado un fotograma de la
+            // secuencia (con Mayús: un segundo).
+            if (e.modifiers & Qt.ControlModifier
+                    && (e.key === Qt.Key_Left || e.key === Qt.Key_Right)) {
+                if (TimelineModel.hasSelection) {
+                    const fps = Project.seqFps > 0 ? Project.seqFps : 30
+                    const stepUs = (e.modifiers & Qt.ShiftModifier)
+                                     ? 1000000 : Math.round(1e6 / fps)
+                    TimelineModel.nudgeSelected(e.key === Qt.Key_Left ? -stepUs : stepUs)
+                }
+                e.accepted = true; return
+            }
             if (e.modifiers & Qt.ControlModifier && e.key === Qt.Key_E) {  // exportar vídeo
                 if (!Export.running) Export.openExportDialog()
                 e.accepted = true; return

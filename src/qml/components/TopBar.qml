@@ -77,6 +77,10 @@ Rectangle {
                 Mi { text: "Añadir título"; shortcut: "Ctrl+T"; onTriggered: TimelineModel.addTitleAtPlayhead() }
                 Sep {}
                 Mi { text: "Cortar en el playhead"; shortcut: "B"; enabled: TimelineModel.hasSelection; onTriggered: TimelineModel.splitSelectedAtPlayhead() }
+                Mi { text: "Desplazar a la izquierda"; shortcut: "Ctrl+←"; enabled: TimelineModel.hasSelection
+                     onTriggered: TimelineModel.nudgeSelected(-Math.round(1e6 / (Project.seqFps > 0 ? Project.seqFps : 30))) }
+                Mi { text: "Desplazar a la derecha"; shortcut: "Ctrl+→"; enabled: TimelineModel.hasSelection
+                     onTriggered: TimelineModel.nudgeSelected(Math.round(1e6 / (Project.seqFps > 0 ? Project.seqFps : 30))) }
                 Mi { text: "Eliminar"; shortcut: "Supr"; enabled: TimelineModel.hasSelection; onTriggered: TimelineModel.removeSelected() }
                 Mi { text: "Eliminar con ripple"; shortcut: "Mayús+Supr"; enabled: TimelineModel.hasSelection; onTriggered: TimelineModel.rippleDeleteSelected() }
             }

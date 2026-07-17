@@ -144,6 +144,8 @@ static QImage planeImage(const QByteArray &plane, int w, int h)
 // (los materiales personalizados no están soportados ahí).
 static QImage yuvToImageCpu(const VideoFrame &f)
 {
+    if (!f.hasYuv())
+        return {};
     QImage out(f.width, f.height, QImage::Format_RGBA8888);
     YuvMaterial m;   // reutiliza la selección de coeficientes
     m.setColorimetry(f.colorSpace, f.colorRange, f.height);
@@ -167,18 +169,42 @@ static QImage yuvToImageCpu(const VideoFrame &f)
     return out;
 }
 
+// Clave de contenido de una capa: si no cambia, las texturas no se re-suben
+// (editar transform/color/opacidad en pausa solo actualiza matrices y uniforms).
+static QString layerContentKey(const ProgramLayer &layer)
+{
+    if (layer.isVideoFrame)
+        return QStringLiteral("v:%1:%2:%3")
+            .arg(layer.rc.mediaPath).arg(layer.rc.sourceUs / 1000)
+            .arg(layer.vf.hasNative() ? quintptr(layer.vf.native.get()) : 0);
+    if (layer.rc.kind == QLatin1String("title")) {
+        const TimelineModel::Title &tt = layer.rc.title;
+        const TimelineModel::Transform &t = layer.rc.transform;
+        return QStringLiteral("t:%1|%2|%3|%4|%5|%6|%7|%8|%9|%10")
+            .arg(tt.text).arg(tt.sizePt).arg(tt.align).arg(tt.color)
+            .arg(tt.bar).arg(tt.barColor)
+            .arg(t.posX).arg(t.posY).arg(t.rotation).arg(t.scale);
+    }
+    return QStringLiteral("f:") + layer.rc.fill;
+}
+
 // Subárbol de la composición GPU del PROGRAMA. Estructura:
 //   QSGTransformNode raíz (lienzo → ítem: letterbox o zoom/paneo)
 //     rect negro del lienzo
 //     por capa: [QSGClipNode wipe] → QSGOpacityNode → QSGTransformNode → quad
-// El quad usa GradeMaterial (corrección primaria en el shader); con el renderer
-// por software cae a QSGImageNode con la corrección aplicada por CPU.
+// El quad usa GradeYuvMaterial (NV12 zero-copy o planos I420: conversión YUV→RGB +
+// corrección primaria en un paso de shader) o GradeMaterial (RGBA: tiles/rellenos y
+// formatos exóticos). Los nodos PERSISTEN entre fotogramas: las texturas solo se
+// re-suben si cambia el contenido de la capa; matrices/uniforms se actualizan
+// siempre. Con el renderer por software cae a QSGImageNode gradeado por CPU.
 QSGNode *VideoSurface::buildProgramNode(QSGNode *oldNode, bool softwareSg)
 {
     const QSizeF canvas(m_layers.canvas);
     auto *root = static_cast<QSGTransformNode *>(oldNode);
-    if (!root)
+    if (!root) {
         root = new QSGTransformNode;
+        m_layerNodes.clear();
+    }
 
     // Lienzo → ítem (la raíz aplica letterbox/zoom; los hijos viven en px de lienzo).
     const QRectF rect = targetRect(canvas);
@@ -191,95 +217,183 @@ QSGNode *VideoSurface::buildProgramNode(QSGNode *oldNode, bool softwareSg)
         return root;
     m_frameDirty = false;
 
-    // Reconstruye las capas (pocos nodos; el scene graph absorbe el churn a 30 Hz).
-    while (QSGNode *c = root->firstChild()) {
-        root->removeChildNode(c);
-        delete c;
-    }
-    root->appendChildNode(new QSGSimpleRectNode(QRectF(QPointF(0, 0), canvas), Qt::black));
-
-    for (const ProgramLayer &layer : m_layers.layers) {
-        if (layer.rgba.isNull())
-            continue;
-        const TimelineModel::Transform &t = layer.rc.transform;
-
-        QSGNode *parent = root;
-        const bool wiped = layer.rc.wipe >= 0.0 && layer.rc.wipe < 1.0;
-        if (wiped) {
-            auto *clip = new QSGClipNode;
-            clip->setIsRectangular(true);
-            clip->setClipRect(QRectF(0, 0, canvas.width() * layer.rc.wipe, canvas.height()));
-            parent->appendChildNode(clip);
-            parent = clip;
+    // ¿Coincide la estructura (nº de capas, tipo de material, wipe) con la actual?
+    auto kindOf = [softwareSg](const ProgramLayer &layer) {
+        if (softwareSg) return 4;
+        if (layer.vf.hasNative()) return 3;
+        if (layer.vf.hasYuv()) return 2;
+        return 1;
+    };
+    bool structureOk = m_layerNodes.size() == m_layers.layers.size() && root->firstChild();
+    if (structureOk) {
+        for (int i = 0; i < m_layers.layers.size(); ++i) {
+            const ProgramLayer &layer = m_layers.layers.at(i);
+            const bool wiped = layer.rc.wipe >= 0.0 && layer.rc.wipe < 1.0;
+            if (m_layerNodes.at(i).matKind != kindOf(layer)
+                || (m_layerNodes.at(i).clip != nullptr) != wiped) {
+                structureOk = false;
+                break;
+            }
         }
-        auto *op = new QSGOpacityNode;
-        op->setOpacity(t.opacity);
-        parent->appendChildNode(op);
+    }
+    if (!structureOk) {
+        while (QSGNode *c = root->firstChild()) {
+            root->removeChildNode(c);
+            delete c;
+        }
+        m_layerNodes.clear();
+        root->appendChildNode(new QSGSimpleRectNode(QRectF(QPointF(0, 0), canvas), Qt::black));
+        for (const ProgramLayer &layer : m_layers.layers) {
+            LayerNodes ln;
+            ln.matKind = kindOf(layer);
+            QSGNode *parent = root;
+            if (layer.rc.wipe >= 0.0 && layer.rc.wipe < 1.0) {
+                ln.clip = new QSGClipNode;
+                ln.clip->setIsRectangular(true);
+                parent->appendChildNode(ln.clip);
+                parent = ln.clip;
+            }
+            ln.op = new QSGOpacityNode;
+            parent->appendChildNode(ln.op);
+            ln.xf = new QSGTransformNode;
+            ln.op->appendChildNode(ln.xf);
+            if (ln.matKind == 4) {
+                ln.img = window()->createImageNode();
+                ln.img->setOwnsTexture(true);
+                ln.img->setFiltering(QSGTexture::Linear);
+                ln.xf->appendChildNode(ln.img);
+            } else {
+                ln.geom = new QSGGeometryNode;
+                auto *g = new QSGGeometry(QSGGeometry::defaultAttributes_TexturedPoint2D(), 4);
+                ln.geom->setGeometry(g);
+                ln.geom->setFlag(QSGNode::OwnsGeometry);
+                if (ln.matKind == 1)
+                    ln.geom->setMaterial(new GradeMaterial);
+                else
+                    ln.geom->setMaterial(new GradeYuvMaterial);
+                ln.geom->setFlag(QSGNode::OwnsMaterial);
+                ln.xf->appendChildNode(ln.geom);
+            }
+            m_layerNodes.push_back(ln);
+        }
+    }
 
-        auto *xf = new QSGTransformNode;
-        op->appendChildNode(xf);
+    // Actualización por capa: matrices/uniforms siempre; texturas solo si cambió
+    // el contenido (clave). Con la estructura persistente esto es lo único que
+    // corre al editar transform/color en pausa.
+    for (int i = 0; i < m_layers.layers.size(); ++i) {
+        const ProgramLayer &layer = m_layers.layers.at(i);
+        LayerNodes &ln = m_layerNodes[i];
+        const TimelineModel::Transform &t = layer.rc.transform;
+        const VideoFrame &vf = layer.vf;
 
-        // Geometría y transform de la capa (misma matemática que renderFrame por CPU).
+        if (ln.clip) {
+            ln.clip->setClipRect(QRectF(0, 0, canvas.width() * layer.rc.wipe, canvas.height()));
+            ln.clip->markDirty(QSGNode::DirtyGeometry);
+        }
+        ln.op->setOpacity(t.opacity);
+
         QRectF quad;
         QRectF texRect(0, 0, 1, 1);
+        QMatrix4x4 lm;
         if (layer.isVideoFrame) {
-            const double fw = layer.rgba.width(), fh = layer.rgba.height();
+            const double fw = vf.width, fh = vf.height;
             const double cw = qMax(0.02, 1.0 - t.cropL - t.cropR);
             const double ch = qMax(0.02, 1.0 - t.cropT - t.cropB);
-            texRect = QRectF(t.cropL, t.cropT, cw, ch);
+            // Con textura nativa el área válida es width/height dentro de texW/texH.
+            const double sx = vf.hasNative() && vf.texW > 0 ? fw / vf.texW : 1.0;
+            const double sy = vf.hasNative() && vf.texH > 0 ? fh / vf.texH : 1.0;
+            texRect = QRectF(t.cropL * sx, t.cropT * sy, cw * sx, ch * sy);
             const QSizeF fit = QSizeF(fw * cw, fh * ch).scaled(canvas, Qt::KeepAspectRatio);
             const QSizeF dst(fit.width() * t.scale, fit.height() * t.scale);
             quad = QRectF(-dst.width() / 2, -dst.height() / 2, dst.width(), dst.height());
-            QMatrix4x4 lm;
             lm.translate(float(canvas.width() * (0.5 + t.posX)),
                          float(canvas.height() * (0.5 + t.posY)));
             if (t.rotation != 0.0)
                 lm.rotate(float(t.rotation), 0, 0, 1);
-            xf->setMatrix(lm);
         } else {
             // Tile de título o relleno: cubre el lienzo tal cual (paridad con CPU).
             quad = QRectF(QPointF(0, 0), canvas);
         }
+        ln.xf->setMatrix(lm);
 
-        if (!softwareSg) {
-            auto *geom = new QSGGeometryNode;
-            auto *g = new QSGGeometry(QSGGeometry::defaultAttributes_TexturedPoint2D(), 4);
-            QSGGeometry::updateTexturedRectGeometry(g, quad, texRect);
-            geom->setGeometry(g);
-            geom->setFlag(QSGNode::OwnsGeometry);
-            auto *mat = new GradeMaterial;
-            QSGTexture *tex = window()->createTextureFromImage(
-                layer.rgba, QQuickWindow::TextureHasAlphaChannel);
-            if (tex)
-                tex->setFiltering(QSGTexture::Linear);
-            mat->setTexture(tex);
-            if (layer.isVideoFrame)
-                mat->setColor(layer.rc.color);
-            geom->setMaterial(mat);
-            geom->setFlag(QSGNode::OwnsMaterial);
-            xf->appendChildNode(geom);
-        } else {
-            // Renderer por software: sin materiales personalizados; gradea por CPU.
-            QImage img = layer.rgba;
+        const QString key = layerContentKey(layer);
+        const bool newContent = key != ln.contentKey;
+        ln.contentKey = key;
+
+        if (ln.matKind == 4) {
+            QImage img = !vf.rgba.isNull() ? vf.rgba : yuvToImageCpu(vf);
+            if (img.isNull())
+                continue;
             if (layer.isVideoFrame)
                 CompositorWorker::gradeImage(img, layer.rc.color);
-            QSGImageNode *node = window()->createImageNode();
-            node->setOwnsTexture(true);
-            node->setFiltering(QSGTexture::Linear);
-            node->setTexture(window()->createTextureFromImage(
-                img, QQuickWindow::TextureHasAlphaChannel));
-            node->setRect(quad);
-            node->setSourceRect(QRectF(texRect.x() * img.width(), texRect.y() * img.height(),
-                                       texRect.width() * img.width(), texRect.height() * img.height()));
-            xf->appendChildNode(node);
+            if (newContent)
+                ln.img->setTexture(window()->createTextureFromImage(
+                    img, QQuickWindow::TextureHasAlphaChannel));
+            ln.img->setRect(quad);
+            ln.img->setSourceRect(QRectF(texRect.x() * img.width(), texRect.y() * img.height(),
+                                         texRect.width() * img.width(),
+                                         texRect.height() * img.height()));
+            continue;
         }
+
+        QSGGeometry::updateTexturedRectGeometry(ln.geom->geometry(), quad, texRect);
+        ln.geom->markDirty(QSGNode::DirtyGeometry);
+
+        if (ln.matKind == 1) {
+            auto *mat = static_cast<GradeMaterial *>(ln.geom->material());
+            if (newContent) {
+                QSGTexture *tex = window()->createTextureFromImage(
+                    vf.rgba, QQuickWindow::TextureHasAlphaChannel);
+                if (tex)
+                    tex->setFiltering(QSGTexture::Linear);
+                mat->setTexture(tex);
+            }
+            mat->setColor(layer.isVideoFrame ? layer.rc.color : TimelineModel::Color{});
+        } else {
+            auto *mat = static_cast<GradeYuvMaterial *>(ln.geom->material());
+            if (newContent) {
+                if (ln.matKind == 3) {
+                    // NV12 zero-copy: SRVs R8/RG8 sobre la textura nativa.
+                    QRhi *rhi = window()->rhi();
+                    const quint64 nat = quint64(reinterpret_cast<quintptr>(vf.native.get()));
+                    QRhiTexture *ry = rhi->newTexture(QRhiTexture::R8, QSize(vf.texW, vf.texH));
+                    QRhiTexture *ruv = rhi->newTexture(QRhiTexture::RG8,
+                                                       QSize(vf.texW / 2, vf.texH / 2));
+                    if (ry->createFrom({ nat, 0 }) && ruv->createFrom({ nat, 0 })) {
+                        QSGTexture *sy = window()->createTextureFromRhiTexture(ry);
+                        QSGTexture *suv = window()->createTextureFromRhiTexture(ruv);
+                        for (QSGTexture *tx : { sy, suv })
+                            if (tx) tx->setFiltering(QSGTexture::Linear);
+                        mat->setTextures(sy, suv, suv, vf.native);
+                        mat->nv12 = true;
+                    } else {
+                        delete ry;
+                        delete ruv;
+                    }
+                } else {
+                    const int cw = vf.width / 2, chh = vf.height / 2;
+                    QSGTexture *ty = window()->createTextureFromImage(planeImage(vf.y, vf.width, vf.height));
+                    QSGTexture *tu = window()->createTextureFromImage(planeImage(vf.u, cw, chh));
+                    QSGTexture *tv = window()->createTextureFromImage(planeImage(vf.v, cw, chh));
+                    for (QSGTexture *tx : { ty, tu, tv })
+                        if (tx) tx->setFiltering(QSGTexture::Linear);
+                    mat->setTextures(ty, tu, tv);
+                    mat->nv12 = false;
+                }
+            }
+            mat->setColorimetry(vf.colorSpace, vf.colorRange, vf.height);
+            mat->setColor(layer.isVideoFrame ? layer.rc.color : TimelineModel::Color{});
+        }
+        ln.geom->markDirty(QSGNode::DirtyMaterial);
     }
+
     if (qEnvironmentVariableIsSet("PVS_RHI_DEBUG")) {
         static int n = 0;
         ++n;
         if (n <= 3 || n % 30 == 0)
-            qInfo("[RHI] PROGRAMA compuesto en GPU #%d (%lld capas)",
-                  n, qint64(m_layers.layers.size()));
+            qInfo("[RHI] PROGRAMA compuesto en GPU #%d (%lld capas, estructura %s)",
+                  n, qint64(m_layers.layers.size()), structureOk ? "reutilizada" : "nueva");
     }
     return root;
 }
@@ -308,11 +422,13 @@ QSGNode *VideoSurface::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
         if (!m_layers.hasContent || m_layers.layers.isEmpty()
             || !m_layers.canvas.isValid() || width() <= 0 || height() <= 0) {
             delete oldNode;
+            m_layerNodes.clear();
             m_nodeKind = 0;
             return nullptr;
         }
         if (oldNode && m_nodeKind != 3) {
             delete oldNode;
+            m_layerNodes.clear();
             oldNode = nullptr;
         }
         m_nodeKind = 3;

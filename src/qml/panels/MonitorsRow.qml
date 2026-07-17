@@ -50,6 +50,19 @@ Rectangle {
                 }
             }
 
+            // Timecode hh:mm:ss:ff de la secuencia (para el monitor de PROGRAMA).
+            function seqTc(usVal) {
+                const fps = Project.seqFps > 0 ? Project.seqFps : 30
+                const totalFrames = Math.max(0, Math.floor(usVal * fps / 1e6))
+                const ff = totalFrames % Math.round(fps)
+                const secs = Math.floor(totalFrames / fps)
+                const h = Math.floor(secs / 3600)
+                const m = Math.floor((secs % 3600) / 60)
+                const s = secs % 60
+                const p = (n) => (n < 10 ? "0" : "") + n
+                return p(h) + ":" + p(m) + ":" + p(s) + ":" + p(ff)
+            }
+
             Rectangle {
                 Layout.fillWidth: true; height: 30; color: Theme.panel3
                 RowLayout {
@@ -242,7 +255,9 @@ Rectangle {
                     // Timecodes + controles
                     RowLayout {
                         Layout.fillWidth: true
-                        Text { text: live ? ctrl.positionTc : tcLeft; color: tcLeftColor; font.pixelSize: 11; font.family: Theme.mono }
+                        Text { text: program ? mon.seqTc(TimelineModel.playheadUs)
+                                             : (live ? ctrl.positionTc : tcLeft)
+                               color: tcLeftColor; font.pixelSize: 11; font.family: Theme.mono }
                         Item { Layout.fillWidth: true }
                         Row {
                             spacing: 14
@@ -263,7 +278,9 @@ Rectangle {
                                    TapHandler { enabled: Compositor.hasContent; onTapped: Compositor.saveStillDialog() } }
                         }
                         Item { Layout.fillWidth: true }
-                        Text { text: live ? ctrl.durationTc : tcRight; color: Theme.textDim; font.pixelSize: 11; font.family: Theme.mono }
+                        Text { text: program ? mon.seqTc(TimelineModel.contentEndUs)
+                                             : (live ? ctrl.durationTc : tcRight)
+                               color: Theme.textDim; font.pixelSize: 11; font.family: Theme.mono }
                     }
                     Item { Layout.fillHeight: true }
                 }
@@ -274,14 +291,14 @@ Rectangle {
             Layout.fillWidth: true; Layout.fillHeight: true
             title: "ORIGEN"; clipName: "—"
             screenBg: "#20272e"; caption: "SIN CLIP · doble clic en un medio"; program: false
-            fillW: 0.34; tcLeft: "00:00:00:00"; tcRight: "00:00:00:00"
+            fillW: 0; tcLeft: "00:00:00:00"; tcRight: "00:00:00:00"
             ctrl: VideoController
         }
         Monitor {
             Layout.fillWidth: true; Layout.fillHeight: true
-            title: "PROGRAMA"; titleColor: Theme.amber; clipName: "Timeline · Vlog 04"
-            screenBg: "#2a2f26"; caption: "MERCADO · PUESTO"; program: true
-            fillW: 0.52; tcLeft: "00:04:12:08"; tcLeftColor: Theme.amber; tcRight: "00:08:03:14"
+            title: "PROGRAMA"; titleColor: Theme.amber; clipName: "Timeline"
+            screenBg: "#2a2f26"; caption: "SIN CONTENIDO · añade clips a la línea de tiempo"; program: true
+            fillW: 0; tcLeftColor: Theme.amber
         }
     }
 }

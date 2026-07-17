@@ -232,9 +232,11 @@ Rectangle {
                     contentWidth: width; contentHeight: tracksCol.height
                     Column {
                         id: tracksCol; width: parent.width
-                        // Pistas y clips desde TimelineModel (C++)
+                        // Pistas y clips desde TimelineModel (C++). El modelo QAIM emite
+                        // dataChanged granular por pista: los delegados persisten entre
+                        // ediciones (la QVariantList `tracks` los recreaba todos).
                         Repeater {
-                            model: TimelineModel.tracks
+                            model: TimelineModel.tracksModel
                             delegate: Row {
                                 id: trackRow
                                 required property var modelData

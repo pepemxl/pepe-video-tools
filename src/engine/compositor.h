@@ -9,6 +9,7 @@
 #include <QVector>
 
 #include "../app/timelinemodel.h" // TimelineModel::RenderClip
+#include "videoframe.h"
 
 class FrameGrabber;
 class QThread;
@@ -16,11 +17,12 @@ class QTimer;
 
 using RenderClipList = QVector<TimelineModel::RenderClip>;
 
-// Una capa del PROGRAMA lista para componer en GPU: el fotograma decodificado
-// (o el tile del título, o un 1x1 con el color de relleno) más los parámetros
-// del clip (transform, color, opacidad, wipe) que el shader/nodo aplican.
+// Una capa del PROGRAMA lista para componer en GPU: el fotograma decodificado como
+// VideoFrame (textura NV12 zero-copy, planos I420 o RGBA; los tiles de título y los
+// rellenos viajan en `vf.rgba`) más los parámetros del clip (transform, color,
+// opacidad, wipe) que el shader/nodo aplican.
 struct ProgramLayer {
-    QImage rgba;
+    VideoFrame vf;
     TimelineModel::RenderClip rc;
     // true = fotograma real de media: se etalona en el shader y usa el transform
     // completo; false = tile de título o relleno (identidad, lienzo completo).
@@ -66,18 +68,24 @@ public:
 
 public slots:
     void composeFrame(const RenderClipList &clips);
+    // Adopta el ID3D11Device del scene graph: los grabbers pasan a decodificar
+    // zero-copy (los ya abiertos se reabren en el siguiente acceso).
+    void adoptDevice(void *d3dDevice);
 
 signals:
     void frameReady(const QImage &image, bool hasContent);
     void layersReady(const ProgramLayers &layers);
 
 private:
-    FrameGrabber *grabberFor(const QString &path);
+    // Un decodificador por CLIP (clave ruta+clipId): dos clips del mismo archivo
+    // en tiempos distintos conservan cada uno su decode secuencial y su caché.
+    FrameGrabber *grabberFor(const QString &path, quint64 clipId);
 
     QHash<QString, FrameGrabber *> m_grabbers;
     QSize m_outSize;
-    QAtomicInt m_analysis;   // 1 = componer también por CPU (scopes visibles)
-    bool m_gpuLayers = true; // false (PVS_GPU_PROG=0) = solo la ruta CPU clásica
+    QAtomicInt m_analysis;    // 1 = componer también por CPU (scopes visibles)
+    bool m_gpuLayers = true;  // false (PVS_GPU_PROG=0) = solo la ruta CPU clásica
+    void *m_extDev = nullptr; // ID3D11Device* adoptado (referencia de los grabbers)
 };
 
 // Compositor multicapa del monitor de PROGRAMA (fachada en el hilo de GUI).
@@ -104,10 +112,18 @@ public:
     bool analysisActive() const { return m_analysisActive; }
     void setAnalysisActive(bool on);
 
+    // Adopta el ID3D11Device del scene graph (lo invoca la VideoSurface del
+    // PROGRAMA desde el hilo de render; se reenvía al hilo del worker).
+    Q_INVOKABLE void adoptGraphicsDevice(void *d3dDevice);
+
     // Transporte del monitor de PROGRAMA (reproduce la timeline en tiempo real).
     Q_INVOKABLE void play();
     Q_INVOKABLE void pause();
     Q_INVOKABLE void togglePlay();
+
+    // Cadencia del reloj de reproducción = fps de la secuencia (evita el
+    // judder de muestrear a un intervalo fijo distinto del material).
+    void setFrameRate(double fps);
 
     // Botón ● del monitor: guarda el fotograma actual del PROGRAMA como PNG
     // (diálogo nativo de guardado). Sin efecto si aún no hay fotograma.
@@ -122,8 +138,9 @@ signals:
     void playingChanged();
     void analysisActiveChanged();
 
-    // Petición al worker (conexión encolada entre hilos).
+    // Peticiones al worker (conexiones encoladas entre hilos).
     void requestCompose(const RenderClipList &clips);
+    void requestAdoptDevice(void *d3dDevice);
 
 private:
     void scheduleComposite();

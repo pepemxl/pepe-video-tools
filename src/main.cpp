@@ -57,6 +57,9 @@ int main(int argc, char *argv[])
     qmlRegisterSingletonInstance("PepeVideo", 1, 0, "VideoController", &videoController);
 
     TimelineModel timelineModel;
+    // El pool comparte la pila de undo del proyecto: Ctrl+Z global también
+    // deshace eliminar medios y las operaciones de bins.
+    mediaPool.setUndoStack(timelineModel.undoStack());
     qmlRegisterSingletonInstance("PepeVideo", 1, 0, "TimelineModel", &timelineModel);
 
     // Estado de proyecto: nombre/ruta, guardar/abrir .pvsproj, autoguardado y "sucio".
@@ -67,6 +70,12 @@ int main(int argc, char *argv[])
     Compositor compositor;
     compositor.setTimeline(&timelineModel);
     qmlRegisterSingletonInstance("PepeVideo", 1, 0, "Compositor", &compositor);
+
+    // El reloj del PROGRAMA late a los fps de la secuencia (y los sigue si
+    // cambian al abrir otro proyecto o editar los ajustes).
+    compositor.setFrameRate(project.seqFps());
+    QObject::connect(&project, &ProjectModel::sequenceChanged, &compositor,
+                     [&project, &compositor]() { compositor.setFrameRate(project.seqFps()); });
 
     ScopesProvider scopes;
     scopes.setSource(&compositor);

@@ -7,7 +7,10 @@
 #include <QVector>
 #include <qqmlintegration.h>
 
+#include <functional>
+
 class QProcess;
+class QUndoStack;
 
 // Un elemento de medios importado o de demostración.
 struct MediaItem {
@@ -102,6 +105,15 @@ public:
     Q_INVOKABLE void removeBin(int index);
     // Asigna el medio `id` al bin `binIndex` (-1 = quitar del bin).
     Q_INVOKABLE void moveToBin(quint64 id, int binIndex);
+    // Elimina un medio del pool. Los clips de la timeline que lo usan se
+    // eliminan aparte (TimelineModel::removeClipsWithMedia), previa advertencia
+    // en la UI cuando el medio está en uso.
+    Q_INVOKABLE void removeItem(quint64 id);
+
+    // Pila de undo compartida (la del proyecto, TimelineModel::undoStack):
+    // eliminar medios y las operaciones de bins se vuelven undoables con el
+    // Ctrl+Z global. Sin pila (tests unitarios), las operaciones son directas.
+    void setUndoStack(QUndoStack *stack) { m_undo = stack; }
     // Persistencia (proyecto): bins como JSON [{name, parent}] (acepta también el
     // formato antiguo de cadenas), bin de una ruta y restauración.
     QJsonArray binsJson() const;
@@ -116,6 +128,7 @@ signals:
     void filterChanged();
     void selectedChanged();
     void mediaImported();      // se añadió un medio (el proyecto se marca sucio)
+    void mediaRemoved();       // se quitó un medio (el proyecto se marca sucio)
     void binsChanged();        // cambió la ESTRUCTURA de bins/asignaciones (ensucia)
     void currentBinChanged();  // cambió el bin activo (solo vista, no ensucia)
     void importError(const QString &message);
@@ -130,6 +143,9 @@ private:
     // ¿`bin` es `ancestor` o desciende de él?
     bool binIsUnder(int bin, int ancestor) const;
     void generateThumbnail(quint64 id, const QString &path, const QString &kind, double atSeconds);
+    // Ejecuta `op` como comando undoable: el undo restaura una instantánea de
+    // bins / asignaciones / bin activo. Sin pila, ejecuta `op` directamente.
+    void pushPoolOp(const QString &text, std::function<void()> op);
 
     QVector<MediaItem> m_items;
     QVector<MediaBin> m_bins;
@@ -138,6 +154,7 @@ private:
     int m_currentBin = -1;     // bin activo (-1 = todos)
     int m_selected = 0;        // índice del elemento seleccionado en m_items
     quint64 m_nextId = 1;
+    QUndoStack *m_undo = nullptr;   // pila compartida del proyecto (puede ser nula)
     QString m_ffprobe;
     QString m_ffmpeg;
     QString m_cacheDir;
