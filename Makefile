@@ -45,7 +45,7 @@ export QT_PLUGIN_PATH := $(QT_DIR)/plugins
 export QML_IMPORT_PATH := $(QT_DIR)/qml
 export QML2_IMPORT_PATH := $(QT_DIR)/qml
 
-.PHONY: all help configure build rebuild run run-wait clean distclean deploy \
+.PHONY: all help configure build rebuild run run-wait clean distclean deploy installer \
         selftest selftest-audio selftest-comp selftest-tl selftest-export selftest-wave \
         selftest-proj selftest-pool
 
@@ -126,6 +126,15 @@ selftest-tl: build
 ## deploy: empaqueta DLLs y plugins de Qt junto al ejecutable (build redistribuible)
 deploy: build
 	"$(QT_DIR)/bin/windeployqt.exe" --qmldir src/qml "$(EXE_WIN)"
+
+## installer: prepara build/…/installer-stage y compila el setup NSIS (requiere makensis)
+installer: build
+	$(CMAKE) -E rm -rf "$(BUILD_DIR)/installer-stage"
+	$(CMAKE) -E make_directory "$(BUILD_DIR)/installer-stage"
+	$(CMAKE) -E copy "$(EXE_WIN)" "$(BUILD_DIR)/installer-stage"
+	-cmd /c copy /Y "$(subst /,\,$(BUILD_DIR))\*.dll" "$(subst /,\,$(BUILD_DIR))\installer-stage\" >nul
+	"$(QT_DIR)/bin/windeployqt.exe" --qmldir src/qml --dir "$(BUILD_DIR)/installer-stage" "$(EXE_WIN)"
+	-makensis "/DSTAGE=..\$(subst /,\,$(BUILD_DIR))\installer-stage" installer\PepeVideoStudio.nsi
 
 ## clean: borra los artefactos de compilacion (conserva la cache)
 clean:

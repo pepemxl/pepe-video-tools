@@ -51,6 +51,7 @@ if /I "%TARGET%"=="selftest-wave"  goto :selftest_wave
 if /I "%TARGET%"=="selftest-proj"  goto :selftest_proj
 if /I "%TARGET%"=="selftest-pool"  goto :selftest_pool
 if /I "%TARGET%"=="deploy"         goto :deploy
+if /I "%TARGET%"=="installer"      goto :installer
 if /I "%TARGET%"=="clean"          goto :clean
 if /I "%TARGET%"=="distclean"      goto :distclean
 
@@ -73,6 +74,7 @@ echo    selftest-proj   Auto-test de proyecto guardar/abrir (deterministico, sin
 echo    selftest-pool   Auto-test del Media Pool: filtro y bins (deterministico, sin ventana)
 echo    selftest-comp / selftest-tl   Auto-tests que abren la app (cierrala para terminar)
 echo    deploy      Copia DLLs/plugins de Qt junto al .exe (windeployqt)
+echo    installer   Prepara installer-stage y compila el setup NSIS (requiere makensis)
 echo    clean       Borra los objetos de compilacion
 echo    distclean   Borra por completo el directorio de build
 echo.
@@ -168,6 +170,28 @@ goto :end
 :deploy
 call :do_build || goto :fail
 "%QT_DIR%\bin\windeployqt.exe" --qmldir src\qml "%EXE%"
+goto :end
+
+:installer
+call :do_build || goto :fail
+rem 1) Staging limpio: exe + DLLs de FFmpeg (copiadas por el POST_BUILD) +
+rem    despliegue de Qt (windeployqt --dir), sin la basura de CMake del build.
+set "STAGE=%BUILD_DIR:/=\%\installer-stage"
+cmake -E rm -rf "%STAGE%"
+cmake -E make_directory "%STAGE%"
+copy /Y "%EXE%" "%STAGE%\" >nul
+copy /Y "%BUILD_DIR:/=\%\*.dll" "%STAGE%\" >nul 2>nul
+"%QT_DIR%\bin\windeployqt.exe" --qmldir src\qml --dir "%STAGE%" "%EXE%" || goto :fail
+rem 2) Compila el setup con NSIS si esta disponible.
+where makensis >nul 2>nul
+if errorlevel 1 (
+    echo [installer] Staging listo en %STAGE%.
+    echo [installer] makensis no esta en el PATH: instala NSIS ^(https://nsis.sourceforge.io^)
+    echo [installer] y ejecuta:  makensis installer\PepeVideoStudio.nsi
+    goto :end
+)
+makensis "/DSTAGE=..\%STAGE%" installer\PepeVideoStudio.nsi
+echo [installer] Setup generado en installer\
 goto :end
 
 :clean
