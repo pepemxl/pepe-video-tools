@@ -3,12 +3,19 @@
 #include <QImage>
 #include <QQuickItem>
 
-// Superficie de vídeo: sube el fotograma RGBA a una textura GPU y lo compone con el
-// Scene Graph de Qt Quick (RHI), centrado y con letterbox. Reemplaza al antiguo
-// QQuickPaintedItem que pintaba por CPU.
+#include "videoframe.h"
+
+// Superficie de vídeo: compone el fotograma con el Scene Graph de Qt Quick (RHI),
+// centrado y con letterbox.
 //
-// La fuente es cualquier QObject que emita `frameReady(QImage)` (VideoController para el
-// monitor ORIGEN, Compositor para el de PROGRAMA), conectado por firma de señal.
+// Dos rutas de subida a GPU:
+//  - YUV (monitor ORIGEN): la fuente entrega planos I420 (`frameReady(VideoFrame)`);
+//    se suben como tres texturas R8 y la conversión YUV→RGB corre en el fragment
+//    shader (YuvMaterial) — sin swscale ni QImage RGBA intermedia.
+//  - RGBA (monitor PROGRAMA): la fuente entrega el fotograma ya compuesto
+//    (`frameReady(QImage)`) y se sube con una textura clásica (QSGImageNode).
+// Con el renderer por software de Qt Quick (sin RHI) la ruta YUV cae a una
+// conversión por CPU, ya que los materiales personalizados no están soportados.
 class VideoSurface : public QQuickItem
 {
     Q_OBJECT
@@ -44,11 +51,17 @@ protected:
 
 private slots:
     void onFrame(const QImage &image);
+    void onVideoFrame(const VideoFrame &frame);
 
 private:
+    QRectF targetRect(const QSizeF &frameSize) const;
+
     QObject *m_source = nullptr;
-    QImage m_frame;
+    QImage m_frame;              // ruta RGBA (compositor / reserva)
+    VideoFrame m_yuv;            // ruta YUV (decodificador del ORIGEN)
     double m_zoom = 0.0;         // 0 = ajustar; >0 = factor de zoom
     double m_panX = 0.0, m_panY = 0.0;   // paneo (px) con zoom
     bool m_frameDirty = false;   // hay un fotograma nuevo que subir a textura
+    bool m_devSent = false;      // ya se adoptó el device D3D11 hacia la fuente
+    int m_nodeKind = 0;          // 0 ninguno · 1 imagen RGBA · 2 material YUV
 };

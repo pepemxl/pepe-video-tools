@@ -225,23 +225,8 @@ int runGrabSelfTestIfRequested()
     };
 
     // 1) Genera un MP4 de prueba con el exportador: 2 s @ 24 fps, naranja → azul en 1 s.
-    ExportJob job;
-    job.path = QDir(QDir::tempPath()).filePath(QStringLiteral("pvs_grab_selftest.mp4"));
-    job.width = 320; job.height = 180; job.fps = 24.0; job.durationUs = 2'000'000;
-    for (int i = 0; i < 48; ++i) {
-        TimelineModel::RenderClip rc;
-        rc.trackIndex = 0; rc.kind = QStringLiteral("video");
-        rc.fill = i < 24 ? QStringLiteral("#c06030") : QStringLiteral("#3060c0");
-        rc.sourceUs = 0;
-        job.frames.push_back(QVector<TimelineModel::RenderClip>{ rc });
-    }
-    QFile::remove(job.path);
-    ExportWorker worker;
-    bool encOk = false;
-    QObject::connect(&worker, &ExportWorker::finished,
-                     [&encOk](bool o, const QString &) { encOk = o; });
-    worker.run(job);
-    check(encOk && QFileInfo(job.path).size() > 1024, "genera el MP4 de prueba (exportador)");
+    const QString mp4 = QDir(QDir::tempPath()).filePath(QStringLiteral("pvs_grab_selftest.mp4"));
+    check(pvsWriteColorTestMp4(mp4), "genera el MP4 de prueba (exportador)");
 
     auto center = [](const QImage &f) { return f.pixelColor(f.width() / 2, f.height() / 2); };
     auto approx = [](const QColor &c, int r, int g, int b) {
@@ -253,7 +238,7 @@ int runGrabSelfTestIfRequested()
     bool hwActive = false;
     {
         FrameGrabber g;
-        check(g.open(job.path), "abre el MP4 (ruta por defecto)");
+        check(g.open(mp4), "abre el MP4 (ruta por defecto)");
         hwActive = g.usingHw();
         a0 = g.frameAt(100);
         a1 = g.frameAt(1500);
@@ -269,7 +254,7 @@ int runGrabSelfTestIfRequested()
     qputenv("PVS_HWACCEL", "0");
     {
         FrameGrabber g;
-        check(g.open(job.path) && !g.usingHw(), "PVS_HWACCEL=0 desactiva el hardware");
+        check(g.open(mp4) && !g.usingHw(), "PVS_HWACCEL=0 desactiva el hardware");
         const QImage b0 = g.frameAt(100), b1 = g.frameAt(1500);
         auto same = [](const QImage &a, const QImage &b) {
             if (a.isNull() || b.isNull() || a.size() != b.size())

@@ -1,6 +1,11 @@
+#include <QColor>
+#include <QDir>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
+#include <QQuickItemGrabResult>
+#include <QTimer>
 #include <QtQml>
+#include <functional>
 
 #include "app/mediapoolmodel.h"
 #include "app/projectmodel.h"
@@ -140,6 +145,74 @@ int main(int argc, char *argv[])
     // avisos "Unable to assign [undefined]" antes de reevaluarse. Instanciarlo
     // aquí lo deja disponible desde el primer binding.
     engine.loadFromModule("PepeVideo", "Main");
+
+    // Auto-test del visor (PVS_YUV_SELFTEST, con ventana): abre un MP4 de prueba en el
+    // monitor ORIGEN y comprueba los colores que el material YUV renderiza en pantalla
+    // (fotograma naranja en 0 s y azul en 1.5 s). Termina solo con el resultado.
+    if (qEnvironmentVariableIsSet("PVS_YUV_SELFTEST")) {
+        const QString mp4 = QDir(QDir::tempPath()).filePath(QStringLiteral("pvs_yuv_selftest.mp4"));
+        if (!pvsWriteColorTestMp4(mp4)) {
+            qInfo("[YUV-SELFTEST] no se pudo generar el MP4 de prueba => FALLO");
+            return 1;
+        }
+        videoController.open(mp4);
+
+        static int fails = 0;
+        auto approx = [](const QColor &c, int r, int g, int b) {
+            return qAbs(c.red() - r) < 32 && qAbs(c.green() - g) < 32 && qAbs(c.blue() - b) < 32;
+        };
+        auto findSurface = [&engine, &videoController]() -> VideoSurface * {
+            const auto roots = engine.rootObjects();
+            for (QObject *root : roots)
+                for (VideoSurface *s : root->findChildren<VideoSurface *>())
+                    if (s->source() == &videoController)
+                        return s;
+            return nullptr;
+        };
+        auto grabAndCheck = [approx](VideoSurface *surf, int r, int g, int b,
+                                     const char *what, std::function<void()> then) {
+            auto grab = surf->grabToImage();
+            if (!grab) {
+                qInfo("[YUV-SELFTEST] grabToImage falló en '%s' => FALLO", what);
+                QCoreApplication::exit(1);
+                return;
+            }
+            QObject::connect(grab.data(), &QQuickItemGrabResult::ready,
+                             [grab, approx, r, g, b, what, then]() {
+                const QImage img = grab->image();
+                const QColor c = img.isNull() ? QColor()
+                    : img.pixelColor(img.width() / 2, img.height() / 2);
+                const bool ok = !img.isNull() && approx(c, r, g, b);
+                qInfo("[YUV-SELFTEST] %-40s (%d,%d,%d)  %s", what,
+                      c.red(), c.green(), c.blue(), ok ? "OK" : "FALLO");
+                if (!ok) ++fails;
+                then();
+            });
+        };
+        QTimer::singleShot(1800, &app, [&videoController, findSurface, grabAndCheck]() {
+            VideoSurface *surf = findSurface();
+            if (!surf) {
+                qInfo("[YUV-SELFTEST] VideoSurface del ORIGEN no encontrada => FALLO");
+                QCoreApplication::exit(1);
+                return;
+            }
+            grabAndCheck(surf, 0xc0, 0x60, 0x30, "0.0 s: naranja en pantalla",
+                         [&videoController, surf, grabAndCheck]() {
+                videoController.seekMs(1500);
+                QTimer::singleShot(900, surf, [surf, grabAndCheck]() {
+                    grabAndCheck(surf, 0x30, 0x60, 0xc0, "1.5 s: azul en pantalla", []() {
+                        qInfo("[YUV-SELFTEST] resultado: %s (%d fallos)",
+                              fails ? "FALLO" : "OK", fails);
+                        QCoreApplication::exit(fails ? 1 : 0);
+                    });
+                });
+            });
+        });
+        QTimer::singleShot(15000, &app, []() {
+            qInfo("[YUV-SELFTEST] timeout => FALLO");
+            QCoreApplication::exit(1);
+        });
+    }
 
     return app.exec();
 }

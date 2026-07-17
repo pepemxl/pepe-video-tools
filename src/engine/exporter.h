@@ -107,3 +107,7 @@ private:
 // Auto-test de exportación (PVS_EXPORT_SELFTEST): exporta ~2 s a un MP4 temporal y
 // verifica que el archivo existe y tiene tamaño. Devuelve 0/1/-1 (no solicitado).
 int runExportSelfTestIfRequested();
+
+// Escribe un MP4 de prueba de 2 s @ 24 fps, 320x180: primer segundo naranja
+// (#c06030) y segundo azul (#3060c0). Para los autotests de decodificación.
+bool pvsWriteColorTestMp4(const QString &path);

@@ -369,6 +369,27 @@ void Exporter::openExportDialog()
 
 // ============================ Auto-test ============================
 
+bool pvsWriteColorTestMp4(const QString &path)
+{
+    ExportJob job;
+    job.path = path;
+    job.width = 320; job.height = 180; job.fps = 24.0; job.durationUs = 2'000'000;
+    for (int i = 0; i < 48; ++i) {
+        TimelineModel::RenderClip rc;
+        rc.trackIndex = 0; rc.kind = QStringLiteral("video");
+        rc.fill = i < 24 ? QStringLiteral("#c06030") : QStringLiteral("#3060c0");
+        rc.sourceUs = 0;
+        job.frames.push_back(QVector<TimelineModel::RenderClip>{ rc });
+    }
+    QFile::remove(job.path);
+    ExportWorker worker;
+    bool ok = false;
+    QObject::connect(&worker, &ExportWorker::finished,
+                     [&ok](bool o, const QString &) { ok = o; });
+    worker.run(job);
+    return ok && QFileInfo(job.path).size() > 1024;
+}
+
 int runExportSelfTestIfRequested()
 {
     if (qEnvironmentVariableIsEmpty("PVS_EXPORT_SELFTEST"))

@@ -1,9 +1,10 @@
 #pragma once
 
-#include <QImage>
 #include <QObject>
 #include <QString>
 #include <QUrl>
+
+#include "../engine/videoframe.h"
 
 class QThread;
 class VideoDecoder;
@@ -36,6 +37,9 @@ public:
     double fraction() const { return m_durationMs > 0 ? double(m_positionMs) / m_durationMs : 0.0; }
 
     Q_INVOKABLE void open(const QString &pathOrUrl);
+    // Adopta el ID3D11Device del scene graph (lo reenvía al hilo del decodificador
+    // para el decode zero-copy). Lo invoca la VideoSurface desde el hilo de render.
+    Q_INVOKABLE void adoptGraphicsDevice(void *d3dDevice);
     Q_INVOKABLE void play();
     Q_INVOKABLE void pause();
     Q_INVOKABLE void togglePlay();
@@ -45,7 +49,8 @@ public:
     Q_INVOKABLE void stepFrame(int frames);
 
 signals:
-    void frameReady(const QImage &image);
+    // Fotograma para la VideoSurface: planos YUV (conversión en GPU) o RGBA de reserva.
+    void frameReady(const VideoFrame &frame);
     void hasMediaChanged();
     void playingChanged();
     void positionChanged();
@@ -54,6 +59,7 @@ signals:
 
     // Señales internas dirigidas al decodificador (otro hilo).
     void requestOpen(const QString &path);
+    void requestAdoptDevice(void *d3dDevice);
     void requestPlay();
     void requestPause();
     void requestSeek(qint64 ms);

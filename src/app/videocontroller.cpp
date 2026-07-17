@@ -6,12 +6,15 @@
 
 VideoController::VideoController(QObject *parent) : QObject(parent)
 {
+    qRegisterMetaType<VideoFrame>("VideoFrame");   // señal encolada entre hilos
+
     m_thread = new QThread(this);
     m_decoder = new VideoDecoder;          // sin parent: se mueve de hilo
     m_decoder->moveToThread(m_thread);
 
     // Comandos (GUI -> decodificador), entregados en el hilo de trabajo.
     connect(this, &VideoController::requestOpen, m_decoder, &VideoDecoder::openFile);
+    connect(this, &VideoController::requestAdoptDevice, m_decoder, &VideoDecoder::adoptDevice);
     connect(this, &VideoController::requestPlay, m_decoder, &VideoDecoder::play);
     connect(this, &VideoController::requestPause, m_decoder, &VideoDecoder::pause);
     connect(this, &VideoController::requestSeek, m_decoder, &VideoDecoder::seek);
@@ -26,7 +29,7 @@ VideoController::VideoController(QObject *parent) : QObject(parent)
                 if (ok && m_pendingPlay) { m_pendingPlay = false; play(); }
             });
     connect(m_decoder, &VideoDecoder::frameReady, this,
-            [this](const QImage &img, qint64) { emit frameReady(img); });
+            [this](const VideoFrame &f, qint64) { emit frameReady(f); });
     connect(m_decoder, &VideoDecoder::positionChanged, this,
             [this](qint64 ms) { if (m_positionMs != ms) { m_positionMs = ms; emit positionChanged(); } });
     connect(m_decoder, &VideoDecoder::playbackFinished, this,
@@ -47,6 +50,11 @@ VideoController::~VideoController()
 {
     m_thread->quit();
     m_thread->wait();
+}
+
+void VideoController::adoptGraphicsDevice(void *d3dDevice)
+{
+    emit requestAdoptDevice(d3dDevice);
 }
 
 void VideoController::open(const QString &pathOrUrl)

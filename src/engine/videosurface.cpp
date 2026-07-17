@@ -1,8 +1,11 @@
 #include "videosurface.h"
+#include "yuvmaterial.h"
 
 #include <QQuickWindow>
+#include <QSGGeometryNode>
 #include <QSGImageNode>
 #include <QSGTexture>
+#include <rhi/qrhi.h>
 
 VideoSurface::VideoSurface(QQuickItem *parent) : QQuickItem(parent)
 {
@@ -17,8 +20,13 @@ void VideoSurface::setSource(QObject *source)
         disconnect(m_source, nullptr, this, nullptr);
     m_source = source;
     if (m_source) {
-        // Conexión por firma: cualquier fuente con `frameReady(QImage)` sirve.
-        connect(m_source, SIGNAL(frameReady(QImage)), this, SLOT(onFrame(QImage)));
+        // Conexión por firma: la fuente emite frameReady(VideoFrame) (decodificador
+        // del ORIGEN, ruta YUV) o frameReady(QImage) (compositor del PROGRAMA).
+        const QMetaObject *mo = m_source->metaObject();
+        if (mo->indexOfSignal("frameReady(VideoFrame)") >= 0)
+            connect(m_source, SIGNAL(frameReady(VideoFrame)), this, SLOT(onVideoFrame(VideoFrame)));
+        else
+            connect(m_source, SIGNAL(frameReady(QImage)), this, SLOT(onFrame(QImage)));
     }
     emit sourceChanged();
 }
@@ -54,6 +62,20 @@ void VideoSurface::setPanY(double v)
 void VideoSurface::onFrame(const QImage &image)
 {
     m_frame = image;
+    m_yuv = VideoFrame();
+    m_frameDirty = true;
+    update();
+}
+
+void VideoSurface::onVideoFrame(const VideoFrame &frame)
+{
+    if (frame.hasNative() || frame.hasYuv()) {
+        m_yuv = frame;
+        m_frame = QImage();
+    } else {
+        m_frame = frame.rgba;
+        m_yuv = VideoFrame();
+    }
     m_frameDirty = true;
     update();
 }
@@ -65,11 +87,185 @@ void VideoSurface::geometryChange(const QRectF &newGeometry, const QRectF &oldGe
         update(); // recalcular el letterbox
 }
 
+// Ajuste (letterbox KeepAspectRatio) o zoom fijo sobre el tamaño nativo del
+// fotograma; con zoom, 1.0 = un píxel de origen por píxel físico (÷ el DPR).
+QRectF VideoSurface::targetRect(const QSizeF &frameSize) const
+{
+    const QSizeF area = size();
+    QSizeF scaled;
+    if (m_zoom > 0.0) {
+        const qreal dpr = window() ? window()->effectiveDevicePixelRatio() : 1.0;
+        scaled = frameSize * (m_zoom / dpr);
+    } else {
+        scaled = frameSize.scaled(area, Qt::KeepAspectRatio);
+    }
+    // El paneo solo aplica con zoom (en ajuste el fotograma cabe entero).
+    const double px = m_zoom > 0.0 ? m_panX : 0.0;
+    const double py = m_zoom > 0.0 ? m_panY : 0.0;
+    return QRectF((area.width() - scaled.width()) / 2.0 + px,
+                  (area.height() - scaled.height()) / 2.0 + py,
+                  scaled.width(), scaled.height());
+}
+
+// QImage R8 que comparte el plano sin copiarlo: la función de limpieza retiene una
+// referencia al QByteArray mientras la textura lo necesite.
+static QImage planeImage(const QByteArray &plane, int w, int h)
+{
+    auto *keep = new QByteArray(plane);
+    return QImage(reinterpret_cast<const uchar *>(keep->constData()), w, h, w,
+                  QImage::Format_Grayscale8,
+                  [](void *p) { delete static_cast<QByteArray *>(p); }, keep);
+}
+
+// Conversión YUV→RGB por CPU, solo para el renderer por software de Qt Quick
+// (los materiales personalizados no están soportados ahí).
+static QImage yuvToImageCpu(const VideoFrame &f)
+{
+    QImage out(f.width, f.height, QImage::Format_RGBA8888);
+    YuvMaterial m;   // reutiliza la selección de coeficientes
+    m.setColorimetry(f.colorSpace, f.colorRange, f.height);
+    const int cw = f.width / 2;
+    for (int yy = 0; yy < f.height; ++yy) {
+        const uchar *py = reinterpret_cast<const uchar *>(f.y.constData()) + qsizetype(yy) * f.width;
+        const uchar *pu = reinterpret_cast<const uchar *>(f.u.constData()) + qsizetype(yy / 2) * cw;
+        const uchar *pv = reinterpret_cast<const uchar *>(f.v.constData()) + qsizetype(yy / 2) * cw;
+        uchar *dst = out.scanLine(yy);
+        for (int x = 0; x < f.width; ++x) {
+            const float Y = (py[x] / 255.0f - m.yOff) * m.yScale;
+            const float U = pu[x / 2] / 255.0f - 0.5f;
+            const float V = pv[x / 2] / 255.0f - 0.5f;
+            const float r = Y + m.rV * V, g = Y + m.gU * U + m.gV * V, b = Y + m.bU * U;
+            dst[4 * x + 0] = uchar(qBound(0.0f, r, 1.0f) * 255.0f + 0.5f);
+            dst[4 * x + 1] = uchar(qBound(0.0f, g, 1.0f) * 255.0f + 0.5f);
+            dst[4 * x + 2] = uchar(qBound(0.0f, b, 1.0f) * 255.0f + 0.5f);
+            dst[4 * x + 3] = 255;
+        }
+    }
+    return out;
+}
+
 QSGNode *VideoSurface::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
 {
-    if (m_frame.isNull() || width() <= 0 || height() <= 0) {
+    // Handoff del dispositivo D3D11 del scene graph hacia la fuente (una vez): el
+    // decodificador lo usa para el decode zero-copy. Solo con el backend D3D11 y
+    // si la fuente sabe adoptarlo (VideoController; el Compositor no lo necesita).
+    if (!m_devSent && m_source && window()
+        && window()->rendererInterface()->graphicsApi() == QSGRendererInterface::Direct3D11
+        && m_source->metaObject()->indexOfMethod("adoptGraphicsDevice(void*)") >= 0) {
+        if (void *dev = window()->rendererInterface()->getResource(
+                window(), QSGRendererInterface::DeviceResource)) {
+            QMetaObject::invokeMethod(m_source, "adoptGraphicsDevice",
+                                      Qt::QueuedConnection, Q_ARG(void *, dev));
+            m_devSent = true;
+        }
+    }
+
+    const bool softwareSg = window()
+        && window()->rendererInterface()->graphicsApi() == QSGRendererInterface::Software;
+    const bool useNative = m_yuv.hasNative() && !softwareSg;
+    const bool useYuv = (useNative || m_yuv.hasYuv()) && !softwareSg;
+    // Renderer por software: los materiales personalizados no funcionan; convierte por CPU.
+    if (m_yuv.hasYuv() && !m_yuv.hasNative() && softwareSg && m_frameDirty)
+        m_frame = yuvToImageCpu(m_yuv);
+
+    if ((useYuv ? false : m_frame.isNull()) || width() <= 0 || height() <= 0) {
         delete oldNode;
+        m_nodeKind = 0;
         return nullptr;
+    }
+
+    const int wantKind = useYuv ? 2 : 1;
+    if (oldNode && m_nodeKind != wantKind) {
+        delete oldNode;
+        oldNode = nullptr;
+    }
+    m_nodeKind = wantKind;
+
+    if (useYuv) {
+        auto *node = static_cast<QSGGeometryNode *>(oldNode);
+        YuvMaterial *mat = nullptr;
+        if (!node) {
+            node = new QSGGeometryNode;
+            auto *g = new QSGGeometry(QSGGeometry::defaultAttributes_TexturedPoint2D(), 4);
+            node->setGeometry(g);
+            node->setFlag(QSGNode::OwnsGeometry);
+            mat = new YuvMaterial;
+            node->setMaterial(mat);
+            node->setFlag(QSGNode::OwnsMaterial);
+        } else {
+            mat = static_cast<YuvMaterial *>(node->material());
+        }
+
+        if (m_frameDirty || !mat->texture(0)) {
+            if (useNative) {
+                // Zero-copy: dos SRVs sobre la textura NV12 nativa (R8 = plano Y,
+                // R8G8 = plano UV, la forma canónica de muestrear NV12 en D3D11).
+                QRhi *rhi = window()->rhi();
+                const quint64 nat = quint64(reinterpret_cast<quintptr>(m_yuv.native.get()));
+                QRhiTexture *ry = rhi->newTexture(QRhiTexture::R8,
+                                                  QSize(m_yuv.texW, m_yuv.texH));
+                QRhiTexture *ruv = rhi->newTexture(QRhiTexture::RG8,
+                                                   QSize(m_yuv.texW / 2, m_yuv.texH / 2));
+                if (!ry->createFrom({ nat, 0 }) || !ruv->createFrom({ nat, 0 })) {
+                    // No se pudo envolver la textura nativa: conserva el último
+                    // fotograma visible si lo hay; si el nodo está vacío, retíralo.
+                    delete ry;
+                    delete ruv;
+                    m_frameDirty = false;
+                    if (!mat->texture(0)) {
+                        delete node;
+                        m_nodeKind = 0;
+                        return nullptr;
+                    }
+                    return node;
+                }
+                // Las QSGTexture devueltas poseen su QRhiTexture (lo destruyen al
+                // liberarse); la textura NV12 nativa la retiene el material.
+                QSGTexture *sy = window()->createTextureFromRhiTexture(ry);
+                QSGTexture *suv = window()->createTextureFromRhiTexture(ruv);
+                for (QSGTexture *t : { sy, suv })
+                    if (t) t->setFiltering(QSGTexture::Linear);
+                mat->setTextures(sy, suv, suv, m_yuv.native);
+                mat->nv12 = true;
+                if (qEnvironmentVariableIsSet("PVS_RHI_DEBUG")) {
+                    static int zn = 0;
+                    ++zn;
+                    if (zn <= 3 || zn % 30 == 0)
+                        qInfo("[RHI] NV12 zero-copy #%d (%dx%d, sin paso por RAM)",
+                              zn, m_yuv.width, m_yuv.height);
+                }
+            } else {
+                const int cw = m_yuv.width / 2, ch = m_yuv.height / 2;
+                QSGTexture *ty = window()->createTextureFromImage(planeImage(m_yuv.y, m_yuv.width, m_yuv.height));
+                QSGTexture *tu = window()->createTextureFromImage(planeImage(m_yuv.u, cw, ch));
+                QSGTexture *tv = window()->createTextureFromImage(planeImage(m_yuv.v, cw, ch));
+                for (QSGTexture *t : { ty, tu, tv })
+                    if (t) t->setFiltering(QSGTexture::Linear);
+                mat->setTextures(ty, tu, tv);
+                mat->nv12 = false;
+                if (qEnvironmentVariableIsSet("PVS_RHI_DEBUG")) {
+                    static int n = 0;
+                    ++n;
+                    if (n <= 3 || n % 30 == 0)
+                        qInfo("[RHI] planos YUV #%d subidos (%dx%d, conversión en GPU)",
+                              n, m_yuv.width, m_yuv.height);
+                }
+            }
+            mat->setColorimetry(m_yuv.colorSpace, m_yuv.colorRange, m_yuv.height);
+            node->markDirty(QSGNode::DirtyMaterial);
+            m_frameDirty = false;
+        }
+
+        // Con textura nativa el tamaño real puede exceder el visible (alineación del
+        // decoder): recorta con las coordenadas de textura.
+        const QRectF texRect = useNative && m_yuv.texW > 0
+            ? QRectF(0, 0, qreal(m_yuv.width) / m_yuv.texW, qreal(m_yuv.height) / m_yuv.texH)
+            : QRectF(0, 0, 1, 1);
+        QSGGeometry::updateTexturedRectGeometry(node->geometry(),
+                                                targetRect(QSizeF(m_yuv.width, m_yuv.height)),
+                                                texRect);
+        node->markDirty(QSGNode::DirtyGeometry);
+        return node;
     }
 
     auto *node = static_cast<QSGImageNode *>(oldNode);
@@ -92,21 +288,6 @@ QSGNode *VideoSurface::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
         }
     }
 
-    // Ajuste (letterbox KeepAspectRatio) o zoom fijo sobre el tamaño nativo del
-    // fotograma; con zoom, 1.0 = un píxel de origen por píxel físico (÷ el DPR).
-    const QSizeF area = size();
-    QSizeF scaled;
-    if (m_zoom > 0.0) {
-        const qreal dpr = window() ? window()->effectiveDevicePixelRatio() : 1.0;
-        scaled = QSizeF(m_frame.size()) * (m_zoom / dpr);
-    } else {
-        scaled = QSizeF(m_frame.size()).scaled(area, Qt::KeepAspectRatio);
-    }
-    // El paneo solo aplica con zoom (en ajuste el fotograma cabe entero).
-    const double px = m_zoom > 0.0 ? m_panX : 0.0;
-    const double py = m_zoom > 0.0 ? m_panY : 0.0;
-    node->setRect(QRectF((area.width() - scaled.width()) / 2.0 + px,
-                         (area.height() - scaled.height()) / 2.0 + py,
-                         scaled.width(), scaled.height()));
+    node->setRect(targetRect(QSizeF(m_frame.size())));
     return node;
 }
