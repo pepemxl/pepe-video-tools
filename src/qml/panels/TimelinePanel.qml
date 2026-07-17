@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls.Basic as C
 import PepeVideo
 
 // Región inferior: barra de herramientas + pistas + mezclador.
@@ -57,6 +58,7 @@ Rectangle {
                             { g: "ripple", tip: "Ripple (RR)", sep: false },
                             { g: "roll",   tip: "Roll (N)", sep: false },
                             { g: "slip",   tip: "Deslizar · Slip (Y)", sep: false },
+                            { g: "uslide", tip: "Slide (U)", sep: false },
                             { g: "trim",   tip: "Recorte fino · Trim (W)", sep: true },
                             { g: "pen",    tip: "Pluma · Keyframes (P)", sep: false },
                             { g: "zoom",   tip: "Zoom (Z)", sep: false }
@@ -302,12 +304,13 @@ Rectangle {
                                             property real trDx: 0   // recortar borde derecho
                                             property real slipDx: 0 // deslizar contenido (no mueve el clip)
                                             readonly property bool moveTool: tlRoot.currentTool === 0
-                                            readonly property bool trimTool: tlRoot.currentTool === 6
+                                            readonly property bool trimTool: tlRoot.currentTool === 7
                                             readonly property bool rollTool: tlRoot.currentTool === 4
                                             readonly property bool rippleTool: tlRoot.currentTool === 3
                                             readonly property bool slipTool: tlRoot.currentTool === 5
+                                            readonly property bool slideTool: tlRoot.currentTool === 6
                                             readonly property bool trackTool: tlRoot.currentTool === 1
-                                            readonly property bool penTool: tlRoot.currentTool === 7
+                                            readonly property bool penTool: tlRoot.currentTool === 8
                                             x: lane.offX + lane.contentW * modelData.x + 1 + mvDx + tlDx + lane.trackShiftDx
                                             y: 5 + (moveDrag.active ? mvDy : 0)
                                             z: moveDrag.active ? 20 : 0
@@ -323,20 +326,28 @@ Rectangle {
                                                 var d = dpx / lane.contentW
                                                 if (clip.trimTool) TimelineModel.trimClip(clip.modelData.id, leftEdge, d)
                                                 else if (clip.rollTool) TimelineModel.rollEdit(clip.modelData.id, leftEdge, d)
-                                                else if (clip.rippleTool && !leftEdge) TimelineModel.rippleTrimRight(clip.modelData.id, d)
+                                                else if (clip.rippleTool) leftEdge ? TimelineModel.rippleTrimLeft(clip.modelData.id, d)
+                                                                                   : TimelineModel.rippleTrimRight(clip.modelData.id, d)
                                             }
 
                                             // Arrastrar para mover (herramienta Selección · A); vertical = cambiar de pista.
-                                            // Con la herramienta Slip (Y) el mismo arrastre desliza el contenido (in-point).
+                                            // Con Slip (Y) el mismo arrastre desliza el contenido (in-point); con
+                                            // Slide (U) desplaza el clip entre sus vecinos adyacentes.
                                             DragHandler {
                                                 id: moveDrag
                                                 target: null
-                                                enabled: (clip.moveTool || clip.slipTool || clip.trackTool) && !clip.locked
+                                                enabled: (clip.moveTool || clip.slipTool || clip.slideTool || clip.trackTool) && !clip.locked
                                                 onActiveChanged: {
                                                     if (active) { clip.mvDx = 0; clip.mvDy = 0; clip.slipDx = 0; lane.trackShiftDx = 0; TimelineModel.selectClip(clip.modelData.id); return }
                                                     if (clip.slipTool) {
                                                         TimelineModel.slipClip(clip.modelData.id, clip.slipDx / lane.contentW)
                                                         clip.slipDx = 0
+                                                        return
+                                                    }
+                                                    if (clip.slideTool) {
+                                                        var sd = clip.mvDx / lane.contentW
+                                                        clip.mvDx = 0
+                                                        TimelineModel.slideClip(clip.modelData.id, sd)
                                                         return
                                                     }
                                                     if (clip.trackTool) {
@@ -354,6 +365,7 @@ Rectangle {
                                                     if (!active) return
                                                     if (clip.slipTool) clip.slipDx = activeTranslation.x
                                                     else if (clip.trackTool) lane.trackShiftDx = activeTranslation.x
+                                                    else if (clip.slideTool) clip.mvDx = activeTranslation.x
                                                     else { clip.mvDx = activeTranslation.x; clip.mvDy = activeTranslation.y }
                                                 }
                                             }
@@ -388,13 +400,14 @@ Rectangle {
                                                    color: clip.modelData.selected ? "#ffffff" : (clip.isTitle ? "#e0d8f0" : "#cfe0ec")
                                                    font.pixelSize: clip.isTitle ? 10 : 9; font.family: Theme.sans; elide: Text.ElideRight
                                                    width: parent.width - 12 }
-                                            // Tirador de borde izquierdo (Trim · W / Roll · N)
+                                            // Tirador de borde izquierdo (Trim · W / Roll · N / Ripple · RR)
                                             Rectangle {
                                                 width: 7; height: parent.height; anchors.left: parent.left
-                                                visible: clip.trimTool || clip.rollTool
+                                                visible: clip.trimTool || clip.rollTool || clip.rippleTool
                                                 color: trimLeft.active ? Theme.amber : "#33ffffff"
                                                 DragHandler {
-                                                    id: trimLeft; target: null; enabled: (clip.trimTool || clip.rollTool) && !clip.locked
+                                                    id: trimLeft; target: null
+                                                    enabled: (clip.trimTool || clip.rollTool || clip.rippleTool) && !clip.locked
                                                     onActiveChanged: {
                                                         if (active) { clip.tlDx = 0; TimelineModel.selectClip(clip.modelData.id); return }
                                                         var dpx = clip.tlDx
@@ -436,7 +449,8 @@ Rectangle {
                                             }
                                         }
                                     }
-                                    // Indicador de transición (solape de clips = disolvencia)
+                                    // Indicador de transición (solape de clips). Clic con la
+                                    // herramienta Selección = editar tipo y duración.
                                     Repeater {
                                         model: {
                                             var cs = modelData.clips.slice().sort((a, b) => a.x - b.x)
@@ -444,16 +458,62 @@ Rectangle {
                                             for (var i = 1; i < cs.length; i++) {
                                                 var pe = cs[i-1].x + cs[i-1].w
                                                 if (cs[i].x < pe - 1e-6)
-                                                    r.push({ x: cs[i].x, w: Math.min(pe, cs[i].x + cs[i].w) - cs[i].x })
+                                                    r.push({ x: cs[i].x, w: Math.min(pe, cs[i].x + cs[i].w) - cs[i].x,
+                                                             id: cs[i].id, type: cs[i].transition })
                                             }
                                             return r
                                         }
                                         delegate: Rectangle {
+                                            id: ovl
                                             required property var modelData
                                             x: lane.offX + lane.contentW * modelData.x; y: 5
                                             width: Math.max(2, lane.contentW * modelData.w); height: parent.height - 10
-                                            color: "#33e2a24b"; border.color: Theme.amber; border.width: 1; radius: 2
+                                            color: "#33e2a24b"; border.color: ovPop.visible ? "#ffffff" : Theme.amber; border.width: 1; radius: 2
                                             Text { anchors.centerIn: parent; text: "⤫"; color: Theme.amber; font.pixelSize: 13 }
+                                            TapHandler { enabled: tlRoot.currentTool === 0; onTapped: ovPop.open() }
+                                            C.Popup {
+                                                id: ovPop
+                                                y: parent.height + 2
+                                                padding: 6
+                                                background: Rectangle { color: Theme.panel2; border.color: Theme.line; border.width: 1; radius: 6 }
+                                                contentItem: Column {
+                                                    spacing: 3
+                                                    Text { text: "Transición · " + (ovl.modelData.w * TimelineModel.totalUsMs / 1000).toFixed(2) + " s"
+                                                           color: Theme.textHi; font.pixelSize: 10; font.family: Theme.sans; font.weight: Font.DemiBold }
+                                                    Repeater {
+                                                        model: [{ t: "Disolvencia", v: "cross" }, { t: "Fundido por negro", v: "dip" }, { t: "Barrido", v: "wipe" }]
+                                                        delegate: Rectangle {
+                                                            required property var modelData
+                                                            readonly property bool isCurrent: ovl.modelData.type === modelData.v
+                                                            width: 150; height: 22; radius: 4
+                                                            color: ttypeHover.hovered ? Theme.hover : "transparent"
+                                                            HoverHandler { id: ttypeHover }
+                                                            TapHandler { onTapped: { TimelineModel.setClipTransition(ovl.modelData.id, modelData.v); ovPop.close() } }
+                                                            Text { x: 8; anchors.verticalCenter: parent.verticalCenter; text: modelData.t
+                                                                   color: parent.isCurrent ? Theme.amber : Theme.textHi
+                                                                   font.pixelSize: 10; font.family: Theme.sans
+                                                                   font.weight: parent.isCurrent ? Font.DemiBold : Font.Normal }
+                                                        }
+                                                    }
+                                                    Rectangle { width: 150; height: 1; color: Theme.line }
+                                                    Row {
+                                                        spacing: 4
+                                                        Text { text: "Duración"; color: Theme.textDim; font.pixelSize: 9; font.family: Theme.sans; anchors.verticalCenter: parent.verticalCenter }
+                                                        Repeater {
+                                                            model: [0.5, 1.0, 2.0]
+                                                            delegate: Rectangle {
+                                                                required property var modelData
+                                                                width: 34; height: 20; radius: 4
+                                                                color: durHover.hovered ? Theme.hover : Theme.sunken
+                                                                border.color: Theme.line; border.width: 1
+                                                                HoverHandler { id: durHover }
+                                                                TapHandler { onTapped: { TimelineModel.setTransitionDuration(ovl.modelData.id, modelData); ovPop.close() } }
+                                                                Text { anchors.centerIn: parent; text: modelData + " s"; color: Theme.textHi; font.pixelSize: 9; font.family: Theme.mono }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                     // Playhead sobre la pista
@@ -492,6 +552,21 @@ Rectangle {
                         // Realce del área de pistas mientras se arrastra encima.
                         Rectangle { anchors.fill: parent; anchors.leftMargin: 158
                             visible: parent.containsDrag; color: "#15e2a24b"; border.color: Theme.amber; border.width: 1 }
+                    }
+                    // Herramienta Zoom (Z): arrastrar en horizontal amplía/reduce el
+                    // timeline (derecha = acercar); doble clic = ajustar a la vista.
+                    MouseArea {
+                        visible: tlRoot.currentTool === 9
+                        anchors.fill: parent; anchors.leftMargin: 158
+                        cursorShape: Qt.SizeHorCursor
+                        preventStealing: true
+                        property real baseZoom: 1
+                        property real px: 0
+                        onPressed: (m) => { baseZoom = tlRoot.zoom; px = m.x }
+                        onPositionChanged: (m) => {
+                            tlRoot.zoom = Math.max(1, Math.min(10, baseZoom * Math.exp((m.x - px) / 150)))
+                        }
+                        onDoubleClicked: tlRoot.zoom = 1
                     }
                 }
 

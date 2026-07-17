@@ -2,6 +2,7 @@
 
 #include <QAbstractListModel>
 #include <QHash>
+#include <QJsonArray>
 #include <QUrl>
 #include <QVector>
 #include <qqmlintegration.h>
@@ -26,10 +27,12 @@ struct MediaItem {
     int bin = -1;        // índice del bin (carpeta) al que pertenece; -1 = sin bin
 };
 
-// Un bin (carpeta) del Media Pool.
+// Un bin (carpeta) del Media Pool. `parent` = índice del bin padre (-1 = raíz);
+// el padre siempre se crea antes que el hijo, así que parent < índice propio.
 struct MediaBin {
     QString name;
     QString color;   // color de la etiqueta
+    int parent = -1;
 };
 
 // Modelo del Media Pool: importa medios reales con ffprobe/ffmpeg.
@@ -84,17 +87,25 @@ public:
     QStringList mediaPaths() const;
     bool containsPath(const QString &path) const;
 
-    // --- Bins (carpetas) ---
+    // --- Bins (carpetas, con anidado de un padre por bin) ---
+    // Lista en orden de árbol (DFS) con {index, name, color, count, depth};
+    // `count` agrega los medios de los bins descendientes.
     QVariantList bins() const;
     int currentBin() const { return m_currentBin; }
     void setCurrentBin(int bin);
-    // Crea un bin (nombre vacío = "Bin N"); devuelve su índice.
-    Q_INVOKABLE int addBin(const QString &name);
-    // Elimina un bin: sus medios quedan sin bin y los índices superiores bajan.
+    // Crea un bin (nombre vacío = "Bin N") bajo `parent` (-1 = raíz); devuelve su índice.
+    Q_INVOKABLE int addBin(const QString &name, int parent = -1);
+    // Renombra un bin (nombre vacío = sin efecto).
+    Q_INVOKABLE void renameBin(int index, const QString &name);
+    // Elimina un bin: sus medios quedan sin bin, sus hijos suben al padre del
+    // eliminado y los índices superiores bajan.
     Q_INVOKABLE void removeBin(int index);
     // Asigna el medio `id` al bin `binIndex` (-1 = quitar del bin).
     Q_INVOKABLE void moveToBin(quint64 id, int binIndex);
-    // Persistencia (proyecto): nombres de bins, bin de una ruta y restauración.
+    // Persistencia (proyecto): bins como JSON [{name, parent}] (acepta también el
+    // formato antiguo de cadenas), bin de una ruta y restauración.
+    QJsonArray binsJson() const;
+    void setBinsJson(const QJsonArray &arr);
     QStringList binNames() const;
     void setBins(const QStringList &names);
     QString binNameOfPath(const QString &path) const;
@@ -116,6 +127,8 @@ private:
     // Reconstruye la lista visible según el filtro (reset del modelo).
     void rebuildVisible();
     bool matchesFilter(const MediaItem &it) const;
+    // ¿`bin` es `ancestor` o desciende de él?
+    bool binIsUnder(int bin, int ancestor) const;
     void generateThumbnail(quint64 id, const QString &path, const QString &kind, double atSeconds);
 
     QVector<MediaItem> m_items;

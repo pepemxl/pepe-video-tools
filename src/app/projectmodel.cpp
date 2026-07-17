@@ -114,10 +114,8 @@ QJsonObject ProjectModel::projectJson() const
         for (const QString &p : m_pool->mediaPaths())
             media.append(QJsonObject{ { "path", p }, { "bin", m_pool->binNameOfPath(p) } });
         o.insert("media", media);
-        QJsonArray bins;
-        for (const QString &n : m_pool->binNames())
-            bins.append(n);
-        o.insert("bins", bins);
+        // Bins como [{name, parent}] (anidado); se acepta el formato antiguo de cadenas.
+        o.insert("bins", m_pool->binsJson());
     }
     return o;
 }
@@ -137,12 +135,8 @@ bool ProjectModel::applyProjectJson(const QJsonObject &o)
     // Restaura los bins y reimporta los medios que falten ANTES del timeline
     // (los clips los referencian). Cada medio recupera su bin por nombre.
     if (m_pool) {
-        if (o.contains("bins")) {
-            QStringList names;
-            for (const QJsonValue &v : o.value("bins").toArray())
-                names.append(v.toString());
-            m_pool->setBins(names);
-        }
+        if (o.contains("bins"))
+            m_pool->setBinsJson(o.value("bins").toArray());
         const QStringList binNames = m_pool->binNames();
         for (const QJsonValue &v : o.value("media").toArray()) {
             // v1: cadena con la ruta; v2: objeto { path, bin }.

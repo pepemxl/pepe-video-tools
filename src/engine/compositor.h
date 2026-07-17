@@ -72,6 +72,12 @@ public:
     Q_INVOKABLE void pause();
     Q_INVOKABLE void togglePlay();
 
+    // Botón ● del monitor: guarda el fotograma actual del PROGRAMA como PNG
+    // (diálogo nativo de guardado). Sin efecto si aún no hay fotograma.
+    Q_INVOKABLE void saveStillDialog();
+    // Núcleo sin diálogo (pruebas): guarda el último fotograma en `path`.
+    Q_INVOKABLE bool saveStill(const QString &path);
+
 signals:
     void frameReady(const QImage &image);
     void hasContentChanged();
@@ -95,6 +101,7 @@ private:
     QElapsedTimer m_wall;              // tiempo real transcurrido
     qint64 m_lastWallMs = 0;
 
+    QImage m_lastFrame;                // último fotograma compuesto (para el botón ●)
     bool m_hasContent = false;
     bool m_playing = false;
     bool m_busy = false;               // hay una composición en vuelo en el worker

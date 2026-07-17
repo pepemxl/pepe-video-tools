@@ -94,6 +94,16 @@ void VideoController::seekFraction(double f)
         emit requestSeek(qint64(f * m_durationMs));
 }
 
+void VideoController::stepFrame(int frames)
+{
+    if (!m_hasMedia)
+        return;
+    pause();
+    const double fps = m_fps > 0.0 ? m_fps : 25.0;
+    const qint64 stepMs = qMax<qint64>(1, qint64(1000.0 / fps + 0.5));
+    seekMs(qBound<qint64>(0, m_positionMs + frames * stepMs, m_durationMs));
+}
+
 QString VideoController::formatTc(qint64 ms) const
 {
     const qint64 totalSec = ms / 1000;

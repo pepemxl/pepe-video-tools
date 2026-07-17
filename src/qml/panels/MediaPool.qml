@@ -137,9 +137,28 @@ Rectangle {
                     Layout.fillWidth: true; height: 22; radius: 4
                     color: active ? "#2f3138" : (bh.hovered || binDrop.containsDrag ? Theme.hover2 : "transparent")
                     border.color: binDrop.containsDrag ? Theme.amber : "transparent"; border.width: 1
+                    property bool editing: false
+                    function startEdit() {
+                        editing = true
+                        binEdit.text = modelData.name
+                        binEdit.forceActiveFocus()
+                        binEdit.selectAll()
+                    }
+                    function commitEdit() {
+                        if (!editing)
+                            return
+                        editing = false
+                        MediaPoolModel.renameBin(modelData.index, binEdit.text)
+                    }
                     HoverHandler { id: bh }
                     // Clic: filtra por este bin (clic de nuevo = volver a todos).
-                    TapHandler { onTapped: MediaPoolModel.currentBin = binRow.active ? -1 : binRow.modelData.index }
+                    // Doble clic: renombrar en línea.
+                    TapHandler {
+                        enabled: !binRow.editing
+                        exclusiveSignals: TapHandler.SingleTap | TapHandler.DoubleTap
+                        onSingleTapped: MediaPoolModel.currentBin = binRow.active ? -1 : binRow.modelData.index
+                        onDoubleTapped: binRow.startEdit()
+                    }
                     // Soltar un medio aquí lo asigna al bin.
                     DropArea {
                         id: binDrop
@@ -151,29 +170,60 @@ Rectangle {
                         }
                     }
                     Row {
-                        anchors.left: parent.left; anchors.leftMargin: 22; anchors.verticalCenter: parent.verticalCenter; spacing: 7
+                        id: binLabel
+                        // Sangría por profundidad (bins anidados).
+                        anchors.left: parent.left; anchors.leftMargin: 22 + binRow.modelData.depth * 12
+                        anchors.verticalCenter: parent.verticalCenter; spacing: 7
                         Rectangle { width: 8; height: 8; radius: 2; color: binRow.modelData.color; anchors.verticalCenter: parent.verticalCenter }
-                        Text { text: binRow.modelData.name
+                        Text { visible: !binRow.editing
+                               text: binRow.modelData.name
                                color: binRow.active ? Theme.textHi : Theme.textMid
                                font.pixelSize: 11; font.family: Theme.sans
                                font.weight: binRow.active ? Font.DemiBold : Font.Normal
                                anchors.verticalCenter: parent.verticalCenter }
                     }
-                    // Contador (o ✕ para eliminar el bin, al pasar el ratón)
+                    // Editor de renombrado (doble clic): Enter confirma, Esc cancela.
+                    TextInput {
+                        id: binEdit
+                        visible: binRow.editing
+                        anchors.left: binLabel.left; anchors.leftMargin: 15
+                        anchors.right: parent.right; anchors.rightMargin: 24
+                        anchors.verticalCenter: parent.verticalCenter
+                        clip: true; selectByMouse: true
+                        color: Theme.textHi; font.pixelSize: 11; font.family: Theme.sans
+                        selectionColor: Theme.amber; selectedTextColor: Theme.amberInk
+                        onAccepted: binRow.commitEdit()
+                        Keys.onEscapePressed: { binRow.editing = false; focus = false }
+                        onActiveFocusChanged: if (!activeFocus) binRow.commitEdit()
+                    }
+                    // Contador (o + sub-bin / ✕ eliminar, al pasar el ratón)
                     Text {
-                        visible: !bh.hovered
+                        visible: !bh.hovered && !binRow.editing
                         text: binRow.modelData.count
                         color: Theme.textFaint; font.pixelSize: 10; font.family: Theme.mono
                         anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter
                     }
-                    Rectangle {
-                        visible: bh.hovered
-                        width: 14; height: 14; radius: 3
-                        color: delBinHover.hovered ? Theme.red : "transparent"
+                    Row {
+                        visible: bh.hovered && !binRow.editing
+                        spacing: 2
                         anchors.right: parent.right; anchors.rightMargin: 5; anchors.verticalCenter: parent.verticalCenter
-                        HoverHandler { id: delBinHover }
-                        TapHandler { onTapped: MediaPoolModel.removeBin(binRow.modelData.index) }
-                        Text { anchors.centerIn: parent; text: "✕"; color: delBinHover.hovered ? "#ffffff" : Theme.textDim; font.pixelSize: 9 }
+                        // Nuevo sub-bin (anidado bajo este bin)
+                        Rectangle {
+                            width: 14; height: 14; radius: 3
+                            color: subBinHover.hovered ? Theme.hover : "transparent"
+                            anchors.verticalCenter: parent.verticalCenter
+                            HoverHandler { id: subBinHover }
+                            TapHandler { onTapped: MediaPoolModel.addBin("", binRow.modelData.index) }
+                            Text { anchors.centerIn: parent; text: "+"; color: subBinHover.hovered ? Theme.textHi : Theme.textDim; font.pixelSize: 11 }
+                        }
+                        Rectangle {
+                            width: 14; height: 14; radius: 3
+                            color: delBinHover.hovered ? Theme.red : "transparent"
+                            anchors.verticalCenter: parent.verticalCenter
+                            HoverHandler { id: delBinHover }
+                            TapHandler { onTapped: MediaPoolModel.removeBin(binRow.modelData.index) }
+                            Text { anchors.centerIn: parent; text: "✕"; color: delBinHover.hovered ? "#ffffff" : Theme.textDim; font.pixelSize: 9 }
+                        }
                     }
                 }
             }

@@ -51,6 +51,8 @@ class TimelineModel : public QObject
     Q_PROPERTY(double selPan READ selPan NOTIFY selectionChanged)
     Q_PROPERTY(bool selAudioMute READ selAudioMute NOTIFY selectionChanged)
     // Título del clip seleccionado (para el Inspector).
+    Q_PROPERTY(bool selIsAudio READ selIsAudio NOTIFY selectionChanged)
+
     Q_PROPERTY(bool selIsTitle READ selIsTitle NOTIFY selectionChanged)
     Q_PROPERTY(QString selTitleText READ selTitleText NOTIFY selectionChanged)
     Q_PROPERTY(double selTitleSize READ selTitleSize NOTIFY selectionChanged)
@@ -74,9 +76,12 @@ public:
         bool locked = false; // pista de vídeo bloqueada (no editable)
     };
     // Un keyframe: valor de una propiedad en un tiempo de origen (sourceUs).
+    // `interp` define la curva HACIA el siguiente keyframe: 0 = lineal,
+    // 1 = hold (mantiene el valor), 2 = suave (smoothstep, ease in-out).
     struct Keyframe {
         qint64 sourceUs;
         double value;
+        int interp = 0;
     };
     // Transformación de una capa en el compositor. Cada propiedad puede animarse con
     // keyframes (anclados al tiempo de origen del clip → estables ante mover/recortar).
@@ -96,6 +101,10 @@ public:
         double gammaX = 0.0, gammaY = 0.0;  // Medios
         double gainX = 0.0, gainY = 0.0;    // Altas
         double temp = 0.0, tint = 0.0, sat = 1.0;
+        // Keyframes de color: temp/tint/sat y las ruedas 2D (cada rueda anima
+        // sus componentes X e Y en pareja — un diamante por rueda).
+        QVector<Keyframe> kfTemp, kfTint, kfSat;
+        QVector<Keyframe> kfLiftX, kfLiftY, kfGammaX, kfGammaY, kfGainX, kfGainY;
         bool isIdentity() const {
             return liftX == 0.0 && liftY == 0.0 && gammaX == 0.0 && gammaY == 0.0
                 && gainX == 0.0 && gainY == 0.0 && temp == 0.0 && tint == 0.0 && sat == 1.0;
@@ -132,6 +141,9 @@ public:
         qint64 inUs;
         QString mediaPath;
         double speed = 1.0;     // remapeo de velocidad (1.0 = normal, 2.0 = 2×, 0.5 = lento)
+        // Tipo de transición cuando este clip ENTRA solapado sobre el anterior:
+        // "cross" (disolvencia), "dip" (fundido por negro) o "wipe" (barrido).
+        QString transition = QStringLiteral("cross");
         Transform transform;
         Color color;
         Audio audio;
@@ -172,6 +184,9 @@ public:
         Transform transform;
         Color color;
         Title title;        // texto del título (si kind == "title")
+        // Barrido (transición "wipe"): fracción [0..1) del ancho visible del clip
+        // entrante; -1 = sin barrido (el worker no recorta).
+        double wipe = -1.0;
     };
 
     QVariantList tracks() const;
@@ -229,6 +244,7 @@ public:
     double selAudioGain() const;
     double selPan() const;
     bool selAudioMute() const;
+    bool selIsAudio() const;
     bool selIsTitle() const;
     QString selTitleText() const;
     double selTitleSize() const;
@@ -253,6 +269,16 @@ public:
     Q_INVOKABLE void toggleKeyframe(const QString &prop); // añade/quita en el playhead
     Q_INVOKABLE bool isKeyframed(const QString &prop) const;
     Q_INVOKABLE bool hasKeyframeAtPlayhead(const QString &prop) const;
+    // Interpolación del keyframe del playhead: 0 lineal · 1 hold · 2 suave
+    // (-1 = no hay keyframe ahí). `cycle` la rota 0→1→2→0.
+    Q_INVOKABLE int keyframeInterpAtPlayhead(const QString &prop);
+    Q_INVOKABLE void cycleKeyframeInterp(const QString &prop);
+    // Editor de curvas: puntos de la propiedad animada del clip seleccionado como
+    // [{x: fracción de la duración del clip, v: valor, interp}] ordenados por x.
+    // move/remove editan el keyframe `index` de esa lista (con señales de refresco).
+    Q_INVOKABLE QVariantList keyframePoints(const QString &prop);
+    Q_INVOKABLE void moveKeyframePoint(const QString &prop, int index, double clipFrac, double value);
+    Q_INVOKABLE void removeKeyframePoint(const QString &prop, int index);
 
     // Corrección de color del clip seleccionado (ruedas + temp/tint/sat).
     Q_INVOKABLE void setSelLift(double x, double y);
@@ -307,6 +333,10 @@ public:
     // Slip: desliza el contenido del clip (cambia el punto de entrada in) SIN mover su
     // posición ni su duración en la línea de tiempo. deltaFraction en fracción del total.
     Q_INVOKABLE void slipClip(quint64 id, double deltaFraction);
+    // Slide (herramienta U): desplaza el clip; los vecinos ADYACENTES le siguen
+    // (el anterior alarga/acorta su salida y el siguiente recorta/extiende su
+    // cabeza), así la duración total no cambia. Con undo.
+    Q_INVOKABLE void slideClip(quint64 id, double deltaFraction);
     // Herramienta de pista: desplaza en bloque TODOS los clips de una pista (útil para
     // abrir/cerrar huecos). deltaFraction en fracción del total; se acota para que ningún
     // clip cruce el origen.
@@ -317,6 +347,16 @@ public:
     // Ripple: recorta el borde de salida (derecho) y desplaza los clips posteriores de
     // la misma pista para cerrar/abrir el hueco.
     Q_INVOKABLE void rippleTrimRight(quint64 id, double deltaFraction);
+    // Ripple del borde de ENTRADA: recorta la cabeza del clip (que no se mueve) y
+    // desplaza los clips posteriores de la pista para cerrar/abrir el hueco.
+    Q_INVOKABLE void rippleTrimLeft(quint64 id, double deltaFraction);
+    // Borrado con ripple: elimina el clip seleccionado y los clips posteriores de
+    // su pista retroceden para cerrar el hueco. Atajo Mayús+Supr.
+    Q_INVOKABLE void rippleDeleteSelected();
+    // Transición del clip ENTRANTE de un solape: tipo ("cross"|"dip"|"wipe") y
+    // duración (mueve el inicio del entrante para ajustar el solape). Con undo.
+    Q_INVOKABLE void setClipTransition(quint64 id, const QString &type);
+    Q_INVOKABLE void setTransitionDuration(quint64 incomingId, double seconds);
     // Roll: mueve la frontera entre este clip y su vecino adyacente (uno cede lo que el
     // otro gana), sin mover el resto de clips ni alterar la duración total.
     Q_INVOKABLE void rollEdit(quint64 id, bool leftEdge, double deltaFraction);
@@ -364,6 +404,11 @@ private:
     // Devuelve los punteros a la lista de keyframes y al valor estático de una propiedad.
     QVector<Keyframe> *kfVec(Transform &tf, const QString &prop, double *&staticOut);
     const QVector<Keyframe> *kfVec(const Transform &tf, const QString &prop) const;
+    // Lista de keyframes de CUALQUIER propiedad animable de un clip
+    // (transform, audioGain/audioPan, temp/tint/sat). nullptr si no existe.
+    QVector<Keyframe> *kfListFor(Clip &c, const QString &prop);
+    // Aplica el desplazamiento de un slide (d) al clip y a sus vecinos adyacentes.
+    void applySlide(quint64 id, quint64 aId, quint64 cId, qint64 d);
     // Tiempo de origen del clip en el playhead actual (con remapeo de velocidad).
     qint64 srcAtPlayhead(const Clip &c) const { return c.inUs + qint64((m_playheadUs - c.startUs) * c.speed); }
     void bumpSelection();  // ++revisión y emite selectionChanged

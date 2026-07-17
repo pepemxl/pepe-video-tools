@@ -10,6 +10,13 @@
 #include <QTimer>
 #include <cmath>
 
+#ifdef Q_OS_WIN
+#  define WIN32_LEAN_AND_MEAN
+#  define NOMINMAX
+#  include <windows.h>
+#  include <commdlg.h>
+#endif
+
 // ===================== Corrección de color (LUT por canal) =====================
 void CompositorWorker::gradeImage(QImage &img, const TimelineModel::Color &c)
 {
@@ -156,6 +163,12 @@ QImage CompositorWorker::renderFrame(const RenderClipList &clips, bool &hasConte
         }
         if (!frame.isNull())
             gradeImage(frame, rc.color); // corrección de color primaria
+        // Transición "wipe": el clip entrante solo pinta la fracción izquierda [0..wipe).
+        const bool wiped = rc.wipe >= 0.0 && rc.wipe < 1.0;
+        if (wiped) {
+            p.save();
+            p.setClipRect(QRectF(0, 0, m_outSize.width() * rc.wipe, m_outSize.height()));
+        }
         p.setOpacity(t.opacity);
         if (rc.kind == QLatin1String("title")) {
             drawTitle(p, rc);
@@ -183,6 +196,8 @@ QImage CompositorWorker::renderFrame(const RenderClipList &clips, bool &hasConte
             p.fillRect(out.rect(), QColor(rc.fill));
         }
         p.setOpacity(1.0);
+        if (wiped)
+            p.restore();
         painted = true;
     }
     p.end();
@@ -354,6 +369,8 @@ void Compositor::requestComposite()
 void Compositor::onWorkerFrame(const QImage &image, bool hasContent)
 {
     m_busy = false;
+    if (hasContent)
+        m_lastFrame = image;   // para el botón ● (guardar fotograma)
     if (m_hasContent != hasContent) {
         m_hasContent = hasContent;
         emit hasContentChanged();
@@ -392,6 +409,34 @@ void Compositor::pause()
 void Compositor::togglePlay()
 {
     m_playing ? pause() : play();
+}
+
+bool Compositor::saveStill(const QString &path)
+{
+    if (m_lastFrame.isNull() || path.isEmpty())
+        return false;
+    return m_lastFrame.save(path);
+}
+
+void Compositor::saveStillDialog()
+{
+    if (m_lastFrame.isNull())
+        return;
+#ifdef Q_OS_WIN
+    QVector<wchar_t> buf(4096, 0);
+    lstrcpynW(buf.data(), L"fotograma.png", buf.size());
+    OPENFILENAMEW ofn;
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.lpstrFilter = L"Imagen PNG (*.png)\0*.png\0\0";
+    ofn.lpstrFile = buf.data();
+    ofn.nMaxFile = buf.size();
+    ofn.lpstrTitle = L"Guardar fotograma del programa";
+    ofn.lpstrDefExt = L"png";
+    ofn.Flags = OFN_EXPLORER | OFN_OVERWRITEPROMPT | OFN_HIDEREADONLY;
+    if (GetSaveFileNameW(&ofn))
+        saveStill(QString::fromWCharArray(buf.data()));
+#endif
 }
 
 void Compositor::tick()

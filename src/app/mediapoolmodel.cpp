@@ -9,6 +9,8 @@
 #include <QProcessEnvironment>
 #include <QStandardPaths>
 
+#include <functional>
+
 #ifdef Q_OS_WIN
 #  define WIN32_LEAN_AND_MEAN
 #  define NOMINMAX
@@ -171,7 +173,8 @@ void MediaPoolModel::setSelectedIndex(int i)
 
 bool MediaPoolModel::matchesFilter(const MediaItem &it) const
 {
-    if (m_currentBin >= 0 && it.bin != m_currentBin)
+    // El bin activo incluye sus bins descendientes (anidado).
+    if (m_currentBin >= 0 && (it.bin < 0 || !binIsUnder(it.bin, m_currentBin)))
         return false;
     return m_filter.isEmpty() || it.name.contains(m_filter, Qt::CaseInsensitive);
 }
@@ -319,18 +322,34 @@ bool MediaPoolModel::containsPath(const QString &path) const
 // Bins (carpetas)
 // ---------------------------------------------------------------------------
 
+bool MediaPoolModel::binIsUnder(int bin, int ancestor) const
+{
+    // El padre siempre tiene índice menor que el hijo, así que la cadena termina.
+    for (int b = bin; b >= 0 && b < m_bins.size(); b = m_bins[b].parent)
+        if (b == ancestor)
+            return true;
+    return false;
+}
+
 QVariantList MediaPoolModel::bins() const
 {
+    // Orden de árbol (DFS): cada bin seguido de sus descendientes, con profundidad.
     QVariantList out;
-    for (int b = 0; b < m_bins.size(); ++b) {
-        int n = 0;
-        for (const MediaItem &it : m_items)
-            if (it.bin == b)
-                ++n;
-        out.append(QVariantMap{
-            { "index", b }, { "name", m_bins[b].name },
-            { "color", m_bins[b].color }, { "count", n } });
-    }
+    std::function<void(int, int)> walk = [&](int parent, int depth) {
+        for (int b = 0; b < m_bins.size(); ++b) {
+            if (m_bins[b].parent != parent)
+                continue;
+            int n = 0;   // medios del bin y de sus descendientes
+            for (const MediaItem &it : m_items)
+                if (it.bin >= 0 && binIsUnder(it.bin, b))
+                    ++n;
+            out.append(QVariantMap{
+                { "index", b }, { "name", m_bins[b].name },
+                { "color", m_bins[b].color }, { "count", n }, { "depth", depth } });
+            walk(b, depth + 1);
+        }
+    };
+    walk(-1, 0);
     return out;
 }
 
@@ -344,23 +363,39 @@ void MediaPoolModel::setCurrentBin(int bin)
     rebuildVisible();
 }
 
-int MediaPoolModel::addBin(const QString &name)
+int MediaPoolModel::addBin(const QString &name, int parent)
 {
     MediaBin b;
     b.name = name.trimmed().isEmpty()
                  ? QStringLiteral("Bin %1").arg(m_bins.size() + 1)
                  : name.trimmed();
     b.color = QString::fromLatin1(kBinColors[m_bins.size() % kBinColorCount]);
+    b.parent = (parent >= -1 && parent < m_bins.size()) ? parent : -1;
     m_bins.push_back(b);
     emit binsChanged();
     return int(m_bins.size()) - 1;
+}
+
+void MediaPoolModel::renameBin(int index, const QString &name)
+{
+    const QString t = name.trimmed();
+    if (index < 0 || index >= m_bins.size() || t.isEmpty() || m_bins[index].name == t)
+        return;
+    m_bins[index].name = t;
+    emit binsChanged();
 }
 
 void MediaPoolModel::removeBin(int index)
 {
     if (index < 0 || index >= m_bins.size())
         return;
+    const int promoted = m_bins[index].parent;   // < index (el padre se crea antes)
     m_bins.remove(index);
+    // Los hijos del eliminado suben a su padre; los índices superiores bajan.
+    for (MediaBin &b : m_bins) {
+        if (b.parent == index) b.parent = promoted;
+        else if (b.parent > index) --b.parent;
+    }
     // Sus medios quedan sin bin; los índices superiores bajan una posición.
     for (MediaItem &it : m_items) {
         if (it.bin == index) it.bin = -1;
@@ -392,12 +427,27 @@ QStringList MediaPoolModel::binNames() const
     return out;
 }
 
-void MediaPoolModel::setBins(const QStringList &names)
+QJsonArray MediaPoolModel::binsJson() const
+{
+    QJsonArray out;
+    for (const MediaBin &b : m_bins)
+        out.append(QJsonObject{ { "name", b.name }, { "parent", b.parent } });
+    return out;
+}
+
+void MediaPoolModel::setBinsJson(const QJsonArray &arr)
 {
     m_bins.clear();
-    for (const QString &n : names) {
+    for (const QJsonValue &v : arr) {
         MediaBin b;
-        b.name = n;
+        if (v.isObject()) {   // formato actual: { name, parent }
+            b.name = v.toObject().value(QStringLiteral("name")).toString();
+            b.parent = v.toObject().value(QStringLiteral("parent")).toInt(-1);
+        } else {              // formato antiguo: cadena con el nombre (raíz)
+            b.name = v.toString();
+        }
+        if (b.parent < -1 || b.parent >= m_bins.size())
+            b.parent = -1;    // solo se admite un padre ya creado (índice menor)
         b.color = QString::fromLatin1(kBinColors[m_bins.size() % kBinColorCount]);
         m_bins.push_back(b);
     }
@@ -409,6 +459,14 @@ void MediaPoolModel::setBins(const QStringList &names)
     emit binsChanged();
     emit currentBinChanged();
     rebuildVisible();
+}
+
+void MediaPoolModel::setBins(const QStringList &names)
+{
+    QJsonArray arr;
+    for (const QString &n : names)
+        arr.append(n);
+    setBinsJson(arr);
 }
 
 QString MediaPoolModel::binNameOfPath(const QString &path) const
@@ -601,6 +659,46 @@ int runPoolSelfTestIfRequested()
     check(pool.binNames() == QStringList({ QStringLiteral("Uno"), QStringLiteral("Dos") }),
           "setBins reemplaza la lista");
     check(pool.currentBin() == -1 && pool.count() == 6, "tras setBins: vista en 'todos'");
+
+    // 5) Renombrar: cambia el nombre; vacio/espacios se ignora.
+    pool.renameBin(0, QStringLiteral("Uno bis"));
+    check(pool.binNames().first() == QStringLiteral("Uno bis"), "renameBin cambia el nombre");
+    pool.renameBin(0, QStringLiteral("   "));
+    check(pool.binNames().first() == QStringLiteral("Uno bis"), "renameBin ignora nombre vacio");
+
+    // 6) Bins anidados: hijo de 'Uno bis' (0); DFS con profundidad en bins().
+    const int hijo = pool.addBin(QStringLiteral("Hijo"), 0);
+    check(hijo == 2 && pool.bins().size() == 3, "addBin anidado crea el bin hijo");
+    {
+        const QVariantMap fila1 = pool.bins().at(1).toMap();   // tras 'Uno bis'
+        check(fila1.value("name") == QStringLiteral("Hijo")
+                  && fila1.value("depth").toInt() == 1,
+              "bins() en orden DFS con profundidad");
+    }
+    // Un medio en el hijo cuenta y filtra tambien desde el padre. Primero se
+    // sacan todos los medios de sus bins (algunos conservaban el bin 0 de la demo).
+    for (int i = 0; i < 6; ++i)
+        pool.moveToBin(pool.data(pool.index(i), MediaPoolModel::IdRole).toULongLong(), -1);
+    const quint64 idNieto = pool.data(pool.index(0), MediaPoolModel::IdRole).toULongLong();
+    pool.moveToBin(idNieto, hijo);
+    pool.setCurrentBin(0);
+    check(pool.count() == 1, "filtrar el bin padre incluye los medios del hijo");
+    check(pool.bins().at(0).toMap().value("count").toInt() == 1,
+          "contador del padre agrega los descendientes");
+
+    // 7) Persistencia con anidado: round-trip por JSON conserva el padre.
+    pool.setBinsJson(pool.binsJson());
+    check(pool.binNames() == QStringList({ QStringLiteral("Uno bis"), QStringLiteral("Dos"),
+                                           QStringLiteral("Hijo") })
+              && pool.bins().at(1).toMap().value("name") == QStringLiteral("Hijo"),
+          "binsJson round-trip conserva nombres y anidado");
+
+    // 8) Eliminar el padre promueve el hijo a la raiz.
+    pool.removeBin(0);
+    check(pool.bins().size() == 2
+              && pool.bins().at(1).toMap().value("name") == QStringLiteral("Hijo")
+              && pool.bins().at(1).toMap().value("depth").toInt() == 0,
+          "removeBin promueve los hijos a la raiz");
 
     qInfo("[POOL-SELFTEST] resultado: %s (%d fallos)", failures ? "FALLO" : "OK", failures);
     return failures ? 1 : 0;

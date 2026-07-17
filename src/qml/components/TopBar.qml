@@ -78,6 +78,7 @@ Rectangle {
                 Sep {}
                 Mi { text: "Cortar en el playhead"; shortcut: "B"; enabled: TimelineModel.hasSelection; onTriggered: TimelineModel.splitSelectedAtPlayhead() }
                 Mi { text: "Eliminar"; shortcut: "Supr"; enabled: TimelineModel.hasSelection; onTriggered: TimelineModel.removeSelected() }
+                Mi { text: "Eliminar con ripple"; shortcut: "Mayús+Supr"; enabled: TimelineModel.hasSelection; onTriggered: TimelineModel.rippleDeleteSelected() }
             }
 
             MenuButton { title: "Secuencia"; state: menuState

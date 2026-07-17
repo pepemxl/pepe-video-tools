@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QCache>
 #include <QImage>
 #include <QString>
 
@@ -24,7 +25,10 @@ public:
     qint64 durationMs() const { return m_durationMs; }
 
     // Fotograma RGBA en el tiempo ms (busca hacia atrás y avanza hasta alcanzarlo).
-    // Devuelve una QImage nula si falla.
+    // Devuelve una QImage nula si falla. Los fotogramas decodificados se guardan en
+    // una caché LRU por tiempo (FrameCache): recomponer en el mismo playhead — p. ej.
+    // al editar transform/color de otra capa — no re-decodifica. Tamaño por defecto
+    // 96 MB por archivo; ajustable con PVS_FRAMECACHE_MB (0 = desactivada).
     QImage frameAt(qint64 ms);
 
 private:
@@ -42,4 +46,7 @@ private:
     double m_timeBaseSec = 0.0;
     qint64 m_durationMs = 0;
     bool m_eofSent = false;
+
+    // FrameCache: LRU de fotogramas decodificados, clave = ms pedido, coste = bytes.
+    QCache<qint64, QImage> m_cache;
 };

@@ -119,7 +119,20 @@ QVector<TimelineModel::RenderClip> TimelineModel::clipsAt(qint64 us) const
         rt.opacity = evalKf(c.transform.kfOpacity, c.transform.opacity, srcUs) * opFactor;
         rt.kfPosX.clear(); rt.kfPosY.clear(); rt.kfScale.clear();
         rt.kfRotation.clear(); rt.kfOpacity.clear();
-        return { c.trackIndex, c.kind, c.fill, c.mediaPath, srcUs, rt, c.color, c.title };
+        Color rc = c.color;   // keyframes de color: se evalúan aquí (el worker no los ve)
+        rc.temp = evalKf(c.color.kfTemp, c.color.temp, srcUs);
+        rc.tint = evalKf(c.color.kfTint, c.color.tint, srcUs);
+        rc.sat = evalKf(c.color.kfSat, c.color.sat, srcUs);
+        rc.liftX = evalKf(c.color.kfLiftX, c.color.liftX, srcUs);
+        rc.liftY = evalKf(c.color.kfLiftY, c.color.liftY, srcUs);
+        rc.gammaX = evalKf(c.color.kfGammaX, c.color.gammaX, srcUs);
+        rc.gammaY = evalKf(c.color.kfGammaY, c.color.gammaY, srcUs);
+        rc.gainX = evalKf(c.color.kfGainX, c.color.gainX, srcUs);
+        rc.gainY = evalKf(c.color.kfGainY, c.color.gainY, srcUs);
+        rc.kfTemp.clear(); rc.kfTint.clear(); rc.kfSat.clear();
+        rc.kfLiftX.clear(); rc.kfLiftY.clear(); rc.kfGammaX.clear();
+        rc.kfGammaY.clear(); rc.kfGainX.clear(); rc.kfGainY.clear();
+        return { c.trackIndex, c.kind, c.fill, c.mediaPath, srcUs, rt, rc, c.title };
     };
 
     // Pistas de vídeo de abajo (índice mayor, V1) hacia arriba (índice menor, V3),
@@ -140,8 +153,11 @@ QVector<TimelineModel::RenderClip> TimelineModel::clipsAt(qint64 us) const
         std::sort(active.begin(), active.end(),
                   [](const Clip *a, const Clip *b) { return a->startUs < b->startUs; });
 
-        // Sin solape: un clip. Con solape: el saliente (A) a plena opacidad y el entrante
-        // (B) con opacidad de crossfade f = avance dentro de la región de solape.
+        // Sin solape: un clip. Con solape: transición según el tipo del clip ENTRANTE
+        // (B), con f = avance dentro de la región de solape:
+        //  - "cross": el saliente (A) a plena opacidad y B fundiéndose encima;
+        //  - "dip":   A se funde a negro en la primera mitad y B entra en la segunda;
+        //  - "wipe":  B se revela de izquierda a derecha (clip-rect en el worker).
         const Clip *B = active.last();
         const Clip *A = active.size() >= 2 ? active.at(active.size() - 2) : nullptr;
         double f = 1.0;
@@ -150,9 +166,20 @@ QVector<TimelineModel::RenderClip> TimelineModel::clipsAt(qint64 us) const
             const qint64 ovEnd = A->startUs + A->durationUs;      // fin del solape (fin de A)
             if (ovEnd > ovStart)
                 f = qBound(0.0, double(us - ovStart) / double(ovEnd - ovStart), 1.0);
-            out.push_back(resolved(*A, us, 1.0));                 // saliente debajo
         }
-        out.push_back(resolved(*B, us, f));                       // entrante encima (crossfade)
+        if (A && B->transition == QLatin1String("dip")) {
+            out.push_back(resolved(*A, us, qMax(0.0, 1.0 - f * 2)));   // 1→0 en la 1.ª mitad
+            out.push_back(resolved(*B, us, qMax(0.0, f * 2 - 1.0)));   // 0→1 en la 2.ª mitad
+        } else if (A && B->transition == QLatin1String("wipe")) {
+            out.push_back(resolved(*A, us, 1.0));
+            RenderClip rb = resolved(*B, us, 1.0);
+            rb.wipe = f;                                               // revelado por barrido
+            out.push_back(rb);
+        } else {
+            if (A)
+                out.push_back(resolved(*A, us, 1.0));                  // saliente debajo
+            out.push_back(resolved(*B, us, f));                        // entrante (crossfade)
+        }
     }
 
     // Subtítulo activo: se pinta encima de todo como un título en el tercio inferior.
@@ -231,6 +258,7 @@ QVariantList TimelineModel::tracks() const
             m["inSec"] = c.inUs / 1e6;
             m["durSec"] = c.durationUs / 1e6;
             m["speed"] = c.speed;
+            m["transition"] = c.transition;
             m["selected"] = (c.id == m_selectedId);
             clips.append(m);
         }
@@ -317,8 +345,12 @@ double TimelineModel::evalKf(const QVector<Keyframe> &kf, double staticVal, qint
         if (sourceUs <= kf[i].sourceUs) {
             const Keyframe &a = kf[i - 1];
             const Keyframe &b = kf[i];
+            if (a.interp == 1)
+                return a.value;                    // hold: mantiene hasta el siguiente
             const double span = double(b.sourceUs - a.sourceUs);
-            const double t = span > 0 ? double(sourceUs - a.sourceUs) / span : 0.0;
+            double t = span > 0 ? double(sourceUs - a.sourceUs) / span : 0.0;
+            if (a.interp == 2)
+                t = t * t * (3.0 - 2.0 * t);       // suave: smoothstep (ease in-out)
             return a.value + (b.value - a.value) * t;
         }
     }
@@ -462,60 +494,80 @@ void TimelineModel::setSelRotation(double v)
     bumpSelection();
 }
 
-// ---- Corrección de color del clip seleccionado ----
-double TimelineModel::selLiftX() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].color.liftX : 0.0; }
-double TimelineModel::selLiftY() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].color.liftY : 0.0; }
-double TimelineModel::selGammaX() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].color.gammaX : 0.0; }
-double TimelineModel::selGammaY() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].color.gammaY : 0.0; }
-double TimelineModel::selGainX() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].color.gainX : 0.0; }
-double TimelineModel::selGainY() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].color.gainY : 0.0; }
-double TimelineModel::selTemp() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].color.temp : 0.0; }
-double TimelineModel::selTint() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].color.tint : 0.0; }
-double TimelineModel::selSat() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].color.sat : 1.0; }
+// ---- Corrección de color del clip seleccionado (evaluada en el playhead) ----
+double TimelineModel::selLiftX() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? evalKf(m_clips[i].color.kfLiftX, m_clips[i].color.liftX, srcAtPlayhead(m_clips[i])) : 0.0; }
+double TimelineModel::selLiftY() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? evalKf(m_clips[i].color.kfLiftY, m_clips[i].color.liftY, srcAtPlayhead(m_clips[i])) : 0.0; }
+double TimelineModel::selGammaX() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? evalKf(m_clips[i].color.kfGammaX, m_clips[i].color.gammaX, srcAtPlayhead(m_clips[i])) : 0.0; }
+double TimelineModel::selGammaY() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? evalKf(m_clips[i].color.kfGammaY, m_clips[i].color.gammaY, srcAtPlayhead(m_clips[i])) : 0.0; }
+double TimelineModel::selGainX() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? evalKf(m_clips[i].color.kfGainX, m_clips[i].color.gainX, srcAtPlayhead(m_clips[i])) : 0.0; }
+double TimelineModel::selGainY() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? evalKf(m_clips[i].color.kfGainY, m_clips[i].color.gainY, srcAtPlayhead(m_clips[i])) : 0.0; }
+// temp/tint/sat son animables: se evalúan en el playhead (como la transformación).
+double TimelineModel::selTemp() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? evalKf(m_clips[i].color.kfTemp, m_clips[i].color.temp, srcAtPlayhead(m_clips[i])) : 0.0; }
+double TimelineModel::selTint() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? evalKf(m_clips[i].color.kfTint, m_clips[i].color.tint, srcAtPlayhead(m_clips[i])) : 0.0; }
+double TimelineModel::selSat() const { const int i = indexOfClip(m_selectedId); return i >= 0 ? evalKf(m_clips[i].color.kfSat, m_clips[i].color.sat, srcAtPlayhead(m_clips[i])) : 1.0; }
+
+// Aplica un valor a una propiedad de color animable: al keyframe del playhead si
+// está animada (actualiza el cercano o inserta), o al valor estático si no.
+static void applyColorKf(QVector<TimelineModel::Keyframe> &kf, double &staticVal, qint64 src, double v)
+{
+    if (kf.isEmpty()) { staticVal = v; return; }
+    const qint64 tol = 20000;
+    for (int i = 0; i < kf.size(); ++i)
+        if (qAbs(kf[i].sourceUs - src) < tol) { kf[i].value = v; return; }
+    kf.push_back({ src, v });
+    std::sort(kf.begin(), kf.end(),
+              [](const TimelineModel::Keyframe &a, const TimelineModel::Keyframe &b) { return a.sourceUs < b.sourceUs; });
+}
 
 void TimelineModel::setSelLift(double x, double y)
 {
     const int i = indexOfClip(m_selectedId);
     if (i < 0) return;
-    m_clips[i].color.liftX = qBound(-1.0, x, 1.0);
-    m_clips[i].color.liftY = qBound(-1.0, y, 1.0);
+    Clip &c = m_clips[i];
+    applyColorKf(c.color.kfLiftX, c.color.liftX, srcAtPlayhead(c), qBound(-1.0, x, 1.0));
+    applyColorKf(c.color.kfLiftY, c.color.liftY, srcAtPlayhead(c), qBound(-1.0, y, 1.0));
     bumpSelection();
 }
 void TimelineModel::setSelGamma(double x, double y)
 {
     const int i = indexOfClip(m_selectedId);
     if (i < 0) return;
-    m_clips[i].color.gammaX = qBound(-1.0, x, 1.0);
-    m_clips[i].color.gammaY = qBound(-1.0, y, 1.0);
+    Clip &c = m_clips[i];
+    applyColorKf(c.color.kfGammaX, c.color.gammaX, srcAtPlayhead(c), qBound(-1.0, x, 1.0));
+    applyColorKf(c.color.kfGammaY, c.color.gammaY, srcAtPlayhead(c), qBound(-1.0, y, 1.0));
     bumpSelection();
 }
 void TimelineModel::setSelGain(double x, double y)
 {
     const int i = indexOfClip(m_selectedId);
     if (i < 0) return;
-    m_clips[i].color.gainX = qBound(-1.0, x, 1.0);
-    m_clips[i].color.gainY = qBound(-1.0, y, 1.0);
+    Clip &c = m_clips[i];
+    applyColorKf(c.color.kfGainX, c.color.gainX, srcAtPlayhead(c), qBound(-1.0, x, 1.0));
+    applyColorKf(c.color.kfGainY, c.color.gainY, srcAtPlayhead(c), qBound(-1.0, y, 1.0));
     bumpSelection();
 }
 void TimelineModel::setSelTemp(double v)
 {
     const int i = indexOfClip(m_selectedId);
     if (i < 0) return;
-    m_clips[i].color.temp = qBound(-1.0, v, 1.0);
+    Clip &c = m_clips[i];
+    applyColorKf(c.color.kfTemp, c.color.temp, srcAtPlayhead(c), qBound(-1.0, v, 1.0));
     bumpSelection();
 }
 void TimelineModel::setSelTint(double v)
 {
     const int i = indexOfClip(m_selectedId);
     if (i < 0) return;
-    m_clips[i].color.tint = qBound(-1.0, v, 1.0);
+    Clip &c = m_clips[i];
+    applyColorKf(c.color.kfTint, c.color.tint, srcAtPlayhead(c), qBound(-1.0, v, 1.0));
     bumpSelection();
 }
 void TimelineModel::setSelSat(double v)
 {
     const int i = indexOfClip(m_selectedId);
     if (i < 0) return;
-    m_clips[i].color.sat = qBound(0.0, v, 2.0);
+    Clip &c = m_clips[i];
+    applyColorKf(c.color.kfSat, c.color.sat, srcAtPlayhead(c), qBound(0.0, v, 2.0));
     bumpSelection();
 }
 void TimelineModel::resetSelColor()
@@ -667,6 +719,12 @@ void TimelineModel::setSelAudioMute(bool m)
     m_clips[i].audio.mute = m;
     bumpSelection();
     emit audioChanged();
+}
+
+bool TimelineModel::selIsAudio() const
+{
+    const int i = indexOfClip(m_selectedId);
+    return i >= 0 && m_clips[i].kind == QLatin1String("audio");
 }
 
 // ---- Título del clip seleccionado ----
@@ -916,8 +974,12 @@ namespace {
 QJsonArray kfToJson(const QVector<TimelineModel::Keyframe> &kf)
 {
     QJsonArray a;
-    for (const auto &k : kf)
-        a.append(QJsonObject{ { "t", double(k.sourceUs) }, { "v", k.value } });
+    for (const auto &k : kf) {
+        QJsonObject o{ { "t", double(k.sourceUs) }, { "v", k.value } };
+        if (k.interp != 0)
+            o.insert("i", k.interp);   // interpolación (0 lineal se omite)
+        a.append(o);
+    }
     return a;
 }
 
@@ -926,7 +988,8 @@ QVector<TimelineModel::Keyframe> kfFromJson(const QJsonValue &v)
     QVector<TimelineModel::Keyframe> out;
     for (const QJsonValue &e : v.toArray()) {
         const QJsonObject o = e.toObject();
-        out.push_back({ qint64(o.value("t").toDouble()), o.value("v").toDouble() });
+        out.push_back({ qint64(o.value("t").toDouble()), o.value("v").toDouble(),
+                        o.value("i").toInt(0) });
     }
     return out;
 }
@@ -953,7 +1016,7 @@ QJsonObject TimelineModel::toJson() const
             { "fill", c.fill }, { "border", c.border }, { "wav", c.wav },
             { "startUs", double(c.startUs) }, { "durationUs", double(c.durationUs) },
             { "inUs", double(c.inUs) }, { "mediaPath", c.mediaPath },
-            { "speed", c.speed },
+            { "speed", c.speed }, { "transition", c.transition },
             { "transform", QJsonObject{
                 { "posX", tf.posX }, { "posY", tf.posY }, { "scale", tf.scale },
                 { "rotation", tf.rotation }, { "opacity", tf.opacity },
@@ -966,7 +1029,12 @@ QJsonObject TimelineModel::toJson() const
                 { "liftX", co.liftX }, { "liftY", co.liftY },
                 { "gammaX", co.gammaX }, { "gammaY", co.gammaY },
                 { "gainX", co.gainX }, { "gainY", co.gainY },
-                { "temp", co.temp }, { "tint", co.tint }, { "sat", co.sat } } },
+                { "temp", co.temp }, { "tint", co.tint }, { "sat", co.sat },
+                { "kfTemp", kfToJson(co.kfTemp) }, { "kfTint", kfToJson(co.kfTint) },
+                { "kfSat", kfToJson(co.kfSat) },
+                { "kfLiftX", kfToJson(co.kfLiftX) }, { "kfLiftY", kfToJson(co.kfLiftY) },
+                { "kfGammaX", kfToJson(co.kfGammaX) }, { "kfGammaY", kfToJson(co.kfGammaY) },
+                { "kfGainX", kfToJson(co.kfGainX) }, { "kfGainY", kfToJson(co.kfGainY) } } },
             { "audio", QJsonObject{
                 { "gain", c.audio.gain }, { "pan", c.audio.pan }, { "mute", c.audio.mute },
                 { "gainKf", kfToJson(c.audio.gainKf) }, { "panKf", kfToJson(c.audio.panKf) } } },
@@ -1035,6 +1103,7 @@ bool TimelineModel::fromJson(const QJsonObject &o)
         c.inUs = qint64(cj.value("inUs").toDouble());
         c.mediaPath = cj.value("mediaPath").toString();
         c.speed = cj.value("speed").toDouble(1.0);
+        c.transition = cj.value("transition").toString(QStringLiteral("cross"));
         const QJsonObject tf = cj.value("transform").toObject();
         c.transform.posX = tf.value("posX").toDouble();
         c.transform.posY = tf.value("posY").toDouble();
@@ -1060,6 +1129,15 @@ bool TimelineModel::fromJson(const QJsonObject &o)
         c.color.temp = co.value("temp").toDouble();
         c.color.tint = co.value("tint").toDouble();
         c.color.sat = co.value("sat").toDouble(1.0);
+        c.color.kfTemp = kfFromJson(co.value("kfTemp"));
+        c.color.kfTint = kfFromJson(co.value("kfTint"));
+        c.color.kfSat = kfFromJson(co.value("kfSat"));
+        c.color.kfLiftX = kfFromJson(co.value("kfLiftX"));
+        c.color.kfLiftY = kfFromJson(co.value("kfLiftY"));
+        c.color.kfGammaX = kfFromJson(co.value("kfGammaX"));
+        c.color.kfGammaY = kfFromJson(co.value("kfGammaY"));
+        c.color.kfGainX = kfFromJson(co.value("kfGainX"));
+        c.color.kfGainY = kfFromJson(co.value("kfGainY"));
         const QJsonObject au = cj.value("audio").toObject();
         c.audio.gain = au.value("gain").toDouble(1.0);
         c.audio.pan = au.value("pan").toDouble(0.0);
@@ -1197,6 +1275,51 @@ void TimelineModel::toggleKeyframe(const QString &prop)
         emit audioChanged();
         return;
     }
+    // Keyframes de color (temp/tint/sat, listas propias en Clip::Color).
+    if (prop == QLatin1String("temp") || prop == QLatin1String("tint") || prop == QLatin1String("sat")) {
+        Clip &c = m_clips[i];
+        QVector<Keyframe> &kfc = prop == QLatin1String("temp") ? c.color.kfTemp
+                               : prop == QLatin1String("tint") ? c.color.kfTint : c.color.kfSat;
+        const double sv = prop == QLatin1String("temp") ? c.color.temp
+                        : prop == QLatin1String("tint") ? c.color.tint : c.color.sat;
+        const qint64 src = srcAtPlayhead(c);
+        const qint64 tol = 20000;
+        for (int k = 0; k < kfc.size(); ++k)
+            if (qAbs(kfc[k].sourceUs - src) < tol) { kfc.remove(k); bumpSelection(); return; }
+        kfc.push_back({ src, evalKf(kfc, sv, src) });
+        std::sort(kfc.begin(), kfc.end(),
+                  [](const Keyframe &a, const Keyframe &b) { return a.sourceUs < b.sourceUs; });
+        bumpSelection();
+        return;
+    }
+    // Ruedas 2D (lift/gamma/gain): un diamante anima las componentes X e Y en pareja.
+    if (prop == QLatin1String("lift") || prop == QLatin1String("gamma") || prop == QLatin1String("gain")) {
+        Clip &c = m_clips[i];
+        QVector<Keyframe> &kx = prop == QLatin1String("lift") ? c.color.kfLiftX
+                              : prop == QLatin1String("gamma") ? c.color.kfGammaX : c.color.kfGainX;
+        QVector<Keyframe> &ky = prop == QLatin1String("lift") ? c.color.kfLiftY
+                              : prop == QLatin1String("gamma") ? c.color.kfGammaY : c.color.kfGainY;
+        const double sx = prop == QLatin1String("lift") ? c.color.liftX
+                        : prop == QLatin1String("gamma") ? c.color.gammaX : c.color.gainX;
+        const double sy = prop == QLatin1String("lift") ? c.color.liftY
+                        : prop == QLatin1String("gamma") ? c.color.gammaY : c.color.gainY;
+        const qint64 src = srcAtPlayhead(c);
+        const qint64 tol = 20000;
+        bool removed = false;
+        for (int k = 0; k < kx.size(); ++k)
+            if (qAbs(kx[k].sourceUs - src) < tol) { kx.remove(k); removed = true; break; }
+        for (int k = 0; k < ky.size(); ++k)
+            if (qAbs(ky[k].sourceUs - src) < tol) { ky.remove(k); removed = true; break; }
+        if (!removed) {
+            kx.push_back({ src, evalKf(kx, sx, src) });
+            ky.push_back({ src, evalKf(ky, sy, src) });
+            auto byTime = [](const Keyframe &a, const Keyframe &b) { return a.sourceUs < b.sourceUs; };
+            std::sort(kx.begin(), kx.end(), byTime);
+            std::sort(ky.begin(), ky.end(), byTime);
+        }
+        bumpSelection();
+        return;
+    }
     double *sv = nullptr;
     QVector<Keyframe> *kf = kfVec(m_clips[i].transform, prop, sv);
     if (!kf) return;
@@ -1212,15 +1335,31 @@ void TimelineModel::toggleKeyframe(const QString &prop)
     bumpSelection();
 }
 
+QVector<TimelineModel::Keyframe> *TimelineModel::kfListFor(Clip &c, const QString &prop)
+{
+    if (prop == QLatin1String("audioGain")) return &c.audio.gainKf;
+    if (prop == QLatin1String("audioPan"))  return &c.audio.panKf;
+    if (prop == QLatin1String("temp"))      return &c.color.kfTemp;
+    if (prop == QLatin1String("tint"))      return &c.color.kfTint;
+    if (prop == QLatin1String("sat"))       return &c.color.kfSat;
+    // Ruedas 2D: el nombre de la rueda representa la pareja (lista X como
+    // representante para consultas); los componentes también son accesibles.
+    if (prop == QLatin1String("lift") || prop == QLatin1String("liftX"))   return &c.color.kfLiftX;
+    if (prop == QLatin1String("liftY"))                                    return &c.color.kfLiftY;
+    if (prop == QLatin1String("gamma") || prop == QLatin1String("gammaX")) return &c.color.kfGammaX;
+    if (prop == QLatin1String("gammaY"))                                   return &c.color.kfGammaY;
+    if (prop == QLatin1String("gain") || prop == QLatin1String("gainX"))   return &c.color.kfGainX;
+    if (prop == QLatin1String("gainY"))                                    return &c.color.kfGainY;
+    double *sv = nullptr;
+    return kfVec(c.transform, prop, sv);
+}
+
 bool TimelineModel::isKeyframed(const QString &prop) const
 {
     const int i = indexOfClip(m_selectedId);
     if (i < 0) return false;
-    if (prop == QLatin1String("audioGain"))
-        return !m_clips[i].audio.gainKf.isEmpty();
-    if (prop == QLatin1String("audioPan"))
-        return !m_clips[i].audio.panKf.isEmpty();
-    const QVector<Keyframe> *kf = kfVec(m_clips[i].transform, prop);
+    const QVector<Keyframe> *kf =
+        const_cast<TimelineModel *>(this)->kfListFor(const_cast<Clip &>(m_clips.at(i)), prop);
     return kf && !kf->isEmpty();
 }
 
@@ -1229,15 +1368,104 @@ bool TimelineModel::hasKeyframeAtPlayhead(const QString &prop) const
     const int i = indexOfClip(m_selectedId);
     if (i < 0) return false;
     const QVector<Keyframe> *kf =
-        prop == QLatin1String("audioGain") ? &m_clips[i].audio.gainKf
-        : prop == QLatin1String("audioPan") ? &m_clips[i].audio.panKf
-                                            : kfVec(m_clips[i].transform, prop);
+        const_cast<TimelineModel *>(this)->kfListFor(const_cast<Clip &>(m_clips.at(i)), prop);
     if (!kf) return false;
     const qint64 src = srcAtPlayhead(m_clips[i]);
     for (const Keyframe &k : *kf)
         if (qAbs(k.sourceUs - src) < 20000)
             return true;
     return false;
+}
+
+int TimelineModel::keyframeInterpAtPlayhead(const QString &prop)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return -1;
+    const QVector<Keyframe> *kf = kfListFor(m_clips[i], prop);
+    if (!kf) return -1;
+    const qint64 src = srcAtPlayhead(m_clips[i]);
+    for (const Keyframe &k : *kf)
+        if (qAbs(k.sourceUs - src) < 20000)
+            return k.interp;
+    return -1;
+}
+
+void TimelineModel::cycleKeyframeInterp(const QString &prop)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return;
+    QVector<Keyframe> *kf = kfListFor(m_clips[i], prop);
+    if (!kf) return;
+    const qint64 src = srcAtPlayhead(m_clips[i]);
+    for (Keyframe &k : *kf) {
+        if (qAbs(k.sourceUs - src) < 20000) {
+            k.interp = (k.interp + 1) % 3;   // lineal → hold → suave → lineal
+            // Las ruedas 2D animan X e Y en pareja: sincroniza el interp de la Y.
+            if (prop == QLatin1String("lift") || prop == QLatin1String("gamma")
+                || prop == QLatin1String("gain")) {
+                if (QVector<Keyframe> *ky = kfListFor(m_clips[i], prop + QLatin1String("Y")))
+                    for (Keyframe &q : *ky)
+                        if (qAbs(q.sourceUs - src) < 20000) { q.interp = k.interp; break; }
+            }
+            bumpSelection();
+            if (prop.startsWith(QLatin1String("audio")))
+                emit audioChanged();
+            return;
+        }
+    }
+}
+
+QVariantList TimelineModel::keyframePoints(const QString &prop)
+{
+    QVariantList out;
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0)
+        return out;
+    const Clip &c = m_clips.at(i);
+    QVector<Keyframe> *kf = kfListFor(m_clips[i], prop);
+    if (!kf)
+        return out;
+    // sourceUs → fracción de la duración del clip en la timeline (puede salir de
+    // [0,1] si el keyframe quedó fuera de la ventana visible tras un recorte).
+    const double denom = double(c.durationUs) * c.speed;
+    for (const Keyframe &k : *kf)
+        out.append(QVariantMap{
+            { "x", denom > 0 ? double(k.sourceUs - c.inUs) / denom : 0.0 },
+            { "v", k.value }, { "interp", k.interp } });
+    return out;
+}
+
+void TimelineModel::moveKeyframePoint(const QString &prop, int index, double clipFrac, double value)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0)
+        return;
+    Clip &c = m_clips[i];
+    QVector<Keyframe> *kf = kfListFor(c, prop);
+    if (!kf || index < 0 || index >= kf->size())
+        return;
+    clipFrac = qBound(0.0, clipFrac, 1.0);
+    (*kf)[index].sourceUs = c.inUs + qint64(clipFrac * c.durationUs * c.speed);
+    (*kf)[index].value = value;
+    std::sort(kf->begin(), kf->end(),
+              [](const Keyframe &a, const Keyframe &b) { return a.sourceUs < b.sourceUs; });
+    bumpSelection();
+    if (prop.startsWith(QLatin1String("audio")))
+        emit audioChanged();
+}
+
+void TimelineModel::removeKeyframePoint(const QString &prop, int index)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0)
+        return;
+    QVector<Keyframe> *kf = kfListFor(m_clips[i], prop);
+    if (!kf || index < 0 || index >= kf->size())
+        return;
+    kf->remove(index);
+    bumpSelection();
+    if (prop.startsWith(QLatin1String("audio")))
+        emit audioChanged();
 }
 
 void TimelineModel::splitAtFraction(quint64 id, double timelineFraction)
@@ -1427,6 +1655,68 @@ void TimelineModel::slipClip(quint64 id, double deltaFraction)
         }));
 }
 
+void TimelineModel::applySlide(quint64 id, quint64 aId, quint64 cId, qint64 d)
+{
+    const int i = indexOfClip(id);
+    if (i >= 0)
+        m_clips[i].startUs += d;
+    if (aId) {                              // vecino anterior: su salida sigue al clip
+        const int a = indexOfClip(aId);
+        if (a >= 0) m_clips[a].durationUs += d;
+    }
+    if (cId) {                              // vecino siguiente: su cabeza sigue al clip
+        const int c = indexOfClip(cId);
+        if (c >= 0) {
+            m_clips[c].startUs += d;
+            m_clips[c].durationUs -= d;
+            m_clips[c].inUs += qint64(d * m_clips[c].speed);
+        }
+    }
+    emit changed();
+}
+
+void TimelineModel::slideClip(quint64 id, double deltaFraction)
+{
+    const int idx = indexOfClip(id);
+    if (idx < 0)
+        return;
+    const Clip cur = m_clips.at(idx);
+    qint64 d = qint64(deltaFraction * m_totalUs);
+    if (d == 0)
+        return;
+
+    // Vecinos ADYACENTES (tolerancia 1 ms): A termina donde empieza el clip y C
+    // empieza donde termina; sus bordes siguen al clip (la duración total no cambia).
+    const qint64 eps = 1000;
+    int ia = -1, ic = -1;
+    for (int i = 0; i < m_clips.size(); ++i) {
+        const Clip &c = m_clips.at(i);
+        if (c.trackIndex != cur.trackIndex || c.id == id)
+            continue;
+        if (qAbs(c.startUs + c.durationUs - cur.startUs) <= eps) ia = i;
+        if (qAbs(c.startUs - (cur.startUs + cur.durationUs)) <= eps) ic = i;
+    }
+
+    // Acotaciones: el clip no cruza el origen; A y C conservan la duración mínima;
+    // la cabeza de C no retrocede antes del inicio de su origen.
+    d = qMax(d, -cur.startUs);
+    if (ia >= 0)
+        d = qMax(d, kMinClipUs - m_clips[ia].durationUs);
+    if (ic >= 0) {
+        d = qMin(d, m_clips[ic].durationUs - kMinClipUs);
+        d = qMax(d, qint64(-double(m_clips[ic].inUs) / m_clips[ic].speed));
+    }
+    if (d == 0)
+        return;
+
+    const quint64 aId = ia >= 0 ? m_clips[ia].id : 0;
+    const quint64 cId = ic >= 0 ? m_clips[ic].id : 0;
+    m_undo.push(new TimelineCommand(
+        QStringLiteral("Slide"),
+        [this, id, aId, cId, d]() { applySlide(id, aId, cId, d); },
+        [this, id, aId, cId, d]() { applySlide(id, aId, cId, -d); }));
+}
+
 void TimelineModel::shiftTrack(int trackIndex, double deltaFraction)
 {
     if (trackIndex < 0 || trackIndex >= m_tracks.size()) return;
@@ -1502,6 +1792,133 @@ void TimelineModel::rippleTrimRight(quint64 id, double deltaFraction)
             if (i >= 0) m_clips[i].durationUs = od;
             for (quint64 sid : shiftIds) { const int j = indexOfClip(sid); if (j >= 0) m_clips[j].startUs -= durChange; }
             emit changed();
+        }));
+}
+
+void TimelineModel::rippleTrimLeft(quint64 id, double deltaFraction)
+{
+    const int idx = indexOfClip(id);
+    if (idx < 0)
+        return;
+    const Clip orig = m_clips.at(idx);
+    const qint64 deltaUs = qint64(deltaFraction * m_totalUs);
+    if (deltaUs == 0)
+        return;
+
+    // El borde de entrada se mueve `applied` (acotado como en trimClip): el clip
+    // pierde/gana cabeza pero NO se mueve; los posteriores cierran/abren el hueco.
+    qint64 edge = snapUs(orig.startUs + deltaUs, id);
+    edge = qBound<qint64>(qMax<qint64>(0, orig.startUs - orig.inUs),
+                          edge,
+                          orig.startUs + orig.durationUs - kMinClipUs);
+    const qint64 applied = edge - orig.startUs;
+    if (applied == 0)
+        return;
+    const qint64 newDur = orig.durationUs - applied;
+    const qint64 newIn = orig.inUs + qint64(applied * orig.speed);
+
+    const qint64 origEnd = orig.startUs + orig.durationUs;
+    QVector<quint64> shiftIds;
+    for (const Clip &c : m_clips)
+        if (c.trackIndex == orig.trackIndex && c.id != id && c.startUs >= origEnd)
+            shiftIds.push_back(c.id);
+
+    m_undo.push(new TimelineCommand(
+        QStringLiteral("Ripple (entrada)"),
+        [this, id, newDur, newIn, applied, shiftIds]() {
+            const int i = indexOfClip(id);
+            if (i >= 0) { m_clips[i].durationUs = newDur; m_clips[i].inUs = newIn; }
+            for (quint64 sid : shiftIds) { const int j = indexOfClip(sid); if (j >= 0) m_clips[j].startUs -= applied; }
+            emit changed();
+        },
+        [this, id, od = orig.durationUs, oi = orig.inUs, applied, shiftIds]() {
+            const int i = indexOfClip(id);
+            if (i >= 0) { m_clips[i].durationUs = od; m_clips[i].inUs = oi; }
+            for (quint64 sid : shiftIds) { const int j = indexOfClip(sid); if (j >= 0) m_clips[j].startUs += applied; }
+            emit changed();
+        }));
+}
+
+void TimelineModel::rippleDeleteSelected()
+{
+    const int idx = indexOfClip(m_selectedId);
+    if (idx < 0)
+        return;
+    const Clip removed = m_clips.at(idx);
+    const qint64 removedEnd = removed.startUs + removed.durationUs;
+    QVector<quint64> shiftIds;
+    for (const Clip &c : m_clips)
+        if (c.trackIndex == removed.trackIndex && c.id != removed.id && c.startUs >= removedEnd)
+            shiftIds.push_back(c.id);
+
+    m_undo.push(new TimelineCommand(
+        QStringLiteral("Eliminar con ripple"),
+        [this, rid = removed.id, dur = removed.durationUs, shiftIds]() {
+            const int i = indexOfClip(rid);
+            if (i >= 0) doRemoveAt(i);
+            for (quint64 sid : shiftIds) { const int j = indexOfClip(sid); if (j >= 0) m_clips[j].startUs -= dur; }
+            m_selectedId = 0;
+            emit changed();
+        },
+        [this, removed, idx, shiftIds]() {
+            doInsert(removed, idx);
+            for (quint64 sid : shiftIds) { const int j = indexOfClip(sid); if (j >= 0) m_clips[j].startUs += removed.durationUs; }
+            emit changed();
+        }));
+}
+
+void TimelineModel::setClipTransition(quint64 id, const QString &type)
+{
+    const int idx = indexOfClip(id);
+    if (idx < 0 || m_clips[idx].transition == type)
+        return;
+    if (type != QLatin1String("cross") && type != QLatin1String("dip") && type != QLatin1String("wipe"))
+        return;
+
+    m_undo.push(new TimelineCommand(
+        QStringLiteral("Tipo de transición"),
+        [this, id, type]() {
+            const int i = indexOfClip(id);
+            if (i >= 0) { m_clips[i].transition = type; emit changed(); }
+        },
+        [this, id, old = m_clips[idx].transition]() {
+            const int i = indexOfClip(id);
+            if (i >= 0) { m_clips[i].transition = old; emit changed(); }
+        }));
+}
+
+void TimelineModel::setTransitionDuration(quint64 incomingId, double seconds)
+{
+    const int idx = indexOfClip(incomingId);
+    if (idx < 0)
+        return;
+    const Clip cur = m_clips.at(idx);
+
+    // Clip saliente: el que termina más tarde de los que empiezan antes que el entrante.
+    qint64 aEnd = -1, aStart = 0;
+    for (const Clip &c : m_clips)
+        if (c.trackIndex == cur.trackIndex && c.id != cur.id && c.startUs < cur.startUs) {
+            const qint64 e = c.startUs + c.durationUs;
+            if (e > aEnd) { aEnd = e; aStart = c.startUs; }
+        }
+    if (aEnd <= cur.startUs)
+        return;   // ya no hay solape sobre el que ajustar
+
+    // Mueve el inicio del entrante para que el solape dure `seconds`.
+    qint64 newStart = aEnd - qint64(seconds * 1e6);
+    newStart = qBound<qint64>(qMax<qint64>(0, aStart + kMinClipUs), newStart, aEnd - kMinClipUs);
+    if (newStart == cur.startUs)
+        return;
+
+    m_undo.push(new TimelineCommand(
+        QStringLiteral("Duración de transición"),
+        [this, incomingId, newStart]() {
+            const int i = indexOfClip(incomingId);
+            if (i >= 0) { m_clips[i].startUs = newStart; emit changed(); }
+        },
+        [this, incomingId, os = cur.startUs]() {
+            const int i = indexOfClip(incomingId);
+            if (i >= 0) { m_clips[i].startUs = os; emit changed(); }
         }));
 }
 
@@ -1697,6 +2114,27 @@ void TimelineModel::runSelfTestIfRequested()
         check(clipById(c1).startUs == s1 + ap, "ripple desplaza el clip posterior");
         undo();
         check(clipById(c0).durationUs == d0 && clipById(c1).startUs == s1, "undo de ripple restaura");
+
+        // Ripple de ENTRADA: recorta la cabeza (el clip no se mueve) y el posterior retrocede.
+        const qint64 st0 = clipById(c0).startUs, in0 = clipById(c0).inUs;
+        rippleTrimLeft(c0, df);
+        check(clipById(c0).startUs == st0 && clipById(c0).durationUs == d0 - ap
+                  && clipById(c0).inUs == in0 + ap,
+              "ripple de entrada recorta la cabeza sin mover el clip");
+        check(clipById(c1).startUs == s1 - ap, "ripple de entrada retrae el clip posterior");
+        undo();
+        check(clipById(c0).durationUs == d0 && clipById(c1).startUs == s1,
+              "undo de ripple de entrada restaura");
+
+        // Borrado con ripple: el posterior cierra el hueco del eliminado.
+        const int nBefore = m_clips.size();
+        const qint64 durDel = clipById(c0).durationUs;
+        selectClip(c0);
+        rippleDeleteSelected();
+        check(m_clips.size() == nBefore - 1 && indexOfClip(c0) < 0, "ripple delete elimina el clip");
+        check(clipById(c1).startUs == s1 - durDel, "ripple delete cierra el hueco");
+        undo();
+        check(indexOfClip(c0) >= 0 && clipById(c1).startUs == s1, "undo de ripple delete restaura");
     }
 
     // 3) Roll: mueve la frontera entre dos clips adyacentes sin tocar el resto.
@@ -1767,7 +2205,101 @@ void TimelineModel::runSelfTestIfRequested()
         check(nT2 == 2, "transición: dos capas en la pista durante el solape");
         check(qAbs(bOp - 0.5) < 0.05, "transición: opacidad del entrante ~0.5 en el medio");
 
+        // Tipos de transición: "dip" (fundido por negro) y "wipe" (barrido).
+        m_clips[ib].transition = QStringLiteral("dip");
+        const qint64 q1 = aEnd - (3 * ov) / 4;   // f = 0.25
+        double aOp = -1, bOp2 = -1;
+        {
+            auto rs = clipsAt(q1);
+            for (int k = 0; k < rs.size(); ++k)
+                if (rs[k].trackIndex == 2) { if (aOp < 0) aOp = rs[k].transform.opacity; else bOp2 = rs[k].transform.opacity; }
+        }
+        check(qAbs(aOp - 0.5) < 0.05 && bOp2 < 0.05, "dip f=0.25: saliente ~0.5, entrante 0");
+
+        m_clips[ib].transition = QStringLiteral("wipe");
+        double wp = -2;
+        for (const auto &r : clipsAt(mid))
+            if (r.trackIndex == 2 && r.wipe >= 0) wp = r.wipe;
+        check(qAbs(wp - 0.5) < 0.05, "wipe: fraccion de barrido ~0.5 en el medio");
+
+        m_clips[ib].transition = QStringLiteral("cross");
         m_clips[ib].startUs = bStart0;          // restaura
+    }
+
+    // 6b) Interpolación de keyframes: hold mantiene, suave = smoothstep.
+    {
+        QVector<Keyframe> kf{ { 0, 0.0, 1 }, { 1000000, 1.0 } };       // hold
+        check(evalKf(kf, 0.0, 500000) == 0.0, "interp hold: mantiene el valor");
+        kf[0].interp = 2;                                              // suave
+        const double v = evalKf(kf, 0.0, 250000);                      // t=0.25 → 0.15625
+        check(qAbs(v - 0.15625) < 1e-9, "interp suave: smoothstep en t=0.25");
+        kf[0].interp = 0;
+        check(qAbs(evalKf(kf, 0.0, 250000) - 0.25) < 1e-9, "interp lineal: t=0.25");
+    }
+
+    // 6c) Keyframes de color: temp animada y una rueda 2D se evalúan en clipsAt.
+    {
+        const int ci = indexOfClip(v1sorted().first().id);
+        const qint64 in0 = m_clips[ci].inUs, dur = m_clips[ci].durationUs;
+        m_clips[ci].color.kfTemp = { { in0, 0.0 }, { in0 + dur, 1.0 } };
+        m_clips[ci].color.kfLiftY = { { in0, 0.0 }, { in0 + dur, 1.0 } };
+        setPlayheadUs(m_clips[ci].startUs + dur / 2);
+        double tmp = -1, lY = -1;
+        for (const auto &r : clipsAt(playheadUs()))
+            if (r.trackIndex == 2) { tmp = r.color.temp; lY = r.color.liftY; }
+        check(qAbs(tmp - 0.5) < 0.03, "keyframes de color: temp interpolada ~0.5");
+        check(qAbs(lY - 0.5) < 0.03, "keyframes de color: rueda (liftY) interpolada ~0.5");
+        m_clips[ci].color.kfTemp.clear();
+        m_clips[ci].color.kfLiftY.clear();
+        setPlayheadUs(0);
+    }
+
+    // 6e) Editor de curvas: puntos, mover y eliminar keyframes por índice.
+    {
+        const quint64 id = v1sorted().first().id;
+        const int ci = indexOfClip(id);
+        const qint64 in0 = m_clips[ci].inUs, dur = m_clips[ci].durationUs;
+        selectClip(id);
+        m_clips[ci].transform.kfOpacity = { { in0, 0.0 }, { in0 + dur, 1.0 } };
+        auto pts = keyframePoints(QStringLiteral("opacity"));
+        check(pts.size() == 2 && qAbs(pts.at(0).toMap().value("x").toDouble()) < 1e-9
+                  && qAbs(pts.at(1).toMap().value("x").toDouble() - 1.0) < 1e-9,
+              "curvas: puntos en fracciones 0 y 1");
+        moveKeyframePoint(QStringLiteral("opacity"), 1, 0.5, 0.8);
+        check(m_clips[ci].transform.kfOpacity.last().sourceUs == in0 + dur / 2
+                  && qAbs(m_clips[ci].transform.kfOpacity.last().value - 0.8) < 1e-9,
+              "curvas: mover keyframe cambia tiempo y valor");
+        removeKeyframePoint(QStringLiteral("opacity"), 1);
+        check(m_clips[ci].transform.kfOpacity.size() == 1, "curvas: eliminar keyframe");
+        m_clips[ci].transform.kfOpacity.clear();
+        selectClip(0);
+    }
+
+    // 6d) Slide: el clip se desplaza, A alarga su salida y C recorta su cabeza.
+    {
+        auto v = v1sorted();
+        const quint64 a = v[0].id, b = v[1].id, c = v[2].id;
+        // Fuerza adyacencia A|B|C (guardando los inicios originales).
+        const qint64 bs0 = clipById(b).startUs, cs0 = clipById(c).startUs;
+        m_clips[indexOfClip(b)].startUs = clipById(a).startUs + clipById(a).durationUs;
+        m_clips[indexOfClip(c)].startUs = clipById(b).startUs + clipById(b).durationUs;
+        const qint64 aDur = clipById(a).durationUs, bStart = clipById(b).startUs, bDur = clipById(b).durationUs;
+        const qint64 cStart = clipById(c).startUs, cDur = clipById(c).durationUs, cIn = clipById(c).inUs;
+        const double df = 0.02;
+        const qint64 ap = qint64(df * m_totalUs);
+        slideClip(b, df);
+        check(clipById(b).startUs == bStart + ap && clipById(b).durationUs == bDur,
+              "slide: el clip se desplaza sin cambiar su duración");
+        check(clipById(a).durationUs == aDur + ap, "slide: el anterior alarga su salida");
+        check(clipById(c).startUs == cStart + ap && clipById(c).durationUs == cDur - ap
+                  && clipById(c).inUs == cIn + ap,
+              "slide: el siguiente recorta su cabeza");
+        undo();
+        check(clipById(a).durationUs == aDur && clipById(b).startUs == bStart
+                  && clipById(c).startUs == cStart && clipById(c).inUs == cIn,
+              "undo de slide restaura");
+        m_clips[indexOfClip(b)].startUs = bs0;   // restaura los inicios originales
+        m_clips[indexOfClip(c)].startUs = cs0;
     }
 
     // 7) Remapeo de velocidad: sourceUs escala con speed.

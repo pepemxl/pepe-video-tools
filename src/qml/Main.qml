@@ -60,13 +60,17 @@ Window {
             case Qt.Key_B: timeline.currentTool = 2; e.accepted = true; break;
             case Qt.Key_N: timeline.currentTool = 4; e.accepted = true; break;
             case Qt.Key_Y: timeline.currentTool = 5; e.accepted = true; break;
-            case Qt.Key_W: timeline.currentTool = 6; e.accepted = true; break;
-            case Qt.Key_P: timeline.currentTool = 7; e.accepted = true; break;
-            case Qt.Key_Z: timeline.currentTool = 8; e.accepted = true; break;
+            case Qt.Key_U: timeline.currentTool = 6; e.accepted = true; break;
+            case Qt.Key_W: timeline.currentTool = 7; e.accepted = true; break;
+            case Qt.Key_P: timeline.currentTool = 8; e.accepted = true; break;
+            case Qt.Key_Z: timeline.currentTool = 9; e.accepted = true; break;
             case Qt.Key_S: TimelineModel.snapEnabled = !TimelineModel.snapEnabled; e.accepted = true; break;
             case Qt.Key_M: TimelineModel.addMarkerAtPlayhead(); e.accepted = true; break;
             case Qt.Key_Delete:
-            case Qt.Key_Backspace: TimelineModel.removeSelected(); e.accepted = true; break;
+            case Qt.Key_Backspace:
+                (e.modifiers & Qt.ShiftModifier) ? TimelineModel.rippleDeleteSelected()
+                                                 : TimelineModel.removeSelected()
+                e.accepted = true; break;
             }
         }
 

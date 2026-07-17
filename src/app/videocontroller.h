@@ -41,6 +41,8 @@ public:
     Q_INVOKABLE void togglePlay();
     Q_INVOKABLE void seekMs(qint64 ms);
     Q_INVOKABLE void seekFraction(double f);
+    // Avanza/retrocede `frames` fotogramas (según los fps del medio); pausa primero.
+    Q_INVOKABLE void stepFrame(int frames);
 
 signals:
     void frameReady(const QImage &image);

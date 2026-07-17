@@ -23,6 +23,34 @@ void VideoSurface::setSource(QObject *source)
     emit sourceChanged();
 }
 
+void VideoSurface::setZoom(double zoom)
+{
+    zoom = qMax(0.0, zoom);
+    if (m_zoom == zoom)   // valores discretos del desplegable: comparación exacta
+        return;
+    m_zoom = zoom;
+    emit zoomChanged();
+    update();
+}
+
+void VideoSurface::setPanX(double v)
+{
+    if (m_panX == v)
+        return;
+    m_panX = v;
+    emit panChanged();
+    update();
+}
+
+void VideoSurface::setPanY(double v)
+{
+    if (m_panY == v)
+        return;
+    m_panY = v;
+    emit panChanged();
+    update();
+}
+
 void VideoSurface::onFrame(const QImage &image)
 {
     m_frame = image;
@@ -64,11 +92,21 @@ QSGNode *VideoSurface::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
         }
     }
 
-    // Letterbox centrado (KeepAspectRatio) dentro del área del ítem.
+    // Ajuste (letterbox KeepAspectRatio) o zoom fijo sobre el tamaño nativo del
+    // fotograma; con zoom, 1.0 = un píxel de origen por píxel físico (÷ el DPR).
     const QSizeF area = size();
-    const QSizeF scaled = QSizeF(m_frame.size()).scaled(area, Qt::KeepAspectRatio);
-    node->setRect(QRectF((area.width() - scaled.width()) / 2.0,
-                         (area.height() - scaled.height()) / 2.0,
+    QSizeF scaled;
+    if (m_zoom > 0.0) {
+        const qreal dpr = window() ? window()->effectiveDevicePixelRatio() : 1.0;
+        scaled = QSizeF(m_frame.size()) * (m_zoom / dpr);
+    } else {
+        scaled = QSizeF(m_frame.size()).scaled(area, Qt::KeepAspectRatio);
+    }
+    // El paneo solo aplica con zoom (en ajuste el fotograma cabe entero).
+    const double px = m_zoom > 0.0 ? m_panX : 0.0;
+    const double py = m_zoom > 0.0 ? m_panY : 0.0;
+    node->setRect(QRectF((area.width() - scaled.width()) / 2.0 + px,
+                         (area.height() - scaled.height()) / 2.0 + py,
                          scaled.width(), scaled.height()));
     return node;
 }

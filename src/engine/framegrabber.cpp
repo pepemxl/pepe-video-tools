@@ -48,6 +48,12 @@ bool FrameGrabber::open(const QString &path)
     m_pkt = av_packet_alloc();
     m_timeBaseSec = av_q2d(stream->time_base);
 
+    // FrameCache: 96 MB por defecto; PVS_FRAMECACHE_MB lo ajusta (0 = desactivada).
+    bool ok = false;
+    const int mb = qEnvironmentVariableIntValue("PVS_FRAMECACHE_MB", &ok);
+    m_cache.setMaxCost(qsizetype(ok ? qMax(0, mb) : 96) * 1024 * 1024);
+    m_cache.clear();
+
     if (m_fmt->duration > 0)
         m_durationMs = m_fmt->duration / (AV_TIME_BASE / 1000);
     else if (stream->duration > 0)
@@ -104,6 +110,8 @@ QImage FrameGrabber::frameAt(qint64 ms)
 {
     if (!m_codec)
         return {};
+    if (QImage *hit = m_cache.object(ms))
+        return *hit;   // FrameCache: mismo tiempo pedido = sin seek ni decode
     const int64_t ts = int64_t((ms / 1000.0) / m_timeBaseSec);
     av_seek_frame(m_fmt, m_videoIndex, ts, AVSEEK_FLAG_BACKWARD);
     avcodec_flush_buffers(m_codec);
@@ -119,5 +127,7 @@ QImage FrameGrabber::frameAt(qint64 ms)
         if (pts >= ms)
             break; // alcanzado el tiempo pedido
     }
+    if (!best.isNull() && m_cache.maxCost() > 0)
+        m_cache.insert(ms, new QImage(best), qMax<qsizetype>(1, best.sizeInBytes()));
     return best;
 }

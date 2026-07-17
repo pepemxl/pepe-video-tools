@@ -11,6 +11,30 @@ Rectangle {
     // la fijan al entrar en Fusión/Color.
     property alias currentTab: inspTabs.current
 
+    // Botón de interpolación del keyframe del playhead: L (lineal) → H (hold) →
+    // S (suave/smoothstep) → L. Visible solo cuando hay un keyframe en el playhead.
+    component KfInterp: Rectangle {
+        id: ki
+        property string prop
+        property bool show: false
+        // La automatización de AUDIO se hornea siempre lineal (el motor no ve el
+        // interp), así que ahí no se ofrece el selector.
+        visible: show && prop.indexOf("audio") !== 0
+        width: 14; height: 14; radius: 3
+        color: kiHover.hovered ? Theme.hover : Theme.sunken
+        border.color: Theme.line; border.width: 1
+        readonly property int interp: {
+            TimelineModel.hasSelection; TimelineModel.playheadUs
+            return ki.prop !== "" ? TimelineModel.keyframeInterpAtPlayhead(ki.prop) : -1
+        }
+        HoverHandler { id: kiHover }
+        TapHandler { onTapped: TimelineModel.cycleKeyframeInterp(ki.prop) }
+        Text { anchors.centerIn: parent
+               text: ki.interp === 1 ? "H" : ki.interp === 2 ? "S" : "L"
+               font.pixelSize: 8; font.family: Theme.mono
+               color: ki.interp > 0 ? Theme.amber : Theme.textMid }
+    }
+
     // Campo numérico editable por arrastre horizontal (relativo al valor al pulsar).
     // El rombo es un toggle de keyframe en el playhead (relleno si hay uno aquí).
     component NumRow: RowLayout {
@@ -31,6 +55,7 @@ Rectangle {
             border.color: nr.animated ? Theme.amber : Theme.textFaint; border.width: 1.5
             TapHandler { enabled: nr.prop !== ""; onTapped: TimelineModel.toggleKeyframe(nr.prop) }
         }
+        KfInterp { prop: nr.prop; show: nr.animated && nr.kfHere }
         Text { text: nr.label; color: Theme.textMid; font.pixelSize: 11; font.family: Theme.sans; Layout.preferredWidth: 64 }
         Rectangle {
             Layout.fillWidth: true; height: 24; radius: 4; color: Theme.sunken
@@ -48,13 +73,16 @@ Rectangle {
     }
 
     // Rueda de color: punto arrastrable dentro de un círculo → (x,y) en [-1,1].
-    // Doble clic = centrar (neutro).
+    // Doble clic = centrar (neutro). El diamante anima la pareja X/Y de la rueda.
     component ColorWheel: ColumnLayout {
         id: cw
         property string label
+        property string prop: ""
         property real vx: 0
         property real vy: 0
         signal moved(real x, real y)
+        readonly property bool animated: { TimelineModel.hasSelection; return cw.prop !== "" && TimelineModel.isKeyframed(cw.prop) }
+        readonly property bool kfHere: { TimelineModel.hasSelection; TimelineModel.playheadUs; return cw.prop !== "" && TimelineModel.hasKeyframeAtPlayhead(cw.prop) }
         Layout.fillWidth: true; spacing: 5
         Rectangle {
             Layout.alignment: Qt.AlignHCenter
@@ -81,7 +109,18 @@ Rectangle {
                 onDoubleClicked: cw.moved(0, 0)
             }
         }
-        Text { Layout.alignment: Qt.AlignHCenter; text: cw.label; color: Theme.textMid; font.pixelSize: 9; font.family: Theme.sans }
+        Row {
+            Layout.alignment: Qt.AlignHCenter; spacing: 4
+            Rectangle {
+                visible: cw.prop !== ""; width: 8; height: 8; rotation: 45
+                anchors.verticalCenter: parent.verticalCenter
+                color: cw.animated && cw.kfHere ? Theme.amber : "transparent"
+                border.color: cw.animated ? Theme.amber : Theme.textFaint; border.width: 1.5
+                TapHandler { onTapped: TimelineModel.toggleKeyframe(cw.prop) }
+            }
+            Text { text: cw.label; color: Theme.textMid; font.pixelSize: 9; font.family: Theme.sans; anchors.verticalCenter: parent.verticalCenter }
+            KfInterp { prop: cw.prop; show: cw.animated && cw.kfHere; anchors.verticalCenter: parent.verticalCenter }
+        }
     }
 
     // Deslizador simple (temp/tint/sat). Doble clic = valor por defecto.
@@ -103,6 +142,7 @@ Rectangle {
             border.color: sl.animated ? Theme.amber : Theme.textFaint; border.width: 1.5
             TapHandler { onTapped: TimelineModel.toggleKeyframe(sl.prop) }
         }
+        KfInterp { prop: sl.prop; show: sl.animated && sl.kfHere }
         Text { text: sl.label; color: Theme.textMid; font.pixelSize: 10; font.family: Theme.sans; Layout.preferredWidth: 56 }
         Rectangle {
             id: tr; Layout.fillWidth: true; height: 5; radius: 3; color: Theme.sunken
@@ -251,6 +291,7 @@ Rectangle {
                             color: parent.opAnimated && parent.opKfHere ? Theme.amber : "transparent"
                             border.color: parent.opAnimated ? Theme.amber : Theme.textFaint; border.width: 1.5
                             TapHandler { onTapped: TimelineModel.toggleKeyframe("opacity") } }
+                        KfInterp { prop: "opacity"; show: parent.opAnimated && parent.opKfHere }
                         Text { text: "Opacidad"; color: Theme.textMid; font.pixelSize: 11; font.family: Theme.sans; Layout.preferredWidth: 64 }
                         Rectangle { id: opTrack; Layout.fillWidth: true; height: 6; radius: 3; color: Theme.sunken
                             readonly property real op: (TimelineModel.playheadUs, TimelineModel.selOpacity)
@@ -322,6 +363,157 @@ Rectangle {
                 }
                 Rectangle { visible: inspTabs.current === 0; Layout.fillWidth: true; height: 1; color: Theme.lineSoft }
 
+                // ---- Curvas (editor de keyframes de las propiedades animadas) ----
+                ColumnLayout {
+                    id: curveEd
+                    visible: inspTabs.current === 0 && TimelineModel.hasSelection && animatedProps.length > 0
+                    Layout.fillWidth: true; Layout.margins: 12; spacing: 8
+                    // Propiedades escalares que el editor sabe dibujar, con su rango.
+                    readonly property var allProps: [
+                        { p: "opacity", l: "Opacidad", min: 0, max: 1 },
+                        { p: "posX", l: "Pos X", min: -1, max: 1 },
+                        { p: "posY", l: "Pos Y", min: -1, max: 1 },
+                        { p: "scale", l: "Escala", min: 0, max: 4 },
+                        { p: "rotation", l: "Rotación", min: -180, max: 180 },
+                        { p: "temp", l: "Temp", min: -1, max: 1 },
+                        { p: "tint", l: "Tinte", min: -1, max: 1 },
+                        { p: "sat", l: "Saturac.", min: 0, max: 2 },
+                        { p: "audioGain", l: "Gan. audio", min: 0, max: 2 },
+                        { p: "audioPan", l: "Pan", min: -1, max: 1 } ]
+                    readonly property var animatedProps: {
+                        TimelineModel.hasSelection
+                        return allProps.filter(e => TimelineModel.isKeyframed(e.p))
+                    }
+                    property int currentIdx: 0
+                    readonly property var current: animatedProps.length > 0
+                        ? animatedProps[Math.min(currentIdx, animatedProps.length - 1)] : null
+                    RowLayout { Layout.fillWidth: true
+                        Text { text: "Curvas"; color: Theme.textHi; font.pixelSize: 11; font.weight: Font.DemiBold; font.family: Theme.sans }
+                        Item { Layout.fillWidth: true }
+                        Text { text: "arrastra un punto · doble clic = eliminar"; color: Theme.textFaint; font.pixelSize: 8; font.family: Theme.sans }
+                    }
+                    // Selector de propiedad (solo las animadas)
+                    Flow {
+                        Layout.fillWidth: true; spacing: 4
+                        Repeater {
+                            model: curveEd.animatedProps
+                            delegate: Rectangle {
+                                required property var modelData
+                                required property int index
+                                readonly property bool on: curveEd.current && curveEd.current.p === modelData.p
+                                width: chipT.width + 14; height: 20; radius: 4
+                                color: on ? Theme.amber : Theme.sunken; border.color: Theme.line; border.width: 1
+                                Text { id: chipT; anchors.centerIn: parent; text: modelData.l; font.pixelSize: 9; font.family: Theme.sans
+                                       color: parent.on ? Theme.amberInk : Theme.textMid }
+                                TapHandler { onTapped: curveEd.currentIdx = index }
+                            }
+                        }
+                    }
+                    // Lienzo de la curva: keyframes (cuadrados) e interpolación real.
+                    Rectangle {
+                        Layout.fillWidth: true; height: 96; radius: 4
+                        color: "#0b0d10"; border.color: Theme.line; border.width: 1; clip: true
+                        Canvas {
+                            id: curveCanvas
+                            anchors.fill: parent; anchors.margins: 6
+                            readonly property var pts: {
+                                TimelineModel.hasSelection
+                                return curveEd.current ? TimelineModel.keyframePoints(curveEd.current.p) : []
+                            }
+                            onPtsChanged: requestPaint()
+                            onWidthChanged: requestPaint()
+                            function toY(v) {
+                                var c = curveEd.current
+                                var f = (v - c.min) / (c.max - c.min)
+                                return Math.max(0, Math.min(height, height - f * height))
+                            }
+                            // Réplica JS de evalKf (lineal / hold / suave) para dibujar.
+                            function evalAt(fx) {
+                                var p = pts, c = curveEd.current
+                                if (p.length === 0) return c.min
+                                if (fx <= p[0].x) return p[0].v
+                                if (fx >= p[p.length - 1].x) return p[p.length - 1].v
+                                for (var i = 1; i < p.length; i++) {
+                                    if (fx <= p[i].x) {
+                                        var a = p[i - 1], b = p[i]
+                                        if (a.interp === 1) return a.v
+                                        var span = b.x - a.x
+                                        var t = span > 0 ? (fx - a.x) / span : 0
+                                        if (a.interp === 2) t = t * t * (3 - 2 * t)
+                                        return a.v + (b.v - a.v) * t
+                                    }
+                                }
+                                return p[p.length - 1].v
+                            }
+                            onPaint: {
+                                var ctx = getContext("2d")
+                                ctx.clearRect(0, 0, width, height)
+                                if (!curveEd.current) return
+                                ctx.strokeStyle = "#1effffff"; ctx.lineWidth = 1
+                                for (var g = 1; g < 4; g++) {
+                                    ctx.beginPath(); ctx.moveTo(0, height * g / 4)
+                                    ctx.lineTo(width, height * g / 4); ctx.stroke()
+                                }
+                                ctx.strokeStyle = Theme.amber; ctx.lineWidth = 1.5
+                                ctx.beginPath()
+                                for (var x = 0; x <= width; x += 2) {
+                                    var y = toY(evalAt(x / width))
+                                    if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y)
+                                }
+                                ctx.stroke()
+                                for (var i = 0; i < pts.length; i++) {
+                                    var px = pts[i].x * width, py = toY(pts[i].v)
+                                    ctx.fillStyle = pts[i].interp === 1 ? "#5b8dd6"
+                                                  : pts[i].interp === 2 ? "#4a9e6b" : Theme.amber
+                                    ctx.fillRect(px - 3, py - 3, 6, 6)
+                                }
+                            }
+                        }
+                        MouseArea {
+                            anchors.fill: curveCanvas
+                            anchors.margins: -4
+                            property int dragIdx: -1
+                            function nearest(mx, my) {
+                                var p = curveCanvas.pts, best = -1, bd = 14
+                                for (var i = 0; i < p.length; i++) {
+                                    var d = Math.hypot(mx - p[i].x * curveCanvas.width,
+                                                       my - curveCanvas.toY(p[i].v))
+                                    if (d < bd) { bd = d; best = i }
+                                }
+                                return best
+                            }
+                            onPressed: (m) => dragIdx = nearest(m.x - 4, m.y - 4)
+                            onPositionChanged: (m) => {
+                                if (dragIdx < 0 || !curveEd.current) return
+                                var c = curveEd.current
+                                var fx = Math.max(0, Math.min(1, (m.x - 4) / curveCanvas.width))
+                                var fy = Math.max(0, Math.min(1, (m.y - 4) / curveCanvas.height))
+                                TimelineModel.moveKeyframePoint(c.p, dragIdx, fx, c.min + (1 - fy) * (c.max - c.min))
+                                // Reordenar puede cambiar el índice: re-identifica bajo el cursor.
+                                dragIdx = nearest(m.x - 4, m.y - 4)
+                            }
+                            onReleased: dragIdx = -1
+                            onDoubleClicked: (m) => {
+                                var i = nearest(m.x - 4, m.y - 4)
+                                if (i >= 0 && curveEd.current) TimelineModel.removeKeyframePoint(curveEd.current.p, i)
+                            }
+                        }
+                    }
+                    // Leyenda de interpolación (colores de los puntos)
+                    Row { spacing: 10
+                        Repeater {
+                            model: [{ c: Theme.amber, t: "lineal" }, { c: "#5b8dd6", t: "hold" }, { c: "#4a9e6b", t: "suave" }]
+                            delegate: Row {
+                                required property var modelData
+                                spacing: 3
+                                Rectangle { width: 6; height: 6; color: modelData.c; anchors.verticalCenter: parent.verticalCenter }
+                                Text { text: modelData.t; color: Theme.textFaint; font.pixelSize: 8; font.family: Theme.sans; anchors.verticalCenter: parent.verticalCenter }
+                            }
+                        }
+                    }
+                }
+                Rectangle { visible: curveEd.visible; Layout.fillWidth: true; height: 1; color: Theme.lineSoft }
+
                 // ---- Corrección primaria ----
                 ColumnLayout {
                     visible: inspTabs.current === 2
@@ -337,16 +529,27 @@ Rectangle {
                     }
                     RowLayout {
                         Layout.fillWidth: true; spacing: 6
-                        ColorWheel { label: "Sombras"; vx: TimelineModel.selLiftX; vy: TimelineModel.selLiftY
+                        ColorWheel { label: "Sombras"; prop: "lift"
+                                     vx: (TimelineModel.playheadUs, TimelineModel.selLiftX)
+                                     vy: (TimelineModel.playheadUs, TimelineModel.selLiftY)
                                      onMoved: (x, y) => TimelineModel.setSelLift(x, y) }
-                        ColorWheel { label: "Medios"; vx: TimelineModel.selGammaX; vy: TimelineModel.selGammaY
+                        ColorWheel { label: "Medios"; prop: "gamma"
+                                     vx: (TimelineModel.playheadUs, TimelineModel.selGammaX)
+                                     vy: (TimelineModel.playheadUs, TimelineModel.selGammaY)
                                      onMoved: (x, y) => TimelineModel.setSelGamma(x, y) }
-                        ColorWheel { label: "Altas"; vx: TimelineModel.selGainX; vy: TimelineModel.selGainY
+                        ColorWheel { label: "Altas"; prop: "gain"
+                                     vx: (TimelineModel.playheadUs, TimelineModel.selGainX)
+                                     vy: (TimelineModel.playheadUs, TimelineModel.selGainY)
                                      onMoved: (x, y) => TimelineModel.setSelGain(x, y) }
                     }
-                    CSlider { label: "Temp"; from: -1; to: 1; defaultVal: 0; value: TimelineModel.selTemp; onMoved: (v) => TimelineModel.setSelTemp(v) }
-                    CSlider { label: "Tinte"; from: -1; to: 1; defaultVal: 0; value: TimelineModel.selTint; onMoved: (v) => TimelineModel.setSelTint(v) }
-                    CSlider { label: "Saturac."; from: 0; to: 2; defaultVal: 1; value: TimelineModel.selSat; onMoved: (v) => TimelineModel.setSelSat(v) }
+                    // temp/tint/sat son animables (diamante + interpolación); el playhead
+                    // en el paréntesis fuerza la reevaluación al moverse.
+                    CSlider { label: "Temp"; from: -1; to: 1; defaultVal: 0; prop: "temp"
+                              value: (TimelineModel.playheadUs, TimelineModel.selTemp); onMoved: (v) => TimelineModel.setSelTemp(v) }
+                    CSlider { label: "Tinte"; from: -1; to: 1; defaultVal: 0; prop: "tint"
+                              value: (TimelineModel.playheadUs, TimelineModel.selTint); onMoved: (v) => TimelineModel.setSelTint(v) }
+                    CSlider { label: "Saturac."; from: 0; to: 2; defaultVal: 1; prop: "sat"
+                              value: (TimelineModel.playheadUs, TimelineModel.selSat); onMoved: (v) => TimelineModel.setSelSat(v) }
                 }
                 Rectangle { visible: inspTabs.current === 2; Layout.fillWidth: true; height: 1; color: Theme.lineSoft }
 
