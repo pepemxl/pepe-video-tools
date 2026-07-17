@@ -279,6 +279,9 @@ public:
     Q_INVOKABLE QVariantList keyframePoints(const QString &prop);
     Q_INVOKABLE void moveKeyframePoint(const QString &prop, int index, double clipFrac, double value);
     Q_INVOKABLE void removeKeyframePoint(const QString &prop, int index);
+    // Crea un keyframe en la fracción `clipFrac` del clip con el valor dado (si ya
+    // hay uno en ese punto, solo actualiza su valor). Las ruedas 2D sincronizan la Y.
+    Q_INVOKABLE void addKeyframePoint(const QString &prop, double clipFrac, double value);
 
     // Corrección de color del clip seleccionado (ruedas + temp/tint/sat).
     Q_INVOKABLE void setSelLift(double x, double y);

@@ -1454,6 +1454,47 @@ void TimelineModel::moveKeyframePoint(const QString &prop, int index, double cli
         emit audioChanged();
 }
 
+void TimelineModel::addKeyframePoint(const QString &prop, double clipFrac, double value)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0)
+        return;
+    Clip &c = m_clips[i];
+    QVector<Keyframe> *kf = kfListFor(c, prop);
+    if (!kf)
+        return;
+    clipFrac = qBound(0.0, clipFrac, 1.0);
+    const qint64 src = c.inUs + qint64(clipFrac * c.durationUs * c.speed);
+    const qint64 tol = 20000;
+    auto byTime = [](const Keyframe &a, const Keyframe &b) { return a.sourceUs < b.sourceUs; };
+    // Sobre un keyframe existente (misma tolerancia que el diamante) solo cambia el valor.
+    bool updated = false;
+    for (Keyframe &k : *kf)
+        if (qAbs(k.sourceUs - src) < tol) { k.value = value; updated = true; break; }
+    if (!updated) {
+        kf->push_back({ src, value });
+        std::sort(kf->begin(), kf->end(), byTime);
+        // Las ruedas 2D animan X e Y en pareja: mantiene la Y sincronizada en tiempo.
+        if (prop == QLatin1String("lift") || prop == QLatin1String("gamma")
+            || prop == QLatin1String("gain")) {
+            if (QVector<Keyframe> *ky = kfListFor(c, prop + QLatin1String("Y"))) {
+                bool has = false;
+                for (const Keyframe &q : *ky)
+                    if (qAbs(q.sourceUs - src) < tol) { has = true; break; }
+                if (!has) {
+                    const double sy = prop == QLatin1String("lift") ? c.color.liftY
+                                    : prop == QLatin1String("gamma") ? c.color.gammaY : c.color.gainY;
+                    ky->push_back({ src, evalKf(*ky, sy, src) });
+                    std::sort(ky->begin(), ky->end(), byTime);
+                }
+            }
+        }
+    }
+    bumpSelection();
+    if (prop.startsWith(QLatin1String("audio")))
+        emit audioChanged();
+}
+
 void TimelineModel::removeKeyframePoint(const QString &prop, int index)
 {
     const int i = indexOfClip(m_selectedId);
@@ -2271,6 +2312,23 @@ void TimelineModel::runSelfTestIfRequested()
               "curvas: mover keyframe cambia tiempo y valor");
         removeKeyframePoint(QStringLiteral("opacity"), 1);
         check(m_clips[ci].transform.kfOpacity.size() == 1, "curvas: eliminar keyframe");
+        addKeyframePoint(QStringLiteral("opacity"), 0.5, 0.8);
+        check(m_clips[ci].transform.kfOpacity.size() == 2
+                  && m_clips[ci].transform.kfOpacity.last().sourceUs == in0 + dur / 2
+                  && qAbs(m_clips[ci].transform.kfOpacity.last().value - 0.8) < 1e-9,
+              "curvas: añadir keyframe en fracción 0.5");
+        addKeyframePoint(QStringLiteral("opacity"), 0.5, 0.3);
+        check(m_clips[ci].transform.kfOpacity.size() == 2
+                  && qAbs(m_clips[ci].transform.kfOpacity.last().value - 0.3) < 1e-9,
+              "curvas: añadir sobre un keyframe existente solo cambia el valor");
+        // En una rueda 2D añadir a la X crea el par en la Y (misma marca de tiempo).
+        selectClip(id);
+        addKeyframePoint(QStringLiteral("lift"), 0.25, 0.4);
+        check(m_clips[ci].color.kfLiftX.size() == 1 && m_clips[ci].color.kfLiftY.size() == 1
+                  && m_clips[ci].color.kfLiftX.first().sourceUs == m_clips[ci].color.kfLiftY.first().sourceUs,
+              "curvas: añadir en una rueda 2D sincroniza la pareja Y");
+        m_clips[ci].color.kfLiftX.clear();
+        m_clips[ci].color.kfLiftY.clear();
         m_clips[ci].transform.kfOpacity.clear();
         selectClip(0);
     }

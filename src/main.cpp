@@ -10,6 +10,7 @@
 #include "engine/audioengine.h"
 #include "engine/compositor.h"
 #include "engine/exporter.h"
+#include "engine/framegrabber.h"
 #include "engine/scopesprovider.h"
 #include "engine/scopeview.h"
 #include "engine/videosurface.h"
@@ -35,6 +36,9 @@ int main(int argc, char *argv[])
         return rc;
     // Auto-test del Media Pool (filtro + bins).
     if (const int rc = runPoolSelfTestIfRequested(); rc >= 0)
+        return rc;
+    // Auto-test del FrameGrabber (decode hardware D3D11VA vs software).
+    if (const int rc = runGrabSelfTestIfRequested(); rc >= 0)
         return rc;
 
     // Tipos y singletons expuestos a QML en el módulo PepeVideo.

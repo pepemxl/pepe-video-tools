@@ -385,12 +385,23 @@ Rectangle {
                         return allProps.filter(e => TimelineModel.isKeyframed(e.p))
                     }
                     property int currentIdx: 0
+                    // Cambiar de propiedad devuelve el lienzo a la vista completa.
+                    onCurrentIdxChanged: { curveCanvas.viewZ = 1; curveCanvas.viewX0 = 0 }
                     readonly property var current: animatedProps.length > 0
                         ? animatedProps[Math.min(currentIdx, animatedProps.length - 1)] : null
                     RowLayout { Layout.fillWidth: true
                         Text { text: "Curvas"; color: Theme.textHi; font.pixelSize: 11; font.weight: Font.DemiBold; font.family: Theme.sans }
                         Item { Layout.fillWidth: true }
-                        Text { text: "arrastra un punto · doble clic = eliminar"; color: Theme.textFaint; font.pixelSize: 8; font.family: Theme.sans }
+                        // Con zoom, un chip muestra el factor; clic = volver a la vista completa.
+                        Rectangle {
+                            visible: curveCanvas.viewZ > 1.001
+                            width: zoomT.width + 10; height: 14; radius: 3
+                            color: Theme.sunken; border.color: Theme.line; border.width: 1
+                            Text { id: zoomT; anchors.centerIn: parent; color: Theme.textMid
+                                   text: "×" + curveCanvas.viewZ.toFixed(1); font.pixelSize: 8; font.family: Theme.sans }
+                            TapHandler { onTapped: { curveCanvas.viewZ = 1; curveCanvas.viewX0 = 0 } }
+                        }
+                        Text { text: "doble clic = añadir/quitar · rueda = zoom · fondo = paneo"; color: Theme.textFaint; font.pixelSize: 8; font.family: Theme.sans }
                     }
                     // Selector de propiedad (solo las animadas)
                     Flow {
@@ -416,12 +427,19 @@ Rectangle {
                         Canvas {
                             id: curveCanvas
                             anchors.fill: parent; anchors.margins: 6
+                            // Ventana visible del eje X: [viewX0, viewX0 + 1/viewZ] en fracción del clip.
+                            property real viewZ: 1
+                            property real viewX0: 0
+                            onViewZChanged: requestPaint()
+                            onViewX0Changed: requestPaint()
                             readonly property var pts: {
                                 TimelineModel.hasSelection
                                 return curveEd.current ? TimelineModel.keyframePoints(curveEd.current.p) : []
                             }
                             onPtsChanged: requestPaint()
                             onWidthChanged: requestPaint()
+                            function toX(fx)  { return (fx - viewX0) * viewZ * width }
+                            function fromX(px) { return viewX0 + px / (viewZ * width) }
                             function toY(v) {
                                 var c = curveEd.current
                                 var f = (v - c.min) / (c.max - c.min)
@@ -457,12 +475,13 @@ Rectangle {
                                 ctx.strokeStyle = Theme.amber; ctx.lineWidth = 1.5
                                 ctx.beginPath()
                                 for (var x = 0; x <= width; x += 2) {
-                                    var y = toY(evalAt(x / width))
+                                    var y = toY(evalAt(fromX(x)))
                                     if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y)
                                 }
                                 ctx.stroke()
                                 for (var i = 0; i < pts.length; i++) {
-                                    var px = pts[i].x * width, py = toY(pts[i].v)
+                                    var px = toX(pts[i].x), py = toY(pts[i].v)
+                                    if (px < -3 || px > width + 3) continue
                                     ctx.fillStyle = pts[i].interp === 1 ? "#5b8dd6"
                                                   : pts[i].interp === 2 ? "#4a9e6b" : Theme.amber
                                     ctx.fillRect(px - 3, py - 3, 6, 6)
@@ -473,29 +492,58 @@ Rectangle {
                             anchors.fill: curveCanvas
                             anchors.margins: -4
                             property int dragIdx: -1
+                            property real panPx: -1       // último x del paneo de fondo (-1 = inactivo)
                             function nearest(mx, my) {
                                 var p = curveCanvas.pts, best = -1, bd = 14
                                 for (var i = 0; i < p.length; i++) {
-                                    var d = Math.hypot(mx - p[i].x * curveCanvas.width,
+                                    var d = Math.hypot(mx - curveCanvas.toX(p[i].x),
                                                        my - curveCanvas.toY(p[i].v))
                                     if (d < bd) { bd = d; best = i }
                                 }
                                 return best
                             }
-                            onPressed: (m) => dragIdx = nearest(m.x - 4, m.y - 4)
-                            onPositionChanged: (m) => {
-                                if (dragIdx < 0 || !curveEd.current) return
-                                var c = curveEd.current
-                                var fx = Math.max(0, Math.min(1, (m.x - 4) / curveCanvas.width))
-                                var fy = Math.max(0, Math.min(1, (m.y - 4) / curveCanvas.height))
-                                TimelineModel.moveKeyframePoint(c.p, dragIdx, fx, c.min + (1 - fy) * (c.max - c.min))
-                                // Reordenar puede cambiar el índice: re-identifica bajo el cursor.
-                                dragIdx = nearest(m.x - 4, m.y - 4)
+                            function clampView() {
+                                var span = 1 / curveCanvas.viewZ
+                                curveCanvas.viewX0 = Math.max(0, Math.min(1 - span, curveCanvas.viewX0))
                             }
-                            onReleased: dragIdx = -1
+                            onPressed: (m) => {
+                                dragIdx = nearest(m.x - 4, m.y - 4)
+                                panPx = dragIdx < 0 ? m.x : -1
+                            }
+                            onPositionChanged: (m) => {
+                                if (dragIdx >= 0 && curveEd.current) {
+                                    var c = curveEd.current
+                                    var fx = Math.max(0, Math.min(1, curveCanvas.fromX(m.x - 4)))
+                                    var fy = Math.max(0, Math.min(1, (m.y - 4) / curveCanvas.height))
+                                    TimelineModel.moveKeyframePoint(c.p, dragIdx, fx, c.min + (1 - fy) * (c.max - c.min))
+                                    // Reordenar puede cambiar el índice: re-identifica bajo el cursor.
+                                    dragIdx = nearest(m.x - 4, m.y - 4)
+                                } else if (panPx >= 0) {
+                                    curveCanvas.viewX0 -= (m.x - panPx) / (curveCanvas.viewZ * curveCanvas.width)
+                                    panPx = m.x
+                                    clampView()
+                                }
+                            }
+                            onReleased: { dragIdx = -1; panPx = -1 }
                             onDoubleClicked: (m) => {
+                                if (!curveEd.current) return
+                                var c = curveEd.current
                                 var i = nearest(m.x - 4, m.y - 4)
-                                if (i >= 0 && curveEd.current) TimelineModel.removeKeyframePoint(curveEd.current.p, i)
+                                if (i >= 0) { TimelineModel.removeKeyframePoint(c.p, i); return }
+                                // Doble clic en el fondo: crea un keyframe en ese tiempo/valor.
+                                var fx = Math.max(0, Math.min(1, curveCanvas.fromX(m.x - 4)))
+                                var fy = Math.max(0, Math.min(1, (m.y - 4) / curveCanvas.height))
+                                TimelineModel.addKeyframePoint(c.p, fx, c.min + (1 - fy) * (c.max - c.min))
+                            }
+                            // Rueda: zoom horizontal alrededor del cursor (×1 … ×20).
+                            onWheel: (w) => {
+                                var f = Math.pow(1.25, w.angleDelta.y / 120)
+                                var z = Math.max(1, Math.min(20, curveCanvas.viewZ * f))
+                                if (z === curveCanvas.viewZ) return
+                                var fx = curveCanvas.fromX(w.x - 4)   // fracción bajo el cursor
+                                curveCanvas.viewZ = z
+                                curveCanvas.viewX0 = fx - (w.x - 4) / (z * curveCanvas.width)
+                                clampView()
                             }
                         }
                     }
