@@ -13,6 +13,7 @@ qt_standard_project_setup(REQUIRES 6.5)
 qt_add_executable(PepeVideoStudio
     src/main.cpp
     src/app/theme.h
+    src/app/demodata.h
     src/app/mediapoolmodel.h
     src/app/mediapoolmodel.cpp
     src/app/timelinemodel.h
@@ -75,6 +76,8 @@ qt_add_shaders(PepeVideoStudio "pvs_shaders"
         src/shaders/yuv.frag
         src/shaders/grade.vert
         src/shaders/grade.frag
+        src/shaders/gradeyuv.vert
+        src/shaders/gradeyuv.frag
 )
 
 # GuiPrivate: da acceso a los headers de QRhi (<rhi/qrhi.h>), la API "semi-pública"
