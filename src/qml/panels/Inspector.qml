@@ -4,12 +4,21 @@ import PepeVideo
 
 // Panel derecho: Inspector + Scopes + Color.
 Rectangle {
+    id: root
     width: 322
     color: Theme.panel
 
     // Tab activa (0 Inspector · 1 Scopes · 2 Color). Los workspaces del TopBar
     // la fijan al entrar en Fusión/Color.
     property alias currentTab: inspTabs.current
+
+    // Los Scopes analizan el fotograma compuesto por CPU; ese fotograma solo se
+    // produce mientras la tab Scopes está visible (el display se compone en GPU).
+    Binding {
+        target: Compositor
+        property: "analysisActive"
+        value: root.visible && inspTabs.current === 1
+    }
 
     // Botón de interpolación del keyframe del playhead: L (lineal) → H (hold) →
     // S (suave/smoothstep) → L. Visible solo cuando hay un keyframe en el playhead.

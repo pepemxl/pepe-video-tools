@@ -146,6 +146,177 @@ int main(int argc, char *argv[])
     // aquí lo deja disponible desde el primer binding.
     engine.loadFromModule("PepeVideo", "Main");
 
+    // Auto-test del PROGRAMA (PVS_PROG_SELFTEST, con ventana): compara los píxeles
+    // que la composición GPU pinta en pantalla contra la referencia por CPU
+    // (CompositorWorker::renderFrame) en dos playheads del proyecto de demo.
+    if (qEnvironmentVariableIsSet("PVS_PROG_SELFTEST")) {
+        static int fails = 0;
+        auto findProg = [&engine, &compositor]() -> VideoSurface * {
+            const auto roots = engine.rootObjects();
+            for (QObject *root : roots)
+                for (VideoSurface *s : root->findChildren<VideoSurface *>())
+                    if (s->source() == &compositor)
+                        return s;
+            return nullptr;
+        };
+        // Dos playheads con contenido (el demo puede tener huecos).
+        auto pickUs = [&timelineModel](qint64 from) -> qint64 {
+            const qint64 end = timelineModel.contentEndUs();
+            for (qint64 us = from; us < end; us += qMax<qint64>(1, end / 24))
+                if (!timelineModel.clipsAt(us).isEmpty())
+                    return us;
+            return -1;
+        };
+        // Muestra la referencia CPU y el grab GPU en el mismo punto del lienzo.
+        auto compareAt = [&timelineModel](const QImage &grab, qint64 us,
+                                          double fx, double fy, const char *what) {
+            CompositorWorker ref(QSize(1280, 720));
+            bool hc = false;
+            const QImage cpu = ref.renderFrame(timelineModel.clipsAt(us), hc);
+            if (!hc || cpu.isNull() || grab.isNull()) {
+                qInfo("[PROG-SELFTEST] %-38s sin fotograma  FALLO", what);
+                ++fails;
+                return;
+            }
+            const QColor a = cpu.pixelColor(int((cpu.width() - 1) * fx),
+                                            int((cpu.height() - 1) * fy));
+            // El lienzo ocupa el letterbox central del ítem.
+            const QSizeF scaled = QSizeF(1280, 720).scaled(grab.size(), Qt::KeepAspectRatio);
+            const QPointF org((grab.width() - scaled.width()) / 2.0,
+                              (grab.height() - scaled.height()) / 2.0);
+            const QColor b = grab.pixelColor(int(org.x() + (scaled.width() - 1) * fx),
+                                             int(org.y() + (scaled.height() - 1) * fy));
+            const bool ok = qAbs(a.red() - b.red()) < 30 && qAbs(a.green() - b.green()) < 30
+                            && qAbs(a.blue() - b.blue()) < 30;
+            qInfo("[PROG-SELFTEST] %-38s CPU(%d,%d,%d) GPU(%d,%d,%d)  %s", what,
+                  a.red(), a.green(), a.blue(), b.red(), b.green(), b.blue(),
+                  ok ? "OK" : "FALLO");
+            if (!ok)
+                ++fails;
+        };
+        QTimer::singleShot(1500, &app, [&timelineModel, findProg, pickUs, compareAt]() {
+            VideoSurface *surf = findProg();
+            const qint64 us1 = pickUs(0);
+            if (!surf || us1 < 0) {
+                qInfo("[PROG-SELFTEST] sin superficie del PROGRAMA o sin contenido => FALLO");
+                QCoreApplication::exit(1);
+                return;
+            }
+            timelineModel.setPlayheadUs(us1);
+            QTimer::singleShot(700, surf, [&timelineModel, surf, pickUs, compareAt, us1]() {
+                auto grab1 = surf->grabToImage();
+                if (!grab1) { QCoreApplication::exit(1); return; }
+                QObject::connect(grab1.data(), &QQuickItemGrabResult::ready,
+                                 [grab1, &timelineModel, surf, pickUs, compareAt, us1]() {
+                    compareAt(grab1->image(), us1, 0.5, 0.5, "playhead A: centro");
+                    compareAt(grab1->image(), us1, 0.3, 0.5, "playhead A: (0.3, 0.5)");
+                    const qint64 us2 = pickUs(us1 + 1);
+                    if (us2 < 0) {
+                        qInfo("[PROG-SELFTEST] resultado: %s (%d fallos)",
+                              fails ? "FALLO" : "OK", fails);
+                        QCoreApplication::exit(fails ? 1 : 0);
+                        return;
+                    }
+                    timelineModel.setPlayheadUs(us2);
+                    QTimer::singleShot(700, surf, [&timelineModel, surf, compareAt, us1, us2]() {
+                        auto grab2 = surf->grabToImage();
+                        if (!grab2) { QCoreApplication::exit(1); return; }
+                        QObject::connect(grab2.data(), &QQuickItemGrabResult::ready,
+                                         [grab2, &timelineModel, surf, compareAt, us1, us2]() {
+                            compareAt(grab2->image(), us2, 0.5, 0.5, "playhead B: centro");
+                            compareAt(grab2->image(), us2, 0.7, 0.5, "playhead B: (0.7, 0.5)");
+
+                            // Fase C: etalonaje + opacidad reales — el shader del
+                            // material debe coincidir con la LUT por CPU.
+                            quint64 pickId = 0;
+                            const QVariantList trs = timelineModel.tracks();
+                            for (const QVariant &tv : trs) {
+                                for (const QVariant &cv : tv.toMap().value("clips").toList()) {
+                                    const QVariantMap cm = cv.toMap();
+                                    if (cm.value("kind").toString() != QLatin1String("video"))
+                                        continue;
+                                    const double x = cm.value("x").toDouble();
+                                    const double w = cm.value("w").toDouble();
+                                    const qint64 s = qint64(x * timelineModel.totalUs());
+                                    const qint64 e = qint64((x + w) * timelineModel.totalUs());
+                                    if (us1 >= s && us1 < e) {
+                                        pickId = cm.value("id").toULongLong();
+                                        break;
+                                    }
+                                }
+                                if (pickId)
+                                    break;
+                            }
+                            if (!pickId) {
+                                qInfo("[PROG-SELFTEST] resultado: %s (%d fallos)",
+                                      fails ? "FALLO" : "OK", fails);
+                                QCoreApplication::exit(fails ? 1 : 0);
+                                return;
+                            }
+                            timelineModel.selectClip(pickId);
+                            timelineModel.setSelTemp(0.8);
+                            timelineModel.setSelSat(0.4);
+                            timelineModel.setSelOpacity(0.6);
+                            timelineModel.setPlayheadUs(us1);
+                            QTimer::singleShot(700, surf, [&timelineModel, surf, compareAt, us1]() {
+                                auto grab3 = surf->grabToImage();
+                                if (!grab3) { QCoreApplication::exit(1); return; }
+                                QObject::connect(grab3.data(), &QQuickItemGrabResult::ready,
+                                                 [grab3, &timelineModel, surf, compareAt, us1]() {
+                                    compareAt(grab3->image(), us1, 0.5, 0.5,
+                                              "etalonaje+opacidad: centro");
+                                    compareAt(grab3->image(), us1, 0.35, 0.4,
+                                              "etalonaje+opacidad: (0.35, 0.4)");
+
+                                    // Fase D: media real etalonada — el shader gradea
+                                    // píxeles decodificados (no rellenos identidad).
+                                    const QString mp4 = QDir(QDir::tempPath())
+                                        .filePath(QStringLiteral("pvs_prog_selftest.mp4"));
+                                    const quint64 mid = pvsWriteColorTestMp4(mp4)
+                                        ? timelineModel.addMediaClip(mp4, QStringLiteral("test"),
+                                                                     QStringLiteral("video"),
+                                                                     2'000'000, 0, 0.9)
+                                        : 0;
+                                    if (!mid) {
+                                        qInfo("[PROG-SELFTEST] fase D: no se pudo insertar el clip  FALLO");
+                                        ++fails;
+                                        qInfo("[PROG-SELFTEST] resultado: %s (%d fallos)",
+                                              fails ? "FALLO" : "OK", fails);
+                                        QCoreApplication::exit(1);
+                                        return;
+                                    }
+                                    timelineModel.selectClip(mid);
+                                    timelineModel.setSelTemp(0.8);
+                                    timelineModel.setSelSat(0.4);
+                                    const qint64 us3 = qint64(0.9 * timelineModel.totalUs()) + 200'000;
+                                    timelineModel.setPlayheadUs(us3);
+                                    QTimer::singleShot(900, surf, [surf, compareAt, us3]() {
+                                        auto grab4 = surf->grabToImage();
+                                        if (!grab4) { QCoreApplication::exit(1); return; }
+                                        QObject::connect(grab4.data(), &QQuickItemGrabResult::ready,
+                                                         [grab4, compareAt, us3]() {
+                                            compareAt(grab4->image(), us3, 0.5, 0.5,
+                                                      "media etalonada: centro");
+                                            compareAt(grab4->image(), us3, 0.6, 0.6,
+                                                      "media etalonada: (0.6, 0.6)");
+                                            qInfo("[PROG-SELFTEST] resultado: %s (%d fallos)",
+                                                  fails ? "FALLO" : "OK", fails);
+                                            QCoreApplication::exit(fails ? 1 : 0);
+                                        });
+                                    });
+                                });
+                            });
+                        });
+                    });
+                });
+            });
+        });
+        QTimer::singleShot(20000, &app, []() {
+            qInfo("[PROG-SELFTEST] timeout => FALLO");
+            QCoreApplication::exit(1);
+        });
+    }
+
     // Auto-test del visor (PVS_YUV_SELFTEST, con ventana): abre un MP4 de prueba en el
     // monitor ORIGEN y comprueba los colores que el material YUV renderiza en pantalla
     // (fotograma naranja en 0 s y azul en 1.5 s). Termina solo con el resultado.

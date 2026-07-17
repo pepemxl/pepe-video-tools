@@ -77,6 +77,9 @@ void CompositorWorker::gradeImage(QImage &img, const TimelineModel::Color &c)
 CompositorWorker::CompositorWorker(QSize outSize, QObject *parent)
     : QObject(parent), m_outSize(outSize)
 {
+    bool ok = false;
+    const int v = qEnvironmentVariableIntValue("PVS_GPU_PROG", &ok);
+    m_gpuLayers = !ok || v != 0;
 }
 
 CompositorWorker::~CompositorWorker()
@@ -101,9 +104,58 @@ FrameGrabber *CompositorWorker::grabberFor(const QString &path)
 
 void CompositorWorker::composeFrame(const RenderClipList &clips)
 {
+    if (m_gpuLayers) {
+        // Composición en GPU: decodifica las capas y deja que la VideoSurface las
+        // componga con el scene graph. La composición por CPU solo corre cuando
+        // los Scopes la necesitan (análisis del fotograma compuesto).
+        emit layersReady(renderLayers(clips));
+        if (m_analysis.loadRelaxed()) {
+            bool hasContent = false;
+            QImage img = renderFrame(clips, hasContent);
+            emit frameReady(hasContent ? img : QImage(), hasContent);
+        }
+        return;
+    }
     bool hasContent = false;
     QImage img = renderFrame(clips, hasContent);
     emit frameReady(hasContent ? img : QImage(), hasContent);
+}
+
+// Decodifica el fotograma de cada capa activa SIN componer: la mezcla (transform,
+// etalonaje, opacidad, wipe) la hace la GPU en la VideoSurface del PROGRAMA.
+// - vídeo: fotograma nativo del medio (sin gradear: el shader lo hace);
+// - título: tile RGBA transparente del tamaño del lienzo (texto ya posicionado);
+// - sin media: 1x1 con el color de relleno (la GPU lo estira al lienzo).
+ProgramLayers CompositorWorker::renderLayers(const RenderClipList &clips)
+{
+    ProgramLayers out;
+    out.canvas = m_outSize;
+    out.hasContent = !clips.isEmpty();
+    out.layers.reserve(clips.size());
+    for (const TimelineModel::RenderClip &rc : clips) {
+        ProgramLayer layer;
+        layer.rc = rc;
+        if (rc.kind == QLatin1String("title")) {
+            QImage tile(m_outSize, QImage::Format_RGBA8888);
+            tile.fill(Qt::transparent);
+            QPainter p(&tile);
+            p.setRenderHint(QPainter::Antialiasing, true);
+            drawTitle(p, rc);
+            p.end();
+            layer.rgba = tile;
+        } else if (!rc.mediaPath.isEmpty()) {
+            if (FrameGrabber *g = grabberFor(rc.mediaPath))
+                layer.rgba = g->frameAt(rc.sourceUs / 1000);
+            layer.isVideoFrame = !layer.rgba.isNull();
+        }
+        if (layer.rgba.isNull() && rc.kind != QLatin1String("title")) {
+            QImage fill(1, 1, QImage::Format_RGBA8888);
+            fill.fill(QColor(rc.fill));
+            layer.rgba = fill;
+        }
+        out.layers.push_back(layer);
+    }
+    return out;
 }
 
 // Dibuja el título de texto de un clip con su transformación (posición/escala/rotación/opacidad
@@ -211,6 +263,11 @@ QImage CompositorWorker::renderFrame(const RenderClipList &clips, bool &hasConte
 Compositor::Compositor(QObject *parent) : QObject(parent)
 {
     qRegisterMetaType<RenderClipList>("RenderClipList");
+    qRegisterMetaType<ProgramLayers>("ProgramLayers");
+
+    bool envOk = false;
+    const int gpuEnv = qEnvironmentVariableIntValue("PVS_GPU_PROG", &envOk);
+    m_gpuProg = !envOk || gpuEnv != 0;
 
     m_debounce = new QTimer(this);
     m_debounce->setSingleShot(true);
@@ -228,6 +285,7 @@ Compositor::Compositor(QObject *parent) : QObject(parent)
     connect(m_thread, &QThread::finished, m_worker, &QObject::deleteLater);
     connect(this, &Compositor::requestCompose, m_worker, &CompositorWorker::composeFrame);
     connect(m_worker, &CompositorWorker::frameReady, this, &Compositor::onWorkerFrame);
+    connect(m_worker, &CompositorWorker::layersReady, this, &Compositor::onWorkerLayers);
     m_thread->start();
 
     // Autotest de composición (píxeles): opacidad y mezcla de capas por el camino de color.
@@ -368,19 +426,46 @@ void Compositor::requestComposite()
 
 void Compositor::onWorkerFrame(const QImage &image, bool hasContent)
 {
-    m_busy = false;
     if (hasContent)
         m_lastFrame = image;   // para el botón ● (guardar fotograma)
+    emit frameReady(image);
+    if (m_gpuProg)
+        return;                // con GPU, el ciclo busy/pending lo lleva layersReady
+    m_busy = false;
     if (m_hasContent != hasContent) {
         m_hasContent = hasContent;
         emit hasContentChanged();
     }
-    emit frameReady(image);
+    if (m_pending) {       // hubo peticiones mientras el worker trabajaba: al día
+        m_pending = false;
+        requestComposite();
+    }
+}
+
+void Compositor::onWorkerLayers(const ProgramLayers &layers)
+{
+    m_busy = false;
+    if (m_hasContent != layers.hasContent) {
+        m_hasContent = layers.hasContent;
+        emit hasContentChanged();
+    }
+    emit layersReady(layers);
 
     if (m_pending) {       // hubo peticiones mientras el worker trabajaba: al día
         m_pending = false;
         requestComposite();
     }
+}
+
+void Compositor::setAnalysisActive(bool on)
+{
+    if (m_analysisActive == on)
+        return;
+    m_analysisActive = on;
+    m_worker->setAnalysisActive(on);   // QAtomicInt: seguro entre hilos
+    emit analysisActiveChanged();
+    if (on)
+        scheduleComposite();           // alimenta los scopes de inmediato
 }
 
 void Compositor::play()
@@ -413,14 +498,30 @@ void Compositor::togglePlay()
 
 bool Compositor::saveStill(const QString &path)
 {
-    if (m_lastFrame.isNull() || path.isEmpty())
+    if (path.isEmpty())
+        return false;
+    if (m_gpuProg && m_timeline) {
+        // Con composición GPU el display no produce fotogramas CPU: compón este
+        // bajo demanda en el worker (bloqueante, es una acción puntual del usuario).
+        const RenderClipList clips = m_timeline->clipsAt(m_timeline->playheadUs());
+        QImage img;
+        bool hc = false;
+        QMetaObject::invokeMethod(m_worker, [this, clips, &img, &hc]() {
+            img = m_worker->renderFrame(clips, hc);
+        }, Qt::BlockingQueuedConnection);
+        if (!hc || img.isNull())
+            return false;
+        m_lastFrame = img;
+        return img.save(path);
+    }
+    if (m_lastFrame.isNull())
         return false;
     return m_lastFrame.save(path);
 }
 
 void Compositor::saveStillDialog()
 {
-    if (m_lastFrame.isNull())
+    if (m_lastFrame.isNull() && !(m_gpuProg && m_hasContent))
         return;
 #ifdef Q_OS_WIN
     QVector<wchar_t> buf(4096, 0);

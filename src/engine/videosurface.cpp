@@ -1,10 +1,15 @@
 #include "videosurface.h"
+#include "gradematerial.h"
 #include "yuvmaterial.h"
 
 #include <QQuickWindow>
+#include <QSGClipNode>
 #include <QSGGeometryNode>
 #include <QSGImageNode>
+#include <QSGOpacityNode>
+#include <QSGSimpleRectNode>
 #include <QSGTexture>
+#include <QSGTransformNode>
 #include <rhi/qrhi.h>
 
 VideoSurface::VideoSurface(QQuickItem *parent) : QQuickItem(parent)
@@ -19,14 +24,23 @@ void VideoSurface::setSource(QObject *source)
     if (m_source)
         disconnect(m_source, nullptr, this, nullptr);
     m_source = source;
+    m_layersMode = false;
     if (m_source) {
-        // Conexión por firma: la fuente emite frameReady(VideoFrame) (decodificador
-        // del ORIGEN, ruta YUV) o frameReady(QImage) (compositor del PROGRAMA).
+        // Conexión por firma, en orden de preferencia: layersReady(ProgramLayers)
+        // (Compositor → composición GPU), frameReady(VideoFrame) (decodificador del
+        // ORIGEN, ruta YUV) o frameReady(QImage) (fotograma ya compuesto por CPU).
+        bool envOk = false;
+        const int gpuEnv = qEnvironmentVariableIntValue("PVS_GPU_PROG", &envOk);
+        const bool gpuProg = !envOk || gpuEnv != 0;
         const QMetaObject *mo = m_source->metaObject();
-        if (mo->indexOfSignal("frameReady(VideoFrame)") >= 0)
+        if (gpuProg && mo->indexOfSignal("layersReady(ProgramLayers)") >= 0) {
+            connect(m_source, SIGNAL(layersReady(ProgramLayers)), this, SLOT(onLayers(ProgramLayers)));
+            m_layersMode = true;
+        } else if (mo->indexOfSignal("frameReady(VideoFrame)") >= 0) {
             connect(m_source, SIGNAL(frameReady(VideoFrame)), this, SLOT(onVideoFrame(VideoFrame)));
-        else
+        } else {
             connect(m_source, SIGNAL(frameReady(QImage)), this, SLOT(onFrame(QImage)));
+        }
     }
     emit sourceChanged();
 }
@@ -62,6 +76,15 @@ void VideoSurface::setPanY(double v)
 void VideoSurface::onFrame(const QImage &image)
 {
     m_frame = image;
+    m_yuv = VideoFrame();
+    m_frameDirty = true;
+    update();
+}
+
+void VideoSurface::onLayers(const ProgramLayers &layers)
+{
+    m_layers = layers;
+    m_frame = QImage();
     m_yuv = VideoFrame();
     m_frameDirty = true;
     update();
@@ -144,6 +167,123 @@ static QImage yuvToImageCpu(const VideoFrame &f)
     return out;
 }
 
+// Subárbol de la composición GPU del PROGRAMA. Estructura:
+//   QSGTransformNode raíz (lienzo → ítem: letterbox o zoom/paneo)
+//     rect negro del lienzo
+//     por capa: [QSGClipNode wipe] → QSGOpacityNode → QSGTransformNode → quad
+// El quad usa GradeMaterial (corrección primaria en el shader); con el renderer
+// por software cae a QSGImageNode con la corrección aplicada por CPU.
+QSGNode *VideoSurface::buildProgramNode(QSGNode *oldNode, bool softwareSg)
+{
+    const QSizeF canvas(m_layers.canvas);
+    auto *root = static_cast<QSGTransformNode *>(oldNode);
+    if (!root)
+        root = new QSGTransformNode;
+
+    // Lienzo → ítem (la raíz aplica letterbox/zoom; los hijos viven en px de lienzo).
+    const QRectF rect = targetRect(canvas);
+    QMatrix4x4 m;
+    m.translate(float(rect.x()), float(rect.y()));
+    m.scale(float(rect.width() / canvas.width()), float(rect.height() / canvas.height()));
+    root->setMatrix(m);
+
+    if (!m_frameDirty)
+        return root;
+    m_frameDirty = false;
+
+    // Reconstruye las capas (pocos nodos; el scene graph absorbe el churn a 30 Hz).
+    while (QSGNode *c = root->firstChild()) {
+        root->removeChildNode(c);
+        delete c;
+    }
+    root->appendChildNode(new QSGSimpleRectNode(QRectF(QPointF(0, 0), canvas), Qt::black));
+
+    for (const ProgramLayer &layer : m_layers.layers) {
+        if (layer.rgba.isNull())
+            continue;
+        const TimelineModel::Transform &t = layer.rc.transform;
+
+        QSGNode *parent = root;
+        const bool wiped = layer.rc.wipe >= 0.0 && layer.rc.wipe < 1.0;
+        if (wiped) {
+            auto *clip = new QSGClipNode;
+            clip->setIsRectangular(true);
+            clip->setClipRect(QRectF(0, 0, canvas.width() * layer.rc.wipe, canvas.height()));
+            parent->appendChildNode(clip);
+            parent = clip;
+        }
+        auto *op = new QSGOpacityNode;
+        op->setOpacity(t.opacity);
+        parent->appendChildNode(op);
+
+        auto *xf = new QSGTransformNode;
+        op->appendChildNode(xf);
+
+        // Geometría y transform de la capa (misma matemática que renderFrame por CPU).
+        QRectF quad;
+        QRectF texRect(0, 0, 1, 1);
+        if (layer.isVideoFrame) {
+            const double fw = layer.rgba.width(), fh = layer.rgba.height();
+            const double cw = qMax(0.02, 1.0 - t.cropL - t.cropR);
+            const double ch = qMax(0.02, 1.0 - t.cropT - t.cropB);
+            texRect = QRectF(t.cropL, t.cropT, cw, ch);
+            const QSizeF fit = QSizeF(fw * cw, fh * ch).scaled(canvas, Qt::KeepAspectRatio);
+            const QSizeF dst(fit.width() * t.scale, fit.height() * t.scale);
+            quad = QRectF(-dst.width() / 2, -dst.height() / 2, dst.width(), dst.height());
+            QMatrix4x4 lm;
+            lm.translate(float(canvas.width() * (0.5 + t.posX)),
+                         float(canvas.height() * (0.5 + t.posY)));
+            if (t.rotation != 0.0)
+                lm.rotate(float(t.rotation), 0, 0, 1);
+            xf->setMatrix(lm);
+        } else {
+            // Tile de título o relleno: cubre el lienzo tal cual (paridad con CPU).
+            quad = QRectF(QPointF(0, 0), canvas);
+        }
+
+        if (!softwareSg) {
+            auto *geom = new QSGGeometryNode;
+            auto *g = new QSGGeometry(QSGGeometry::defaultAttributes_TexturedPoint2D(), 4);
+            QSGGeometry::updateTexturedRectGeometry(g, quad, texRect);
+            geom->setGeometry(g);
+            geom->setFlag(QSGNode::OwnsGeometry);
+            auto *mat = new GradeMaterial;
+            QSGTexture *tex = window()->createTextureFromImage(
+                layer.rgba, QQuickWindow::TextureHasAlphaChannel);
+            if (tex)
+                tex->setFiltering(QSGTexture::Linear);
+            mat->setTexture(tex);
+            if (layer.isVideoFrame)
+                mat->setColor(layer.rc.color);
+            geom->setMaterial(mat);
+            geom->setFlag(QSGNode::OwnsMaterial);
+            xf->appendChildNode(geom);
+        } else {
+            // Renderer por software: sin materiales personalizados; gradea por CPU.
+            QImage img = layer.rgba;
+            if (layer.isVideoFrame)
+                CompositorWorker::gradeImage(img, layer.rc.color);
+            QSGImageNode *node = window()->createImageNode();
+            node->setOwnsTexture(true);
+            node->setFiltering(QSGTexture::Linear);
+            node->setTexture(window()->createTextureFromImage(
+                img, QQuickWindow::TextureHasAlphaChannel));
+            node->setRect(quad);
+            node->setSourceRect(QRectF(texRect.x() * img.width(), texRect.y() * img.height(),
+                                       texRect.width() * img.width(), texRect.height() * img.height()));
+            xf->appendChildNode(node);
+        }
+    }
+    if (qEnvironmentVariableIsSet("PVS_RHI_DEBUG")) {
+        static int n = 0;
+        ++n;
+        if (n <= 3 || n % 30 == 0)
+            qInfo("[RHI] PROGRAMA compuesto en GPU #%d (%lld capas)",
+                  n, qint64(m_layers.layers.size()));
+    }
+    return root;
+}
+
 QSGNode *VideoSurface::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
 {
     // Handoff del dispositivo D3D11 del scene graph hacia la fuente (una vez): el
@@ -162,6 +302,23 @@ QSGNode *VideoSurface::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
 
     const bool softwareSg = window()
         && window()->rendererInterface()->graphicsApi() == QSGRendererInterface::Software;
+
+    // Modo de capas (PROGRAMA compuesto en GPU).
+    if (m_layersMode) {
+        if (!m_layers.hasContent || m_layers.layers.isEmpty()
+            || !m_layers.canvas.isValid() || width() <= 0 || height() <= 0) {
+            delete oldNode;
+            m_nodeKind = 0;
+            return nullptr;
+        }
+        if (oldNode && m_nodeKind != 3) {
+            delete oldNode;
+            oldNode = nullptr;
+        }
+        m_nodeKind = 3;
+        return buildProgramNode(oldNode, softwareSg);
+    }
+
     const bool useNative = m_yuv.hasNative() && !softwareSg;
     const bool useYuv = (useNative || m_yuv.hasYuv()) && !softwareSg;
     // Renderer por software: los materiales personalizados no funcionan; convierte por CPU.
