@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Quick Gui Multimedia)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Quick Gui GuiPrivate Multimedia ShaderTools)
 
 qt_standard_project_setup(REQUIRES 6.5)
 
@@ -23,8 +23,13 @@ qt_add_executable(PepeVideoStudio
     src/app/videocontroller.cpp
     src/engine/videodecoder.h
     src/engine/videodecoder.cpp
+    src/engine/videoframe.h
     src/engine/videosurface.h
     src/engine/videosurface.cpp
+    src/engine/yuvmaterial.h
+    src/engine/yuvmaterial.cpp
+    src/engine/gradematerial.h
+    src/engine/gradematerial.cpp
     src/engine/framegrabber.h
     src/engine/framegrabber.cpp
     src/engine/compositor.h
@@ -58,11 +63,28 @@ qt_add_qml_module(PepeVideoStudio
 
 # `Theme` es un singleton de C++ (src/app/theme.h) registrado en main.cpp.
 
-target_link_libraries(PepeVideoStudio PRIVATE Qt6::Quick Qt6::Gui Qt6::Multimedia)
+# Shaders del material YUV (conversión YUV→RGB en GPU), compilados a .qsb con qsb.
+# BATCHABLE: genera la variante de vertex shader que exige el batch renderer de
+# Qt Quick (sin ella el backend D3D11 no encuentra HLSL utilizable).
+qt_add_shaders(PepeVideoStudio "pvs_shaders"
+    BATCHABLE
+    PREFIX "/pvs"
+    BASE "src"
+    FILES
+        src/shaders/yuv.vert
+        src/shaders/yuv.frag
+        src/shaders/grade.vert
+        src/shaders/grade.frag
+)
 
-# Diálogo nativo de archivos en Windows (GetOpenFileNameW)
+# GuiPrivate: da acceso a los headers de QRhi (<rhi/qrhi.h>), la API "semi-pública"
+# que usa la ruta zero-copy de la VideoSurface (envolver texturas D3D11 nativas).
+target_link_libraries(PepeVideoStudio PRIVATE Qt6::Quick Qt6::Gui Qt6::GuiPrivate Qt6::Multimedia)
+
+# Diálogo nativo de archivos (GetOpenFileNameW) y GUIDs de D3D (IID_ID3D10Multithread,
+# para la protección multihilo del dispositivo compartido en el decode zero-copy).
 if (WIN32)
-    target_link_libraries(PepeVideoStudio PRIVATE comdlg32)
+    target_link_libraries(PepeVideoStudio PRIVATE comdlg32 dxguid)
 endif()
 
 # ===== FFmpeg (build shared/dev en C:/FFMPEG) =====

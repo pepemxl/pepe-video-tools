@@ -50,6 +50,9 @@ if /I "%TARGET%"=="selftest-export" goto :selftest_export
 if /I "%TARGET%"=="selftest-wave"  goto :selftest_wave
 if /I "%TARGET%"=="selftest-proj"  goto :selftest_proj
 if /I "%TARGET%"=="selftest-pool"  goto :selftest_pool
+if /I "%TARGET%"=="selftest-grab"  goto :selftest_grab
+if /I "%TARGET%"=="selftest-yuv"   goto :selftest_yuv
+if /I "%TARGET%"=="selftest-prog"  goto :selftest_prog
 if /I "%TARGET%"=="deploy"         goto :deploy
 if /I "%TARGET%"=="installer"      goto :installer
 if /I "%TARGET%"=="clean"          goto :clean
@@ -72,6 +75,9 @@ echo    selftest    Auto-test de audio (deterministico, sin ventana)
 echo    selftest-wave   Auto-test de formas de onda (deterministico, sin ventana)
 echo    selftest-proj   Auto-test de proyecto guardar/abrir (deterministico, sin ventana)
 echo    selftest-pool   Auto-test del Media Pool: filtro y bins (deterministico, sin ventana)
+echo    selftest-grab   Auto-test del FrameGrabber: decode hardware vs software (sin ventana)
+echo    selftest-yuv    Auto-test del visor ORIGEN: material YUV en GPU (abre ventana, termina solo)
+echo    selftest-prog   Auto-test del PROGRAMA: composicion GPU vs CPU (abre ventana, termina solo)
 echo    selftest-comp / selftest-tl   Auto-tests que abren la app (cierrala para terminar)
 echo    deploy      Copia DLLs/plugins de Qt junto al .exe (windeployqt)
 echo    installer   Prepara installer-stage y compila el setup NSIS (requiere makensis)
@@ -163,6 +169,29 @@ call :do_build || goto :fail
 set "PVS_POOL_SELFTEST=1"
 set "QT_QPA_PLATFORM=offscreen"
 set "QT_QPA_FONTDIR=C:\Windows\Fonts"
+set "QT_FORCE_STDERR_LOGGING=1"
+"%EXE%"
+goto :end
+
+:selftest_grab
+call :do_build || goto :fail
+set "PVS_GRAB_SELFTEST=1"
+set "QT_QPA_PLATFORM=offscreen"
+set "QT_QPA_FONTDIR=C:\Windows\Fonts"
+set "QT_FORCE_STDERR_LOGGING=1"
+"%EXE%"
+goto :end
+
+:selftest_yuv
+call :do_build || goto :fail
+set "PVS_YUV_SELFTEST=1"
+set "QT_FORCE_STDERR_LOGGING=1"
+"%EXE%"
+goto :end
+
+:selftest_prog
+call :do_build || goto :fail
+set "PVS_PROG_SELFTEST=1"
 set "QT_FORCE_STDERR_LOGGING=1"
 "%EXE%"
 goto :end

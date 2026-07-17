@@ -47,7 +47,7 @@ export QML2_IMPORT_PATH := $(QT_DIR)/qml
 
 .PHONY: all help configure build rebuild run run-wait clean distclean deploy installer \
         selftest selftest-audio selftest-comp selftest-tl selftest-export selftest-wave \
-        selftest-proj selftest-pool
+        selftest-proj selftest-pool selftest-grab selftest-yuv selftest-prog
 
 all: build
 
@@ -114,6 +114,18 @@ selftest-proj: build
 ## selftest-pool: filtro y bins del Media Pool; termina solo
 selftest-pool: build
 	set "PVS_POOL_SELFTEST=1" && set "QT_QPA_PLATFORM=offscreen" && set "QT_QPA_FONTDIR=C:\Windows\Fonts" && set "QT_FORCE_STDERR_LOGGING=1" && "$(EXE_WIN)"
+
+## selftest-grab: decode hardware (D3D11VA) vs software del FrameGrabber; termina solo
+selftest-grab: build
+	set "PVS_GRAB_SELFTEST=1" && set "QT_QPA_PLATFORM=offscreen" && set "QT_QPA_FONTDIR=C:\Windows\Fonts" && set "QT_FORCE_STDERR_LOGGING=1" && "$(EXE_WIN)"
+
+## selftest-yuv: visor ORIGEN con material YUV (abre una ventana ~4 s); termina solo
+selftest-yuv: build
+	set "PVS_YUV_SELFTEST=1" && set "QT_FORCE_STDERR_LOGGING=1" && "$(EXE_WIN)"
+
+## selftest-prog: composición GPU del PROGRAMA vs referencia CPU (abre una ventana); termina solo
+selftest-prog: build
+	set "PVS_PROG_SELFTEST=1" && set "QT_FORCE_STDERR_LOGGING=1" && "$(EXE_WIN)"
 
 ## selftest-comp: auto-test del compositor (abre la app; cierrala para terminar)
 selftest-comp: build
