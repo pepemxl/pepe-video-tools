@@ -131,6 +131,7 @@ Rectangle {
                                 TapHandler { onTapped: fxPop.open() }
                                 Text { anchors.centerIn: parent; text: "FX"; font.pixelSize: 9; font.weight: Font.Bold; font.family: Theme.sans
                                        color: fxPop.visible ? Theme.amberInk : (parent.active ? Theme.amber : Theme.textDim) }
+                                Tip { text: "Efectos de la pista: puerta, EQ, compresor, de-esser y reverb" }
 
                                 C.Popup {
                                     id: fxPop
@@ -257,6 +258,7 @@ Rectangle {
                                 TapHandler { onTapped: limPop.open() }
                                 Text { anchors.centerIn: parent; text: "LIM"; font.pixelSize: 9; font.weight: Font.Bold; font.family: Theme.sans
                                        color: limPop.visible ? Theme.amberInk : (TimelineModel.masterLimiterOn ? Theme.amber : Theme.textDim) }
+                                Tip { text: "Limitador del master: evita el clipping bajo el techo indicado" }
                                 C.Popup {
                                     id: limPop
                                     y: parent.height + 4; x: -100
@@ -352,6 +354,7 @@ Rectangle {
                                         color: on ? (isMute ? Theme.amber : Theme.blue) : Theme.hover2
                                         Text { anchors.centerIn: parent; text: parent.modelData; font.pixelSize: 9; font.weight: Font.DemiBold
                                                color: parent.on ? "#101216" : Theme.textDim }
+                                        Tip { edge: "top"; text: parent.isMute ? "Silenciar la pista (Mute)" : "Solo: aislar esta pista" }
                                         TapHandler {
                                             onTapped: parent.isMute
                                                 ? TimelineModel.setTrackMute(strip.modelData.trk, !strip.chMute)

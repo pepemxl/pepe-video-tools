@@ -42,6 +42,9 @@ Rectangle {
                text: ki.interp === 1 ? "H" : ki.interp === 2 ? "S" : "L"
                font.pixelSize: 8; font.family: Theme.mono
                color: ki.interp > 0 ? Theme.amber : Theme.textMid }
+        Tip { text: "Interpolación del keyframe: " +
+                    (ki.interp === 1 ? "Hold (mantener)" : ki.interp === 2 ? "Suave (smoothstep)" : "Lineal") +
+                    " — clic para cambiar" }
     }
 
     // Campo numérico editable por arrastre horizontal (relativo al valor al pulsar).
@@ -63,6 +66,7 @@ Rectangle {
             color: nr.animated && nr.kfHere ? Theme.amber : "transparent"
             border.color: nr.animated ? Theme.amber : Theme.textFaint; border.width: 1.5
             TapHandler { enabled: nr.prop !== ""; onTapped: TimelineModel.toggleKeyframe(nr.prop) }
+            Tip { text: nr.kfHere ? "Quitar keyframe aquí" : "Añadir keyframe en el playhead" }
         }
         KfInterp { prop: nr.prop; show: nr.animated && nr.kfHere }
         Text { text: nr.label; color: Theme.textMid; font.pixelSize: 11; font.family: Theme.sans; Layout.preferredWidth: 64 }
@@ -126,6 +130,7 @@ Rectangle {
                 color: cw.animated && cw.kfHere ? Theme.amber : "transparent"
                 border.color: cw.animated ? Theme.amber : Theme.textFaint; border.width: 1.5
                 TapHandler { onTapped: TimelineModel.toggleKeyframe(cw.prop) }
+                Tip { text: cw.kfHere ? "Quitar keyframe aquí" : "Añadir keyframe en el playhead" }
             }
             Text { text: cw.label; color: Theme.textMid; font.pixelSize: 9; font.family: Theme.sans; anchors.verticalCenter: parent.verticalCenter }
             KfInterp { prop: cw.prop; show: cw.animated && cw.kfHere; anchors.verticalCenter: parent.verticalCenter }
@@ -150,6 +155,7 @@ Rectangle {
             color: sl.animated && sl.kfHere ? Theme.amber : "transparent"
             border.color: sl.animated ? Theme.amber : Theme.textFaint; border.width: 1.5
             TapHandler { onTapped: TimelineModel.toggleKeyframe(sl.prop) }
+            Tip { text: sl.kfHere ? "Quitar keyframe aquí" : "Añadir keyframe en el playhead" }
         }
         KfInterp { prop: sl.prop; show: sl.animated && sl.kfHere }
         Text { text: sl.label; color: Theme.textMid; font.pixelSize: 10; font.family: Theme.sans; Layout.preferredWidth: 56 }
@@ -299,7 +305,8 @@ Rectangle {
                         Rectangle { width: 8; height: 8; rotation: 45
                             color: parent.opAnimated && parent.opKfHere ? Theme.amber : "transparent"
                             border.color: parent.opAnimated ? Theme.amber : Theme.textFaint; border.width: 1.5
-                            TapHandler { onTapped: TimelineModel.toggleKeyframe("opacity") } }
+                            TapHandler { onTapped: TimelineModel.toggleKeyframe("opacity") }
+                            Tip { text: "Keyframe de opacidad en el playhead" } }
                         KfInterp { prop: "opacity"; show: parent.opAnimated && parent.opKfHere }
                         Text { text: "Opacidad"; color: Theme.textMid; font.pixelSize: 11; font.family: Theme.sans; Layout.preferredWidth: 64 }
                         Rectangle { id: opTrack; Layout.fillWidth: true; height: 6; radius: 3; color: Theme.sunken

@@ -17,6 +17,26 @@ VideoSurface::VideoSurface(QQuickItem *parent) : QQuickItem(parent)
     setFlag(ItemHasContents, true);
 }
 
+void VideoSurface::itemChange(ItemChange change, const ItemChangeData &value)
+{
+    if (change == ItemSceneChange) {
+        // El ítem cambió de ventana: reengancha la invalidación del scene graph.
+        disconnect(m_sgInvalidatedConn);
+        m_sgInvalidatedConn = {};
+        m_devSent = false;   // fuerza el re-handoff del device en la ventana nueva
+        if (QQuickWindow *win = value.window) {
+            // sceneGraphInvalidated se emite en el hilo de render cuando Qt libera el
+            // scene graph (incluida la pérdida de dispositivo). Reseteamos m_devSent
+            // en DirectConnection —mismo hilo que updatePaintNode— para que el
+            // siguiente fotograma vuelva a adoptar el device D3D11 recreado.
+            m_sgInvalidatedConn = connect(
+                win, &QQuickWindow::sceneGraphInvalidated, this,
+                [this] { m_devSent = false; }, Qt::DirectConnection);
+        }
+    }
+    QQuickItem::itemChange(change, value);
+}
+
 void VideoSurface::setSource(QObject *source)
 {
     if (m_source == source)

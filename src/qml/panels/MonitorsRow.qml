@@ -262,20 +262,25 @@ Rectangle {
                         Row {
                             spacing: 14
                             Text { text: "◀◀"; color: (program || live) ? Theme.text : Theme.textFaint; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter
-                                   TapHandler { onTapped: mon.stepFrames(-1) } }
+                                   TapHandler { onTapped: mon.stepFrames(-1) }
+                                   Tip { edge: "top"; text: "Fotograma anterior" } }
                             Rectangle {
                                 visible: program; width: 24; height: 24; radius: 12; color: Theme.amber; anchors.verticalCenter: parent.verticalCenter
                                 Text { anchors.centerIn: parent; text: Compositor.playing ? "❚❚" : "▶"; color: Theme.amberInk; font.pixelSize: 12 }
                                 TapHandler { onTapped: Compositor.togglePlay() }
+                                Tip { edge: "top"; text: Compositor.playing ? "Pausar (Espacio)" : "Reproducir (Espacio)" }
                             }
                             Text { visible: !program; text: (live && ctrl.playing) ? "❚❚" : "▶"; color: Theme.text; font.pixelSize: 15; anchors.verticalCenter: parent.verticalCenter
-                                   TapHandler { onTapped: if (live) ctrl.togglePlay() } }
+                                   TapHandler { onTapped: if (live) ctrl.togglePlay() }
+                                   Tip { edge: "top"; text: (live && ctrl.playing) ? "Pausar" : "Reproducir" } }
                             Text { text: "▶▶"; color: (program || live) ? Theme.text : Theme.textFaint; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter
-                                   TapHandler { onTapped: mon.stepFrames(1) } }
+                                   TapHandler { onTapped: mon.stepFrames(1) }
+                                   Tip { edge: "top"; text: "Fotograma siguiente" } }
                             // ● = guardar el fotograma actual del PROGRAMA como PNG.
                             Text { visible: program; text: "●"; color: Theme.red; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter
                                    opacity: Compositor.hasContent ? 1.0 : 0.35
-                                   TapHandler { enabled: Compositor.hasContent; onTapped: Compositor.saveStillDialog() } }
+                                   TapHandler { enabled: Compositor.hasContent; onTapped: Compositor.saveStillDialog() }
+                                   Tip { edge: "top"; text: "Guardar fotograma actual como PNG" } }
                         }
                         Item { Layout.fillWidth: true }
                         Text { text: program ? mon.seqTc(TimelineModel.contentEndUs)

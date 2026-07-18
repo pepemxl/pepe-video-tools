@@ -59,6 +59,8 @@ signals:
 
 protected:
     void geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry) override;
+    // Detecta el cambio de ventana para (re)conectar la invalidación del scene graph.
+    void itemChange(ItemChange change, const ItemChangeData &value) override;
 
 private slots:
     void onFrame(const QImage &image);
@@ -92,5 +94,9 @@ private:
     double m_panX = 0.0, m_panY = 0.0;   // paneo (px) con zoom
     bool m_frameDirty = false;   // hay un fotograma nuevo que subir a textura
     bool m_devSent = false;      // ya se adoptó el device D3D11 hacia la fuente
+    // Conexión a QQuickWindow::sceneGraphInvalidated: al perderse el dispositivo
+    // gráfico (device loss), Qt recrea el scene graph con un device nuevo; hay que
+    // volver a entregárselo a la fuente (reset de m_devSent).
+    QMetaObject::Connection m_sgInvalidatedConn;
     int m_nodeKind = 0;          // 0 ninguno · 1 imagen RGBA · 2 YUV · 3 capas
 };

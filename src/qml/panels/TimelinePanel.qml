@@ -84,6 +84,7 @@ Rectangle {
                                 Text { anchors.centerIn: parent; text: modelData.g.charAt(0).toUpperCase()
                                        color: parent.active ? Theme.amberInk : Theme.textMid
                                        font.pixelSize: 12; font.weight: Font.DemiBold; font.family: Theme.sans }
+                                Tip { text: modelData.tip }
                             }
                         }
                     }
@@ -106,6 +107,7 @@ Rectangle {
                             Row { id: addTrkRow; anchors.centerIn: parent; spacing: 2
                                 Text { text: modelData.l; font.pixelSize: 11; font.weight: Font.Bold; font.family: Theme.sans
                                        color: Theme.textMid; anchors.verticalCenter: parent.verticalCenter } }
+                            Tip { text: modelData.tip }
                         }
                     }
                 }
@@ -123,6 +125,7 @@ Rectangle {
                                color: Theme.textHi; anchors.verticalCenter: parent.verticalCenter }
                         Text { text: "+ Título"; font.pixelSize: 11; font.family: Theme.sans
                                color: Theme.textMid; anchors.verticalCenter: parent.verticalCenter } }
+                    Tip { text: "Añadir título en el playhead (Ctrl+T)" }
                 }
 
                 // Subtítulos: toggle CC + contador
@@ -135,25 +138,29 @@ Rectangle {
                                color: TimelineModel.subtitlesEnabled ? "#0c1420" : Theme.textMid; anchors.verticalCenter: parent.verticalCenter }
                         Text { text: TimelineModel.subtitleCount; font.pixelSize: 10; font.family: Theme.mono
                                color: TimelineModel.subtitlesEnabled ? "#0c1420" : Theme.textDim; anchors.verticalCenter: parent.verticalCenter } }
+                    Tip { text: "Subtítulos (CC): mostrar/ocultar la pista de subtítulos" }
                 }
                 // Importar SRT
                 Rectangle { width: 26; height: 28; radius: 5; border.color: Theme.line; border.width: 1
                     color: impHover.hovered ? Theme.hover : "transparent"
                     HoverHandler { id: impHover }
                     TapHandler { onTapped: TimelineModel.openImportSrtDialog() }
-                    Text { anchors.centerIn: parent; text: "↓"; font.pixelSize: 14; color: Theme.textMid } }
+                    Text { anchors.centerIn: parent; text: "↓"; font.pixelSize: 14; color: Theme.textMid }
+                    Tip { text: "Importar subtítulos (.srt)" } }
                 // Exportar SRT
                 Rectangle { width: 26; height: 28; radius: 5; border.color: Theme.line; border.width: 1
                     color: expHover.hovered ? Theme.hover : "transparent"
                     HoverHandler { id: expHover }
                     TapHandler { onTapped: TimelineModel.openExportSrtDialog() }
-                    Text { anchors.centerIn: parent; text: "↑"; font.pixelSize: 14; color: Theme.textMid } }
+                    Text { anchors.centerIn: parent; text: "↑"; font.pixelSize: 14; color: Theme.textMid }
+                    Tip { text: "Exportar subtítulos (.srt)" } }
 
                 // Marcador (añade en el playhead)
                 Rectangle {
                     width: 28; height: 28; radius: 5; color: mkHover.hovered ? Theme.hover : "transparent"
                     HoverHandler { id: mkHover }
                     TapHandler { onTapped: TimelineModel.addMarkerAtPlayhead() }
+                    Tip { text: "Añadir marcador en el playhead" }
                     Canvas { anchors.centerIn: parent; width: 9; height: 11
                         onPaint: { var c=getContext("2d"); c.fillStyle=Theme.amber; c.beginPath()
                             c.moveTo(0,0); c.lineTo(9,0); c.lineTo(9,7.7); c.lineTo(4.5,11); c.lineTo(0,7.7); c.closePath(); c.fill() } }
@@ -166,18 +173,21 @@ Rectangle {
                         color: inHov.hovered ? Theme.hover : "transparent"
                         HoverHandler { id: inHov }
                         TapHandler { onTapped: TimelineModel.setMarkInAtPlayhead() }
-                        Text { anchors.centerIn: parent; text: "⟤"; font.pixelSize: 14; color: Theme.amber } }
+                        Text { anchors.centerIn: parent; text: "⟤"; font.pixelSize: 14; color: Theme.amber }
+                        Tip { text: "Marcar entrada del rango de exportación (I)" } }
                     Rectangle { width: 30; height: 28; radius: 5; border.color: Theme.line; border.width: 1
                         color: outHov.hovered ? Theme.hover : "transparent"
                         HoverHandler { id: outHov }
                         TapHandler { onTapped: TimelineModel.setMarkOutAtPlayhead() }
-                        Text { anchors.centerIn: parent; text: "⟥"; font.pixelSize: 14; color: Theme.amber } }
+                        Text { anchors.centerIn: parent; text: "⟥"; font.pixelSize: 14; color: Theme.amber }
+                        Tip { text: "Marcar salida del rango de exportación (O)" } }
                     Rectangle { width: 26; height: 28; radius: 5; border.color: Theme.line; border.width: 1
                         visible: TimelineModel.hasInOut
                         color: clrHov.hovered ? Theme.hover : "transparent"
                         HoverHandler { id: clrHov }
                         TapHandler { onTapped: TimelineModel.clearInOut() }
-                        Text { anchors.centerIn: parent; text: "✕"; font.pixelSize: 11; color: Theme.textMid } }
+                        Text { anchors.centerIn: parent; text: "✕"; font.pixelSize: 11; color: Theme.textMid }
+                        Tip { text: "Limpiar el rango de entrada/salida" } }
                 }
                 // Snap
                 Rectangle {
@@ -188,6 +198,7 @@ Rectangle {
                         Text { text: "🧲"; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
                         Text { text: "Imán"; font.pixelSize: 11; font.weight: Font.DemiBold; font.family: Theme.sans
                                color: snap ? "#0c1420" : Theme.textMid; anchors.verticalCenter: parent.verticalCenter } }
+                    Tip { text: "Imán: ajustar clips a bordes y al playhead al arrastrar" }
                 }
                 // Zoom (arrastra; doble clic = ajustar a la vista)
                 Row {
@@ -351,6 +362,7 @@ Rectangle {
                                         TapHandler { onTapped: TimelineModel.removeTrack(trackRow.trackIndex) }
                                         Text { anchors.centerIn: parent; text: "✕"; font.pixelSize: 8
                                                color: delTrkHover.hovered ? "#ffffff" : Theme.textDim }
+                                        Tip { text: "Eliminar pista" }
                                     }
                                     Row { anchors.right: parent.right; anchors.rightMargin: 8; anchors.top: parent.top; anchors.topMargin: 6; spacing: 3
                                         Repeater { model: trackRow.modelData.kind === "video" ? ["👁","🔒"] : ["M","S"]
@@ -367,6 +379,9 @@ Rectangle {
                                                 color: on ? (isVideo ? Theme.amber : (first ? Theme.amber : Theme.blue)) : Theme.hover2
                                                 Text { anchors.centerIn: parent; text: hdrBtn.modelData; font.pixelSize: 8
                                                        color: hdrBtn.on ? "#101216" : Theme.textDim }
+                                                Tip { text: hdrBtn.isVideo
+                                                          ? (hdrBtn.first ? "Ocultar pista (no se compone)" : "Bloquear la pista (no editable)")
+                                                          : (hdrBtn.first ? "Silenciar la pista (Mute)" : "Solo: aislar esta pista") }
                                                 TapHandler {
                                                     onTapped: {
                                                         var ti = trackRow.trackIndex
@@ -796,6 +811,7 @@ Rectangle {
                                             color: on ? (isMute ? Theme.amber : Theme.blue) : Theme.hover2
                                             Text { anchors.centerIn: parent; text: parent.modelData; font.pixelSize: 8
                                                    color: parent.on ? "#101216" : Theme.textDim }
+                                            Tip { edge: "top"; text: parent.isMute ? "Silenciar la pista (Mute)" : "Solo: aislar esta pista" }
                                             TapHandler {
                                                 onTapped: parent.isMute
                                                     ? TimelineModel.setTrackMute(chan.modelData.trk, !parent.at.mute)
