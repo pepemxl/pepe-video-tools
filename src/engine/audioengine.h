@@ -50,8 +50,10 @@ struct AudioMixClip {
     bool clipGateOn = false; double clipGateThreshDb = -40.0;
     bool clipDeEssOn = false; double clipDeEssThreshDb = -24.0;
     bool clipReverbOn = false; double clipReverbMix = 0.25, clipReverbSize = 0.5;
-    // Automatización por keyframes (sourceUs, valor): EQ de 3 bandas y mezcla de reverb.
+    // Automatización por keyframes (sourceUs, valor): EQ, reverb, compresor, puerta, de-esser.
     QVector<QPair<qint64, double>> clipEqLowKf, clipEqMidKf, clipEqHighKf, clipReverbMixKf;
+    QVector<QPair<qint64, double>> clipCompThreshKf, clipCompRatioKf, clipCompMakeupKf,
+                                   clipGateThreshKf, clipDeEssThreshKf;
 };
 Q_DECLARE_METATYPE(AudioMixClip)
 

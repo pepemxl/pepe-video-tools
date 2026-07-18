@@ -249,6 +249,20 @@ Rectangle {
                             }
                             RowLayout {
                                 Layout.fillWidth: true; spacing: 8
+                                // Perfil del encoder (solo H.264/H.265).
+                                readonly property bool avail: Export.format === "h264" || Export.format === "h265"
+                                visible: avail
+                                FLabel { text: "Perfil" }
+                                Combo {
+                                    readonly property var opts: Export.format === "h265"
+                                        ? ["Auto", "main", "main10"] : ["Auto", "baseline", "main", "high"]
+                                    current: Export.videoProfile === "" ? "Auto" : Export.videoProfile
+                                    options: opts
+                                    onPicked: (i) => Export.videoProfile = (i === 0 ? "" : opts[i])
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: 8
                                 FLabel { text: "Preset" }
                                 Combo {
                                     current: Export.presetName
@@ -271,9 +285,9 @@ Rectangle {
                                 enabled: Export.audioKbps > 0
                                 FLabel { text: "Canales" }
                                 Combo {
-                                    current: Export.audioChannels === 1 ? "Mono" : (Export.audioChannels === 6 ? "5.1" : "Estéreo")
-                                    options: ["Estéreo", "Mono", "5.1"]
-                                    onPicked: (i) => Export.audioChannels = [2, 1, 6][i]
+                                    current: ({ 1: "Mono", 2: "Estéreo", 6: "5.1", 8: "7.1" })[Export.audioChannels] || "Estéreo"
+                                    options: ["Estéreo", "Mono", "5.1", "7.1"]
+                                    onPicked: (i) => Export.audioChannels = [2, 1, 6, 8][i]
                                 }
                             }
                         }

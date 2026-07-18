@@ -134,6 +134,8 @@ void ExportWorker::run(const ExportJob &job)
         p1->gop_size = 12; p1->bit_rate = job.videoBitrate;
         p1->flags |= AV_CODEC_FLAG_PASS1;
         av_opt_set(p1->priv_data, "preset", "medium", 0);
+        if (!job.videoProfile.isEmpty())
+            av_opt_set(p1->priv_data, "profile", job.videoProfile.toUtf8().constData(), 0);
         av_opt_set(p1->priv_data, "stats", statsFile.constData(), 0);
         bool p1ok = (avcodec_open2(p1, vcodec, nullptr) == 0);
         SwsContext *sws1 = p1ok ? sws_getContext(W, H, AV_PIX_FMT_RGBA, W, H, fmt.pix,
@@ -188,8 +190,11 @@ void ExportWorker::run(const ExportJob &job)
     // Ajustes de velocidad/calidad por familia de encoder.
     if (fmt.vprofile)
         av_opt_set(vc->priv_data, "profile", fmt.vprofile, 0);   // prores_ks / dnxhd
-    if (qstrcmp(fmt.venc, "libx264") == 0 || qstrcmp(fmt.venc, "libx265") == 0)
+    if (qstrcmp(fmt.venc, "libx264") == 0 || qstrcmp(fmt.venc, "libx265") == 0) {
         av_opt_set(vc->priv_data, "preset", "medium", 0);
+        if (!job.videoProfile.isEmpty())
+            av_opt_set(vc->priv_data, "profile", job.videoProfile.toUtf8().constData(), 0);
+    }
     if (qstrcmp(fmt.venc, "libvpx-vp9") == 0) {
         av_opt_set(vc->priv_data, "deadline", "good", 0);
         av_opt_set_int(vc->priv_data, "cpu-used", 4, 0);
@@ -216,10 +221,12 @@ void ExportWorker::run(const ExportJob &job)
             ac = avcodec_alloc_context3(acodec);
             ac->sample_fmt = fmt.asfmt;   // FLTP (AAC) o S16 (PCM/Opus)
             ac->sample_rate = 48000;
-            // Canales: 1 mono · 2 estéreo · 6 (5.1, upmix). Opus no lo soporta aquí → estéreo.
-            int chOut = (job.channels == 6 && qstrcmp(fmt.aenc, "libopus") == 0) ? 2 : job.channels;
-            if (chOut != 1 && chOut != 2 && chOut != 6) chOut = 2;
-            av_channel_layout_default(&ac->ch_layout, chOut);   // 6 → 5.1 (FL FR FC LFE BL BR)
+            // Canales: 1 mono · 2 estéreo · 6 (5.1) · 8 (7.1), por upmix. Opus multicanal
+            // no se soporta aquí → estéreo.
+            int chOut = job.channels;
+            if (chOut != 1 && chOut != 2 && chOut != 6 && chOut != 8) chOut = 2;
+            if (chOut > 2 && qstrcmp(fmt.aenc, "libopus") == 0) chOut = 2;
+            av_channel_layout_default(&ac->ch_layout, chOut);   // 6 → 5.1, 8 → 7.1
             if (qstrcmp(fmt.aenc, "pcm_s16le") != 0)
                 ac->bit_rate = job.audioBitrate;   // PCM no usa bitrate
             ac->time_base = AVRational{ 1, 48000 };
@@ -291,11 +298,15 @@ void ExportWorker::run(const ExportJob &job)
             const bool s16 = (ac->sample_fmt == AV_SAMPLE_FMT_S16);
             for (int k = 0; k < n; ++k) {
                 const float l = aL[aStart + k], r = aR[aStart + k];
-                // Valores por canal. 5.1 = upmix pasivo (FL FR FC LFE BL BR).
-                float v[6];
+                // Valores por canal. 5.1/7.1 = upmix pasivo. Orden FFmpeg:
+                //  5.1: FL FR FC LFE BL BR   ·   7.1: FL FR FC LFE BL BR SL SR
+                float v[8];
                 if (ch == 1) { v[0] = (l + r) * 0.5f; }
                 else if (ch == 6) {
                     v[0] = l; v[1] = r; v[2] = (l + r) * 0.5f; v[3] = 0.0f; v[4] = l * 0.6f; v[5] = r * 0.6f;
+                } else if (ch == 8) {
+                    v[0] = l; v[1] = r; v[2] = (l + r) * 0.5f; v[3] = 0.0f;
+                    v[4] = l * 0.5f; v[5] = r * 0.5f; v[6] = l * 0.6f; v[7] = r * 0.6f;
                 } else { v[0] = l; v[1] = r; }
                 if (s16) {   // empaquetado intercalado
                     auto *d = reinterpret_cast<int16_t *>(aframe->data[0]);
@@ -459,7 +470,7 @@ void Exporter::setAudioKbps(int kbps)
 
 void Exporter::setAudioChannels(int ch)
 {
-    if (ch != 1 && ch != 2 && ch != 6) ch = 2;   // mono · estéreo · 5.1
+    if (ch != 1 && ch != 2 && ch != 6 && ch != 8) ch = 2;   // mono · estéreo · 5.1 · 7.1
     if (ch == m_audioChannels) return;
     m_audioChannels = ch;
     emit settingsChanged();
@@ -484,6 +495,13 @@ void Exporter::setTwoPass(bool on)
 {
     if (on == m_twoPass) return;
     m_twoPass = on;
+    emit settingsChanged();
+}
+
+void Exporter::setVideoProfile(const QString &p)
+{
+    if (p == m_videoProfile) return;
+    m_videoProfile = p;
     emit settingsChanged();
 }
 
@@ -555,6 +573,11 @@ bool Exporter::buildJob(const QString &path, int w, int h, double fps, int mbps,
         for (const TimelineModel::Keyframe &k : a.eqMidKf)  m.clipEqMidKf.push_back({ k.sourceUs, k.value });
         for (const TimelineModel::Keyframe &k : a.eqHighKf) m.clipEqHighKf.push_back({ k.sourceUs, k.value });
         for (const TimelineModel::Keyframe &k : a.reverbMixKf) m.clipReverbMixKf.push_back({ k.sourceUs, k.value });
+        for (const TimelineModel::Keyframe &k : a.compThreshKf) m.clipCompThreshKf.push_back({ k.sourceUs, k.value });
+        for (const TimelineModel::Keyframe &k : a.compRatioKf)  m.clipCompRatioKf.push_back({ k.sourceUs, k.value });
+        for (const TimelineModel::Keyframe &k : a.compMakeupKf) m.clipCompMakeupKf.push_back({ k.sourceUs, k.value });
+        for (const TimelineModel::Keyframe &k : a.gateThreshKf) m.clipGateThreshKf.push_back({ k.sourceUs, k.value });
+        for (const TimelineModel::Keyframe &k : a.deEssThreshKf) m.clipDeEssThreshKf.push_back({ k.sourceUs, k.value });
         mix.push_back(m);
     }
     {
@@ -587,6 +610,7 @@ void Exporter::exportTimeline(const QString &path, int width, int height,
     }
     job.format = m_format;
     job.channels = m_audioChannels; job.useCrf = m_crfEnabled; job.crf = m_crf; job.twoPass = m_twoPass;
+    job.videoProfile = m_videoProfile;
 
     m_running = true; m_progress = 0.0;
     setStatus(QStringLiteral("Exportando…"));
@@ -701,6 +725,7 @@ void Exporter::enqueueCurrent()
     it.width = m_outW; it.height = m_outH; it.fps = m_outFps; it.mbps = m_mbps;
     it.audioKbps = m_audioKbps;
     it.channels = m_audioChannels; it.useCrf = m_crfEnabled; it.crf = m_crf; it.twoPass = m_twoPass;
+    it.videoProfile = m_videoProfile;
     it.startUs = m_timeline->exportStartUs();
     it.durUs = m_timeline->exportEndUs() - it.startUs;
     it.status = 0;
@@ -760,6 +785,7 @@ void Exporter::renderNextInQueue()
     }
     job.format = it.format;
     job.channels = it.channels; job.useCrf = it.useCrf; job.crf = it.crf; job.twoPass = it.twoPass;
+    job.videoProfile = it.videoProfile;
     it.status = 1;   // en curso
     m_curQueueIdx = idx;
     m_running = true; m_progress = 0.0;
@@ -1037,6 +1063,20 @@ int runCodecSelfTestIfRequested()
         tp.videoBitrate = 8'000'000; tp.format = QStringLiteral("h264");
         tp.frames = makeFrames(); tp.audioS16 = audio; tp.twoPass = true;
         renderCheck(tp, "2pass");
+
+        ExportJob s71;   // 7.1 (upmix) sobre AAC/MP4
+        s71.path = QDir(QDir::tempPath()).filePath(QStringLiteral("pvs_codec_71.mp4"));
+        s71.width = W; s71.height = H; s71.fps = fps; s71.durationUs = 1'000'000;
+        s71.videoBitrate = 8'000'000; s71.format = QStringLiteral("h264");
+        s71.frames = makeFrames(); s71.audioS16 = audio; s71.channels = 8;
+        renderCheck(s71, "7.1");
+
+        ExportJob pf;    // perfil H.264 "high"
+        pf.path = QDir(QDir::tempPath()).filePath(QStringLiteral("pvs_codec_prof.mp4"));
+        pf.width = W; pf.height = H; pf.fps = fps; pf.durationUs = 1'000'000;
+        pf.videoBitrate = 8'000'000; pf.format = QStringLiteral("h264");
+        pf.frames = makeFrames(); pf.audioS16 = audio; pf.videoProfile = QStringLiteral("high");
+        renderCheck(pf, "perfil");
     }
 
     qWarning("[CODEC selftest] %d OK, %d FALLO => %s", pass, fail, fail == 0 ? "PASS" : "FALLO");

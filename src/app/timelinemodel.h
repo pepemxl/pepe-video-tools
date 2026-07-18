@@ -183,8 +183,9 @@ public:
         bool gateOn = false; double gateThreshDb = -40.0;
         bool deEssOn = false; double deEssThreshDb = -24.0;
         bool reverbOn = false; double reverbMix = 0.25, reverbSize = 0.5;
-        // Automatización por keyframes de efectos: EQ de 3 bandas y mezcla de reverb.
+        // Automatización por keyframes de efectos: EQ, reverb, compresor, puerta, de-esser.
         QVector<Keyframe> eqLowKf, eqMidKf, eqHighKf, reverbMixKf;
+        QVector<Keyframe> compThreshKf, compRatioKf, compMakeupKf, gateThreshKf, deEssThreshKf;
     };
     // Título de texto renderizado como capa por el compositor (para kind == "title").
     struct Title {
@@ -252,8 +253,9 @@ public:
         bool clipGateOn = false; double clipGateThreshDb = -40.0;
         bool clipDeEssOn = false; double clipDeEssThreshDb = -24.0;
         bool clipReverbOn = false; double clipReverbMix = 0.25, clipReverbSize = 0.5;
-        // Automatización por keyframes de efectos (EQ de 3 bandas y mezcla de reverb).
+        // Automatización por keyframes de efectos (EQ, reverb, compresor, puerta, de-esser).
         QVector<Keyframe> eqLowKf, eqMidKf, eqHighKf, reverbMixKf;
+        QVector<Keyframe> compThreshKf, compRatioKf, compMakeupKf, gateThreshKf, deEssThreshKf;
     };
     struct Marker {
         qint64 timeUs;

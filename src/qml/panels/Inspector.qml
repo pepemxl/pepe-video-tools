@@ -404,11 +404,11 @@ Rectangle {
                     ColumnLayout {
                         Layout.fillWidth: true; spacing: 6
                         opacity: TimelineModel.selAudioCompOn ? 1.0 : 0.4; enabled: TimelineModel.selAudioCompOn
-                        CSlider { label: "Umbral"; from: -48; to: 0; defaultVal: -18; value: TimelineModel.selAudioCompThreshDb
+                        CSlider { label: "Umbral"; from: -48; to: 0; defaultVal: -18; prop: "clipCompThresh"; value: TimelineModel.selAudioCompThreshDb
                                   onMoved: (v) => TimelineModel.setSelAudioComp(v, TimelineModel.selAudioCompRatio, TimelineModel.selAudioCompMakeupDb) }
-                        CSlider { label: "Ratio"; from: 1; to: 20; defaultVal: 2; value: TimelineModel.selAudioCompRatio
+                        CSlider { label: "Ratio"; from: 1; to: 20; defaultVal: 2; prop: "clipCompRatio"; value: TimelineModel.selAudioCompRatio
                                   onMoved: (v) => TimelineModel.setSelAudioComp(TimelineModel.selAudioCompThreshDb, v, TimelineModel.selAudioCompMakeupDb) }
-                        CSlider { label: "Makeup"; from: 0; to: 24; defaultVal: 0; value: TimelineModel.selAudioCompMakeupDb
+                        CSlider { label: "Makeup"; from: 0; to: 24; defaultVal: 0; prop: "clipCompMakeup"; value: TimelineModel.selAudioCompMakeupDb
                                   onMoved: (v) => TimelineModel.setSelAudioComp(TimelineModel.selAudioCompThreshDb, TimelineModel.selAudioCompRatio, v) }
                     }
 
@@ -425,7 +425,7 @@ Rectangle {
                     ColumnLayout {
                         Layout.fillWidth: true; spacing: 6
                         opacity: TimelineModel.selAudioGateOn ? 1.0 : 0.4; enabled: TimelineModel.selAudioGateOn
-                        CSlider { label: "Umbral"; from: -80; to: 0; defaultVal: -40; value: TimelineModel.selAudioGateThreshDb
+                        CSlider { label: "Umbral"; from: -80; to: 0; defaultVal: -40; prop: "clipGate"; value: TimelineModel.selAudioGateThreshDb
                                   onMoved: (v) => TimelineModel.setSelAudioGate(v) }
                     }
 
@@ -442,7 +442,7 @@ Rectangle {
                     ColumnLayout {
                         Layout.fillWidth: true; spacing: 6
                         opacity: TimelineModel.selAudioDeEssOn ? 1.0 : 0.4; enabled: TimelineModel.selAudioDeEssOn
-                        CSlider { label: "Umbral"; from: -48; to: 0; defaultVal: -24; value: TimelineModel.selAudioDeEssThreshDb
+                        CSlider { label: "Umbral"; from: -48; to: 0; defaultVal: -24; prop: "clipDeEss"; value: TimelineModel.selAudioDeEssThreshDb
                                   onMoved: (v) => TimelineModel.setSelAudioDeEsser(v) }
                     }
 
@@ -487,7 +487,12 @@ Rectangle {
                         { p: "clipEqLow", l: "EQ Graves", min: -18, max: 18 },
                         { p: "clipEqMid", l: "EQ Medios", min: -18, max: 18 },
                         { p: "clipEqHigh", l: "EQ Agudos", min: -18, max: 18 },
-                        { p: "clipReverbMix", l: "Reverb mix", min: 0, max: 1 } ]
+                        { p: "clipReverbMix", l: "Reverb mix", min: 0, max: 1 },
+                        { p: "clipCompThresh", l: "Comp umbral", min: -48, max: 0 },
+                        { p: "clipCompRatio", l: "Comp ratio", min: 1, max: 20 },
+                        { p: "clipCompMakeup", l: "Comp makeup", min: 0, max: 24 },
+                        { p: "clipGate", l: "Puerta", min: -80, max: 0 },
+                        { p: "clipDeEss", l: "De-esser", min: -48, max: 0 } ]
                     readonly property var animatedProps: {
                         TimelineModel.hasSelection
                         return allProps.filter(e => TimelineModel.isKeyframed(e.p))

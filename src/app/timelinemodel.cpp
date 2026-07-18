@@ -1087,11 +1087,14 @@ double TimelineModel::selAudioEqHighDb() const
 bool TimelineModel::selAudioCompOn() const
 { const int i = indexOfClip(m_selectedId); return i >= 0 && m_clips[i].audio.compOn; }
 double TimelineModel::selAudioCompThreshDb() const
-{ const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].audio.compThreshDb : -18.0; }
+{ const int i = indexOfClip(m_selectedId); if (i < 0) return -18.0;
+  const Clip &c = m_clips[i]; return evalKf(c.audio.compThreshKf, c.audio.compThreshDb, srcAtPlayhead(c)); }
 double TimelineModel::selAudioCompRatio() const
-{ const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].audio.compRatio : 2.0; }
+{ const int i = indexOfClip(m_selectedId); if (i < 0) return 2.0;
+  const Clip &c = m_clips[i]; return evalKf(c.audio.compRatioKf, c.audio.compRatio, srcAtPlayhead(c)); }
 double TimelineModel::selAudioCompMakeupDb() const
-{ const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].audio.compMakeupDb : 0.0; }
+{ const int i = indexOfClip(m_selectedId); if (i < 0) return 0.0;
+  const Clip &c = m_clips[i]; return evalKf(c.audio.compMakeupKf, c.audio.compMakeupDb, srcAtPlayhead(c)); }
 
 void TimelineModel::setSelAudioEqEnabled(bool on)
 {
@@ -1123,9 +1126,10 @@ void TimelineModel::setSelAudioComp(double threshDb, double ratio, double makeup
     const int i = indexOfClip(m_selectedId);
     if (i < 0) return;
     Audio &a = m_clips[i].audio;
-    a.compThreshDb = qBound(-48.0, threshDb, 0.0);
-    a.compRatio = qBound(1.0, ratio, 20.0);
-    a.compMakeupDb = qBound(0.0, makeupDb, 24.0);
+    const qint64 src = srcAtPlayhead(m_clips[i]);
+    applyColorKf(a.compThreshKf, a.compThreshDb, src, qBound(-48.0, threshDb, 0.0));
+    applyColorKf(a.compRatioKf,  a.compRatio,    src, qBound(1.0, ratio, 20.0));
+    applyColorKf(a.compMakeupKf, a.compMakeupDb, src, qBound(0.0, makeupDb, 24.0));
     bumpSelection(); emit audioChanged();
 }
 
@@ -1133,11 +1137,13 @@ void TimelineModel::setSelAudioComp(double threshDb, double ratio, double makeup
 bool TimelineModel::selAudioGateOn() const
 { const int i = indexOfClip(m_selectedId); return i >= 0 && m_clips[i].audio.gateOn; }
 double TimelineModel::selAudioGateThreshDb() const
-{ const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].audio.gateThreshDb : -40.0; }
+{ const int i = indexOfClip(m_selectedId); if (i < 0) return -40.0;
+  const Clip &c = m_clips[i]; return evalKf(c.audio.gateThreshKf, c.audio.gateThreshDb, srcAtPlayhead(c)); }
 bool TimelineModel::selAudioDeEssOn() const
 { const int i = indexOfClip(m_selectedId); return i >= 0 && m_clips[i].audio.deEssOn; }
 double TimelineModel::selAudioDeEssThreshDb() const
-{ const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].audio.deEssThreshDb : -24.0; }
+{ const int i = indexOfClip(m_selectedId); if (i < 0) return -24.0;
+  const Clip &c = m_clips[i]; return evalKf(c.audio.deEssThreshKf, c.audio.deEssThreshDb, srcAtPlayhead(c)); }
 bool TimelineModel::selAudioReverbOn() const
 { const int i = indexOfClip(m_selectedId); return i >= 0 && m_clips[i].audio.reverbOn; }
 double TimelineModel::selAudioReverbMix() const
@@ -1156,7 +1162,8 @@ void TimelineModel::setSelAudioGate(double threshDb)
 {
     const int i = indexOfClip(m_selectedId);
     if (i < 0) return;
-    m_clips[i].audio.gateThreshDb = qBound(-80.0, threshDb, 0.0);
+    applyColorKf(m_clips[i].audio.gateThreshKf, m_clips[i].audio.gateThreshDb,
+                 srcAtPlayhead(m_clips[i]), qBound(-80.0, threshDb, 0.0));
     bumpSelection(); emit audioChanged();
 }
 void TimelineModel::setSelAudioDeEsserEnabled(bool on)
@@ -1169,7 +1176,8 @@ void TimelineModel::setSelAudioDeEsser(double threshDb)
 {
     const int i = indexOfClip(m_selectedId);
     if (i < 0) return;
-    m_clips[i].audio.deEssThreshDb = qBound(-48.0, threshDb, 0.0);
+    applyColorKf(m_clips[i].audio.deEssThreshKf, m_clips[i].audio.deEssThreshDb,
+                 srcAtPlayhead(m_clips[i]), qBound(-48.0, threshDb, 0.0));
     bumpSelection(); emit audioChanged();
 }
 void TimelineModel::setSelAudioReverbEnabled(bool on)
@@ -1552,7 +1560,10 @@ QJsonObject TimelineModel::toJson() const
                 { "reverbOn", c.audio.reverbOn }, { "reverbMix", c.audio.reverbMix },
                 { "reverbSize", c.audio.reverbSize },
                 { "eqLowKf", kfToJson(c.audio.eqLowKf) }, { "eqMidKf", kfToJson(c.audio.eqMidKf) },
-                { "eqHighKf", kfToJson(c.audio.eqHighKf) }, { "reverbMixKf", kfToJson(c.audio.reverbMixKf) } } },
+                { "eqHighKf", kfToJson(c.audio.eqHighKf) }, { "reverbMixKf", kfToJson(c.audio.reverbMixKf) },
+                { "compThreshKf", kfToJson(c.audio.compThreshKf) }, { "compRatioKf", kfToJson(c.audio.compRatioKf) },
+                { "compMakeupKf", kfToJson(c.audio.compMakeupKf) }, { "gateThreshKf", kfToJson(c.audio.gateThreshKf) },
+                { "deEssThreshKf", kfToJson(c.audio.deEssThreshKf) } } },
             { "title", QJsonObject{
                 { "text", c.title.text }, { "sizePt", c.title.sizePt },
                 { "color", c.title.color }, { "align", c.title.align },
@@ -1698,6 +1709,11 @@ bool TimelineModel::fromJson(const QJsonObject &o)
         c.audio.eqMidKf = kfFromJson(au.value("eqMidKf"));
         c.audio.eqHighKf = kfFromJson(au.value("eqHighKf"));
         c.audio.reverbMixKf = kfFromJson(au.value("reverbMixKf"));
+        c.audio.compThreshKf = kfFromJson(au.value("compThreshKf"));
+        c.audio.compRatioKf = kfFromJson(au.value("compRatioKf"));
+        c.audio.compMakeupKf = kfFromJson(au.value("compMakeupKf"));
+        c.audio.gateThreshKf = kfFromJson(au.value("gateThreshKf"));
+        c.audio.deEssThreshKf = kfFromJson(au.value("deEssThreshKf"));
         const QJsonObject ti = cj.value("title").toObject();
         c.title.text = ti.value("text").toString();
         c.title.sizePt = ti.value("sizePt").toDouble(0.09);
@@ -1825,6 +1841,9 @@ QVector<TimelineModel::AudioClip> TimelineModel::audioClips() const
         ac.clipReverbOn = c.audio.reverbOn; ac.clipReverbMix = c.audio.reverbMix; ac.clipReverbSize = c.audio.reverbSize;
         ac.eqLowKf = c.audio.eqLowKf; ac.eqMidKf = c.audio.eqMidKf;
         ac.eqHighKf = c.audio.eqHighKf; ac.reverbMixKf = c.audio.reverbMixKf;
+        ac.compThreshKf = c.audio.compThreshKf; ac.compRatioKf = c.audio.compRatioKf;
+        ac.compMakeupKf = c.audio.compMakeupKf; ac.gateThreshKf = c.audio.gateThreshKf;
+        ac.deEssThreshKf = c.audio.deEssThreshKf;
         out.push_back(ac);
     }
     return out;
@@ -1853,15 +1872,23 @@ void TimelineModel::toggleKeyframe(const QString &prop)
         emit audioChanged();
         return;
     }
-    // Automatización de efectos de audio por clip (EQ 3 bandas + mezcla de reverb).
+    // Automatización de efectos de audio por clip (EQ, reverb, compresor, puerta, de-esser).
     if (prop == QLatin1String("clipEqLow") || prop == QLatin1String("clipEqMid")
-        || prop == QLatin1String("clipEqHigh") || prop == QLatin1String("clipReverbMix")) {
+        || prop == QLatin1String("clipEqHigh") || prop == QLatin1String("clipReverbMix")
+        || prop == QLatin1String("clipCompThresh") || prop == QLatin1String("clipCompRatio")
+        || prop == QLatin1String("clipCompMakeup") || prop == QLatin1String("clipGate")
+        || prop == QLatin1String("clipDeEss")) {
         Clip &c = m_clips[i];
         QVector<Keyframe> *kf = kfListFor(c, prop);
         const double sv = prop == QLatin1String("clipEqLow")  ? c.audio.eqLowDb
                         : prop == QLatin1String("clipEqMid")  ? c.audio.eqMidDb
                         : prop == QLatin1String("clipEqHigh") ? c.audio.eqHighDb
-                                                              : c.audio.reverbMix;
+                        : prop == QLatin1String("clipReverbMix") ? c.audio.reverbMix
+                        : prop == QLatin1String("clipCompThresh") ? c.audio.compThreshDb
+                        : prop == QLatin1String("clipCompRatio")  ? c.audio.compRatio
+                        : prop == QLatin1String("clipCompMakeup") ? c.audio.compMakeupDb
+                        : prop == QLatin1String("clipGate")       ? c.audio.gateThreshDb
+                                                                  : c.audio.deEssThreshDb;
         const qint64 src = srcAtPlayhead(c);
         const qint64 tol = 20000;
         for (int k = 0; k < kf->size(); ++k)
@@ -1941,6 +1968,11 @@ QVector<TimelineModel::Keyframe> *TimelineModel::kfListFor(Clip &c, const QStrin
     if (prop == QLatin1String("clipEqMid"))  return &c.audio.eqMidKf;
     if (prop == QLatin1String("clipEqHigh")) return &c.audio.eqHighKf;
     if (prop == QLatin1String("clipReverbMix")) return &c.audio.reverbMixKf;
+    if (prop == QLatin1String("clipCompThresh"))  return &c.audio.compThreshKf;
+    if (prop == QLatin1String("clipCompRatio"))   return &c.audio.compRatioKf;
+    if (prop == QLatin1String("clipCompMakeup"))  return &c.audio.compMakeupKf;
+    if (prop == QLatin1String("clipGate"))        return &c.audio.gateThreshKf;
+    if (prop == QLatin1String("clipDeEss"))       return &c.audio.deEssThreshKf;
     if (prop == QLatin1String("temp"))      return &c.color.kfTemp;
     if (prop == QLatin1String("tint"))      return &c.color.kfTint;
     if (prop == QLatin1String("sat"))       return &c.color.kfSat;

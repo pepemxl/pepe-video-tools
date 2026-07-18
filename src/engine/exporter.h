@@ -25,6 +25,7 @@ struct ExportJob {
     bool useCrf = false;       // true: calidad constante (CRF) en vez de bitrate
     int crf = 20;              // valor CRF (0–51, menor = mejor)
     bool twoPass = false;      // codificación en 2 pasadas (bitrate, x264/x265)
+    QString videoProfile;      // perfil del encoder (x264/x265); "" = automático
     QString format = QStringLiteral("h264");   // id de formato (ver tabla en exporter.cpp)
     // Fotogramas de vídeo. Dos modos:
     //  - streamFrames=false: `frames` ya materializados (usado por los autotests).
@@ -75,6 +76,8 @@ class Exporter : public QObject
     // Codificación en 2 pasadas (mejor reparto del bitrate; duplica el tiempo). Solo
     // aplica en modo bitrate a H.264/H.265.
     Q_PROPERTY(bool twoPass READ twoPass WRITE setTwoPass NOTIFY settingsChanged)
+    // Perfil del encoder de vídeo (H.264/H.265); "" = automático.
+    Q_PROPERTY(QString videoProfile READ videoProfile WRITE setVideoProfile NOTIFY settingsChanged)
     Q_PROPERTY(QString presetName READ presetName NOTIFY settingsChanged)
     // Formato de salida (códec + contenedor). `format` = id; `formatLabel` = texto;
     // `outExt` = extensión; `availableFormats` = lista de {id,label,ext} soportados por
@@ -115,6 +118,8 @@ public:
     void setCrf(int v);
     bool twoPass() const { return m_twoPass; }
     void setTwoPass(bool on);
+    QString videoProfile() const { return m_videoProfile; }
+    void setVideoProfile(const QString &p);
     QString presetName() const { return m_preset; }
     QString format() const { return m_format; }
     QString formatLabel() const;
@@ -166,6 +171,7 @@ private:
         QString name, path, preset, format;
         int width, height, mbps, audioKbps, channels, crf;
         bool useCrf, twoPass;
+        QString videoProfile;
         double fps;
         qint64 startUs = 0, durUs = 0;   // rango de exportación (marcas I/O)
         int status = 0;   // 0 pendiente · 1 en curso · 2 hecho · 3 error
@@ -192,6 +198,7 @@ private:
     bool m_crfEnabled = false;
     int m_crf = 20;
     bool m_twoPass = false;
+    QString m_videoProfile;   // "" = automático
     QString m_preset = QStringLiteral("YouTube 1080p");
     QString m_format = QStringLiteral("h264");
     QString m_outDir;

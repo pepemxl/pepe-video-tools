@@ -139,6 +139,11 @@ struct Comp {
         rel = std::exp(-1.0 / (fs * 0.100));
         invR = 1.0 / ratio;
     }
+    void retune(double threshDb, double ratio, double makeupDb) {   // conserva envc
+        thresh = std::pow(10.0, threshDb / 20.0);
+        makeup = std::pow(10.0, makeupDb / 20.0);
+        invR = 1.0 / ratio;
+    }
     void process(float *b, qint64 n) {
         for (qint64 f = 0; f < n; ++f) {
             const double l = b[f * 2], r = b[f * 2 + 1];
@@ -174,6 +179,7 @@ struct Gate {
         gRel = std::exp(-1.0 / (fs * 0.100));
         dRel = std::exp(-1.0 / (fs * 0.050));
     }
+    void retune(double threshDb) { thresh = std::pow(10.0, threshDb / 20.0); }   // conserva env/g
     void process(float *b, qint64 n) {
         for (qint64 f = 0; f < n; ++f) {
             const double l = b[f * 2], r = b[f * 2 + 1];
@@ -197,6 +203,7 @@ struct DeEss {
         atk = std::exp(-1.0 / (fs * 0.002));
         rel = std::exp(-1.0 / (fs * 0.050));
     }
+    void retune(double threshDb) { thresh = std::pow(10.0, threshDb / 20.0); }   // conserva env/filtros
     void process(float *b, qint64 n) {
         for (qint64 f = 0; f < n; ++f) {
             const double l = b[f * 2], r = b[f * 2 + 1];
@@ -610,18 +617,23 @@ void AudioPlayer::bake(const QVector<AudioMixClip> &clips, qint64 endUs,
                 active = true;
                 const qint64 k0 = lo - cv.startSample, nn = hi - lo, off = lo - chunkStart;
                 const AudioMixClip &c = *cv.c;
-                // Automatización por keyframes de EQ / mezcla de reverb: reevalúa por
-                // bloque en el tiempo de origen del clip (conservando el estado de los filtros).
-                if (cv.fx.eqOn && (!c.clipEqLowKf.isEmpty() || !c.clipEqMidKf.isEmpty() || !c.clipEqHighKf.isEmpty())) {
-                    const qint64 srcUs = c.inUs + qint64((k0 / double(kOutRate)) * 1e6 * c.speed);
+                // Automatización por keyframes de los efectos: reevalúa por bloque en el
+                // tiempo de origen del clip y re-sintoniza conservando el estado.
+                const qint64 srcUs = c.inUs + qint64((k0 / double(kOutRate)) * 1e6 * c.speed);
+                if (cv.fx.eqOn && (!c.clipEqLowKf.isEmpty() || !c.clipEqMidKf.isEmpty() || !c.clipEqHighKf.isEmpty()))
                     cv.fx.eq.retune(fs, evalGainKf(c.clipEqLowKf, c.clipEqLowDb, srcUs),
                                     evalGainKf(c.clipEqMidKf, c.clipEqMidDb, srcUs),
                                     evalGainKf(c.clipEqHighKf, c.clipEqHighDb, srcUs));
-                }
-                if (cv.fx.reverbOn && !c.clipReverbMixKf.isEmpty()) {
-                    const qint64 srcUs = c.inUs + qint64((k0 / double(kOutRate)) * 1e6 * c.speed);
+                if (cv.fx.reverbOn && !c.clipReverbMixKf.isEmpty())
                     cv.fx.rev.setMix(evalGainKf(c.clipReverbMixKf, c.clipReverbMix, srcUs));
-                }
+                if (cv.fx.compOn && (!c.clipCompThreshKf.isEmpty() || !c.clipCompRatioKf.isEmpty() || !c.clipCompMakeupKf.isEmpty()))
+                    cv.fx.comp.retune(evalGainKf(c.clipCompThreshKf, c.clipCompThreshDb, srcUs),
+                                      evalGainKf(c.clipCompRatioKf, c.clipCompRatio, srcUs),
+                                      evalGainKf(c.clipCompMakeupKf, c.clipCompMakeupDb, srcUs));
+                if (cv.fx.gateOn && !c.clipGateThreshKf.isEmpty())
+                    cv.fx.gate.retune(evalGainKf(c.clipGateThreshKf, c.clipGateThreshDb, srcUs));
+                if (cv.fx.deEssOn && !c.clipDeEssThreshKf.isEmpty())
+                    cv.fx.de.retune(evalGainKf(c.clipDeEssThreshKf, c.clipDeEssThreshDb, srcUs));
                 cv.v.produce(tmp.data(), k0, nn);   // trozo limpio del clip
                 cv.fx.process(tmp.data(), nn);      // efectos por clip (estado continuo)
                 double sgL, sgR; balance(c.pan, sgL, sgR);
@@ -1281,6 +1293,22 @@ int runAudioSelfTestIfRequested()
         const double late  = peakRange(p.master(), 2.4, 2.9);   // medios realzados
         check(late > early * 1.5, "automatización de EQ: el pico sube de principio a fin");
         QFile::remove(ta);
+    }
+
+    // 19) Automatización del compresor: rampa del umbral de 0 a −30 dB sobre una señal
+    //     fuerte → el pico baja de principio a fin.
+    {
+        const QString tc = dir + "/pvs_autoc.wav";
+        writeToneWav(tc, 0.5, 3.2);
+        AudioMixClip c = clip(tc, 3, 0, 3000000, 0, 1.0, 1.0, 0.0);
+        c.clipCompOn = true; c.clipCompRatio = 8.0;
+        c.clipCompThreshKf = { { 0, 0.0 }, { 3000000, -30.0 } };
+        AudioPlayer p;
+        p.setMix({ c }, 3000000);
+        const double early = peakRange(p.master(), 0.1, 0.5);   // umbral alto → sin comprimir
+        const double late  = peakRange(p.master(), 2.4, 2.9);   // umbral bajo → comprimido
+        check(late < early * 0.7, "automatización del compresor: el pico baja de principio a fin");
+        QFile::remove(tc);
     }
 
     QFile::remove(tone);

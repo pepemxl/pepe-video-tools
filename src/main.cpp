@@ -144,6 +144,11 @@ int main(int argc, char *argv[])
             for (const TimelineModel::Keyframe &k : a.eqMidKf)  m.clipEqMidKf.push_back({ k.sourceUs, k.value });
             for (const TimelineModel::Keyframe &k : a.eqHighKf) m.clipEqHighKf.push_back({ k.sourceUs, k.value });
             for (const TimelineModel::Keyframe &k : a.reverbMixKf) m.clipReverbMixKf.push_back({ k.sourceUs, k.value });
+            for (const TimelineModel::Keyframe &k : a.compThreshKf) m.clipCompThreshKf.push_back({ k.sourceUs, k.value });
+            for (const TimelineModel::Keyframe &k : a.compRatioKf)  m.clipCompRatioKf.push_back({ k.sourceUs, k.value });
+            for (const TimelineModel::Keyframe &k : a.compMakeupKf) m.clipCompMakeupKf.push_back({ k.sourceUs, k.value });
+            for (const TimelineModel::Keyframe &k : a.gateThreshKf) m.clipGateThreshKf.push_back({ k.sourceUs, k.value });
+            for (const TimelineModel::Keyframe &k : a.deEssThreshKf) m.clipDeEssThreshKf.push_back({ k.sourceUs, k.value });
             mix.push_back(m);
         }
         audio.setMixData(mix, timelineModel.contentEndUs(),
