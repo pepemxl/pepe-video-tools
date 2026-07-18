@@ -38,6 +38,15 @@ struct AudioMixClip {
     double eqLowDb = 0.0, eqMidDb = 0.0, eqHighDb = 0.0;
     bool compOn = false;
     double compThreshDb = -18.0, compRatio = 2.0, compMakeupDb = 0.0;
+    // Procesadores adicionales de pista (puerta de ruido · de-esser · reverb).
+    bool gateOn = false; double gateThreshDb = -40.0;
+    bool deEssOn = false; double deEssThreshDb = -24.0;
+    bool reverbOn = false; double reverbMix = 0.25, reverbSize = 0.5;
+    // Efectos POR CLIP (aplicados al PCM del propio clip, antes del submix de pista).
+    bool clipEqOn = false;
+    double clipEqLowDb = 0.0, clipEqMidDb = 0.0, clipEqHighDb = 0.0;
+    bool clipCompOn = false;
+    double clipCompThreshDb = -18.0, clipCompRatio = 2.0, clipCompMakeupDb = 0.0;
 };
 Q_DECLARE_METATYPE(AudioMixClip)
 
@@ -67,9 +76,11 @@ public:
     double lufsShortMax() const;         // máximo de la envolvente de loudness a corto plazo
 
 public slots:
-    // masterGain/masterPan aplican la ganancia y el pan del bus MAIN al master final.
+    // masterGain/masterPan aplican la ganancia y el pan del bus MAIN al master final;
+    // limiterOn/ceilingDb aplican un limitador de pico al master.
     void setMix(const QVector<AudioMixClip> &clips, qint64 endUs,
-                double masterGain = 1.0, double masterPan = 0.0);
+                double masterGain = 1.0, double masterPan = 0.0,
+                bool limiterOn = false, double ceilingDb = -1.0);
     void startAt(qint64 startMs);
     void stop();
 
@@ -83,7 +94,7 @@ private:
     bool ensureSwr();
     void seekMs(qint64 ms);
     void bake(const QVector<AudioMixClip> &clips, qint64 endUs,
-              double masterGain, double masterPan);
+              double masterGain, double masterPan, bool limiterOn, double ceilingDb);
     // Filtra el master con K-weighting: devuelve el LUFS integrado (puerta) y llena la
     // envolvente de loudness a corto plazo (ventana de 400 ms) por hop de envolvente.
     static double kWeightAnalyze(const QByteArray &masterS16, int rate,
@@ -132,10 +143,11 @@ public:
     explicit AudioEngine(QObject *parent = nullptr);
     ~AudioEngine() override;
 
-    // Fija la mezcla (lista de clips + fin del contenido + ganancia/pan del MAIN).
+    // Fija la mezcla (lista de clips + fin del contenido + ajustes del bus MAIN).
     // Rehornea en el worker.
     void setMixData(const QVector<AudioMixClip> &clips, qint64 endUs,
-                    double masterGain = 1.0, double masterPan = 0.0);
+                    double masterGain = 1.0, double masterPan = 0.0,
+                    bool limiterOn = false, double ceilingDb = -1.0);
 
     double peakL() const { return m_peakL; }
     double peakR() const { return m_peakR; }
@@ -154,7 +166,7 @@ signals:
     void playingChanged();
 
     void requestMix(const QVector<AudioMixClip> &clips, qint64 endUs,
-                    double masterGain, double masterPan);
+                    double masterGain, double masterPan, bool limiterOn, double ceilingDb);
     void requestStart(qint64 startMs);
     void requestStop();
 
@@ -166,6 +178,8 @@ private:
     qint64 m_pendingEnd = 0;
     double m_pendingMasterGain = 1.0;
     double m_pendingMasterPan = 0.0;
+    bool m_pendingLimiterOn = false;
+    double m_pendingCeilingDb = -1.0;
     double m_peakL = 0.0, m_peakR = 0.0;
     QVariantList m_trackPeaks;
     double m_lufs = -70.0;

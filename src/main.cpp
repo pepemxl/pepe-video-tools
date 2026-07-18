@@ -121,10 +121,17 @@ int main(int argc, char *argv[])
             m.eqOn = a.eqOn; m.eqLowDb = a.eqLowDb; m.eqMidDb = a.eqMidDb; m.eqHighDb = a.eqHighDb;
             m.compOn = a.compOn; m.compThreshDb = a.compThreshDb;
             m.compRatio = a.compRatio; m.compMakeupDb = a.compMakeupDb;
+            m.gateOn = a.gateOn; m.gateThreshDb = a.gateThreshDb;
+            m.deEssOn = a.deEssOn; m.deEssThreshDb = a.deEssThreshDb;
+            m.reverbOn = a.reverbOn; m.reverbMix = a.reverbMix; m.reverbSize = a.reverbSize;
+            m.clipEqOn = a.clipEqOn; m.clipEqLowDb = a.clipEqLowDb; m.clipEqMidDb = a.clipEqMidDb; m.clipEqHighDb = a.clipEqHighDb;
+            m.clipCompOn = a.clipCompOn; m.clipCompThreshDb = a.clipCompThreshDb;
+            m.clipCompRatio = a.clipCompRatio; m.clipCompMakeupDb = a.clipCompMakeupDb;
             mix.push_back(m);
         }
         audio.setMixData(mix, timelineModel.contentEndUs(),
-                         timelineModel.masterGain(), timelineModel.masterPan());
+                         timelineModel.masterGain(), timelineModel.masterPan(),
+                         timelineModel.masterLimiterOn(), timelineModel.masterCeilingDb());
     };
     rebuildMix();
     // Rehornea la mezcla cuando cambia la estructura o algún parámetro de audio.

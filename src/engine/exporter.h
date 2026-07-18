@@ -53,6 +53,8 @@ class Exporter : public QObject
     Q_PROPERTY(int outHeight READ outHeight NOTIFY settingsChanged)
     Q_PROPERTY(double outFps READ outFps WRITE setOutFps NOTIFY settingsChanged)
     Q_PROPERTY(int videoMbps READ videoMbps WRITE setVideoMbps NOTIFY settingsChanged)
+    // Bitrate de audio en kbps (0 = exportar sin audio).
+    Q_PROPERTY(int audioKbps READ audioKbps WRITE setAudioKbps NOTIFY settingsChanged)
     Q_PROPERTY(QString presetName READ presetName NOTIFY settingsChanged)
     // Formato de salida (códec + contenedor). `format` = id; `formatLabel` = texto;
     // `outExt` = extensión; `availableFormats` = lista de {id,label,ext} soportados por
@@ -83,6 +85,8 @@ public:
     int outHeight() const { return m_outH; }
     double outFps() const { return m_outFps; }
     int videoMbps() const { return m_mbps; }
+    int audioKbps() const { return m_audioKbps; }
+    void setAudioKbps(int kbps);
     QString presetName() const { return m_preset; }
     QString format() const { return m_format; }
     QString formatLabel() const;
@@ -132,15 +136,15 @@ private:
     // Un trabajo de la cola de render.
     struct QueueItem {
         QString name, path, preset, format;
-        int width, height, mbps;
+        int width, height, mbps, audioKbps;
         double fps;
         qint64 startUs = 0, durUs = 0;   // rango de exportación (marcas I/O)
         int status = 0;   // 0 pendiente · 1 en curso · 2 hecho · 3 error
     };
     // Construye la instantánea del trabajo (fotogramas + audio) del rango
-    // [startUs, startUs+durUs). durUs<=0 usa hasta el fin del contenido. Devuelve
-    // false si el rango está vacío.
-    bool buildJob(const QString &path, int w, int h, double fps, int mbps,
+    // [startUs, startUs+durUs). durUs<=0 usa hasta el fin del contenido. audioKbps<=0
+    // exporta sin audio. Devuelve false si el rango está vacío.
+    bool buildJob(const QString &path, int w, int h, double fps, int mbps, int audioKbps,
                   qint64 startUs, qint64 durUs, ExportJob &out);
     void renderNextInQueue();            // arranca el siguiente pendiente (o termina)
     QString absoluteOutputPath() const;  // outDir/outName.mp4 (o solo el nombre)
@@ -154,6 +158,7 @@ private:
     int m_outW = 1920, m_outH = 1080;
     double m_outFps = 30.0;
     int m_mbps = 12;
+    int m_audioKbps = 192;   // 0 = sin audio
     QString m_preset = QStringLiteral("YouTube 1080p");
     QString m_format = QStringLiteral("h264");
     QString m_outDir;

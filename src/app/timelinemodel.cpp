@@ -803,6 +803,21 @@ void TimelineModel::setMasterPan(double pan)
     emit audioChanged();
     emit edited();
 }
+void TimelineModel::setMasterLimiterOn(bool on)
+{
+    if (m_masterLimiterOn == on) return;
+    m_masterLimiterOn = on;
+    emit audioChanged();
+    emit edited();
+}
+void TimelineModel::setMasterCeilingDb(double db)
+{
+    db = qBound(-12.0, db, 0.0);
+    if (qFuzzyCompare(m_masterCeilingDb, db)) return;
+    m_masterCeilingDb = db;
+    emit audioChanged();
+    emit edited();
+}
 
 // ---- Efectos de audio por pista ----
 void TimelineModel::setTrackEqEnabled(int trackIndex, bool on)
@@ -848,6 +863,50 @@ void TimelineModel::setTrackComp(int trackIndex, double threshDb, double ratio, 
     t.compThreshDb = threshDb; t.compRatio = ratio; t.compMakeupDb = makeupDb;
     emit audioChanged();
     emit edited();
+}
+void TimelineModel::setTrackGateEnabled(int trackIndex, bool on)
+{
+    if (trackIndex < 0 || trackIndex >= m_tracks.size() || m_tracks[trackIndex].gateOn == on) return;
+    m_tracks[trackIndex].gateOn = on;
+    emit audioChanged(); emit edited();
+}
+void TimelineModel::setTrackGate(int trackIndex, double threshDb)
+{
+    if (trackIndex < 0 || trackIndex >= m_tracks.size()) return;
+    threshDb = qBound(-80.0, threshDb, 0.0);
+    if (qFuzzyCompare(m_tracks[trackIndex].gateThreshDb, threshDb)) return;
+    m_tracks[trackIndex].gateThreshDb = threshDb;
+    emit audioChanged(); emit edited();
+}
+void TimelineModel::setTrackDeEsserEnabled(int trackIndex, bool on)
+{
+    if (trackIndex < 0 || trackIndex >= m_tracks.size() || m_tracks[trackIndex].deEssOn == on) return;
+    m_tracks[trackIndex].deEssOn = on;
+    emit audioChanged(); emit edited();
+}
+void TimelineModel::setTrackDeEsser(int trackIndex, double threshDb)
+{
+    if (trackIndex < 0 || trackIndex >= m_tracks.size()) return;
+    threshDb = qBound(-48.0, threshDb, 0.0);
+    if (qFuzzyCompare(m_tracks[trackIndex].deEssThreshDb, threshDb)) return;
+    m_tracks[trackIndex].deEssThreshDb = threshDb;
+    emit audioChanged(); emit edited();
+}
+void TimelineModel::setTrackReverbEnabled(int trackIndex, bool on)
+{
+    if (trackIndex < 0 || trackIndex >= m_tracks.size() || m_tracks[trackIndex].reverbOn == on) return;
+    m_tracks[trackIndex].reverbOn = on;
+    emit audioChanged(); emit edited();
+}
+void TimelineModel::setTrackReverb(int trackIndex, double mix, double size)
+{
+    if (trackIndex < 0 || trackIndex >= m_tracks.size()) return;
+    mix = qBound(0.0, mix, 1.0);
+    size = qBound(0.0, size, 1.0);
+    Track &t = m_tracks[trackIndex];
+    if (qFuzzyCompare(t.reverbMix, mix) && qFuzzyCompare(t.reverbSize, size)) return;
+    t.reverbMix = mix; t.reverbSize = size;
+    emit audioChanged(); emit edited();
 }
 
 // ==================== Gestión de pistas ====================
@@ -968,7 +1027,10 @@ QVariantList TimelineModel::audioTracks() const
             { "eqOn", tr.eqOn }, { "eqLowDb", tr.eqLowDb },
             { "eqMidDb", tr.eqMidDb }, { "eqHighDb", tr.eqHighDb },
             { "compOn", tr.compOn }, { "compThreshDb", tr.compThreshDb },
-            { "compRatio", tr.compRatio }, { "compMakeupDb", tr.compMakeupDb } });
+            { "compRatio", tr.compRatio }, { "compMakeupDb", tr.compMakeupDb },
+            { "gateOn", tr.gateOn }, { "gateThreshDb", tr.gateThreshDb },
+            { "deEssOn", tr.deEssOn }, { "deEssThreshDb", tr.deEssThreshDb },
+            { "reverbOn", tr.reverbOn }, { "reverbMix", tr.reverbMix }, { "reverbSize", tr.reverbSize } });
     }
     return out;
 }
@@ -980,6 +1042,59 @@ void TimelineModel::setSelAudioMute(bool m)
     m_clips[i].audio.mute = m;
     bumpSelection();
     emit audioChanged();
+}
+
+// ---- Efectos de audio por clip (clip seleccionado) ----
+bool TimelineModel::selAudioEqOn() const
+{ const int i = indexOfClip(m_selectedId); return i >= 0 && m_clips[i].audio.eqOn; }
+double TimelineModel::selAudioEqLowDb() const
+{ const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].audio.eqLowDb : 0.0; }
+double TimelineModel::selAudioEqMidDb() const
+{ const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].audio.eqMidDb : 0.0; }
+double TimelineModel::selAudioEqHighDb() const
+{ const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].audio.eqHighDb : 0.0; }
+bool TimelineModel::selAudioCompOn() const
+{ const int i = indexOfClip(m_selectedId); return i >= 0 && m_clips[i].audio.compOn; }
+double TimelineModel::selAudioCompThreshDb() const
+{ const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].audio.compThreshDb : -18.0; }
+double TimelineModel::selAudioCompRatio() const
+{ const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].audio.compRatio : 2.0; }
+double TimelineModel::selAudioCompMakeupDb() const
+{ const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].audio.compMakeupDb : 0.0; }
+
+void TimelineModel::setSelAudioEqEnabled(bool on)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0 || m_clips[i].audio.eqOn == on) return;
+    m_clips[i].audio.eqOn = on;
+    bumpSelection(); emit audioChanged();
+}
+void TimelineModel::setSelAudioEq(double lowDb, double midDb, double highDb)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return;
+    Audio &a = m_clips[i].audio;
+    a.eqLowDb = qBound(-18.0, lowDb, 18.0);
+    a.eqMidDb = qBound(-18.0, midDb, 18.0);
+    a.eqHighDb = qBound(-18.0, highDb, 18.0);
+    bumpSelection(); emit audioChanged();
+}
+void TimelineModel::setSelAudioCompEnabled(bool on)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0 || m_clips[i].audio.compOn == on) return;
+    m_clips[i].audio.compOn = on;
+    bumpSelection(); emit audioChanged();
+}
+void TimelineModel::setSelAudioComp(double threshDb, double ratio, double makeupDb)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return;
+    Audio &a = m_clips[i].audio;
+    a.compThreshDb = qBound(-48.0, threshDb, 0.0);
+    a.compRatio = qBound(1.0, ratio, 20.0);
+    a.compMakeupDb = qBound(0.0, makeupDb, 24.0);
+    bumpSelection(); emit audioChanged();
 }
 
 bool TimelineModel::selIsAudio() const
@@ -1299,7 +1414,10 @@ QJsonObject TimelineModel::toJson() const
             { "eqOn", t.eqOn }, { "eqLowDb", t.eqLowDb },
             { "eqMidDb", t.eqMidDb }, { "eqHighDb", t.eqHighDb },
             { "compOn", t.compOn }, { "compThreshDb", t.compThreshDb },
-            { "compRatio", t.compRatio }, { "compMakeupDb", t.compMakeupDb } });
+            { "compRatio", t.compRatio }, { "compMakeupDb", t.compMakeupDb },
+            { "gateOn", t.gateOn }, { "gateThreshDb", t.gateThreshDb },
+            { "deEssOn", t.deEssOn }, { "deEssThreshDb", t.deEssThreshDb },
+            { "reverbOn", t.reverbOn }, { "reverbMix", t.reverbMix }, { "reverbSize", t.reverbSize } });
 
     QJsonArray clips;
     for (const Clip &c : m_clips) {
@@ -1333,7 +1451,11 @@ QJsonObject TimelineModel::toJson() const
                 { "kfGainX", kfToJson(co.kfGainX) }, { "kfGainY", kfToJson(co.kfGainY) } } },
             { "audio", QJsonObject{
                 { "gain", c.audio.gain }, { "pan", c.audio.pan }, { "mute", c.audio.mute },
-                { "gainKf", kfToJson(c.audio.gainKf) }, { "panKf", kfToJson(c.audio.panKf) } } },
+                { "gainKf", kfToJson(c.audio.gainKf) }, { "panKf", kfToJson(c.audio.panKf) },
+                { "eqOn", c.audio.eqOn }, { "eqLowDb", c.audio.eqLowDb },
+                { "eqMidDb", c.audio.eqMidDb }, { "eqHighDb", c.audio.eqHighDb },
+                { "compOn", c.audio.compOn }, { "compThreshDb", c.audio.compThreshDb },
+                { "compRatio", c.audio.compRatio }, { "compMakeupDb", c.audio.compMakeupDb } } },
             { "title", QJsonObject{
                 { "text", c.title.text }, { "sizePt", c.title.sizePt },
                 { "color", c.title.color }, { "align", c.title.align },
@@ -1355,6 +1477,7 @@ QJsonObject TimelineModel::toJson() const
         { "totalUs", double(m_totalUs) }, { "playheadUs", double(m_playheadUs) },
         { "snap", m_snap }, { "subsEnabled", m_subsEnabled },
         { "masterGain", m_masterGain }, { "masterPan", m_masterPan },
+        { "masterLimiterOn", m_masterLimiterOn }, { "masterCeilingDb", m_masterCeilingDb },
         { "markInUs", double(m_inUs) }, { "markOutUs", double(m_outUs) },
         { "tracks", tracks }, { "clips", clips },
         { "markers", markers }, { "subtitles", subs } };
@@ -1387,6 +1510,13 @@ bool TimelineModel::fromJson(const QJsonObject &o)
         tr.compThreshDb = t.value("compThreshDb").toDouble(-18.0);
         tr.compRatio = t.value("compRatio").toDouble(2.0);
         tr.compMakeupDb = t.value("compMakeupDb").toDouble(0.0);
+        tr.gateOn = t.value("gateOn").toBool(false);
+        tr.gateThreshDb = t.value("gateThreshDb").toDouble(-40.0);
+        tr.deEssOn = t.value("deEssOn").toBool(false);
+        tr.deEssThreshDb = t.value("deEssThreshDb").toDouble(-24.0);
+        tr.reverbOn = t.value("reverbOn").toBool(false);
+        tr.reverbMix = t.value("reverbMix").toDouble(0.25);
+        tr.reverbSize = t.value("reverbSize").toDouble(0.5);
         tracks.push_back(tr);
     }
     if (tracks.isEmpty())
@@ -1452,6 +1582,14 @@ bool TimelineModel::fromJson(const QJsonObject &o)
         c.audio.mute = au.value("mute").toBool();
         c.audio.gainKf = kfFromJson(au.value("gainKf"));
         c.audio.panKf = kfFromJson(au.value("panKf"));
+        c.audio.eqOn = au.value("eqOn").toBool(false);
+        c.audio.eqLowDb = au.value("eqLowDb").toDouble(0.0);
+        c.audio.eqMidDb = au.value("eqMidDb").toDouble(0.0);
+        c.audio.eqHighDb = au.value("eqHighDb").toDouble(0.0);
+        c.audio.compOn = au.value("compOn").toBool(false);
+        c.audio.compThreshDb = au.value("compThreshDb").toDouble(-18.0);
+        c.audio.compRatio = au.value("compRatio").toDouble(2.0);
+        c.audio.compMakeupDb = au.value("compMakeupDb").toDouble(0.0);
         const QJsonObject ti = cj.value("title").toObject();
         c.title.text = ti.value("text").toString();
         c.title.sizePt = ti.value("sizePt").toDouble(0.09);
@@ -1486,6 +1624,8 @@ bool TimelineModel::fromJson(const QJsonObject &o)
     m_subsEnabled = o.value("subsEnabled").toBool(true);
     m_masterGain = qBound(0.0, o.value("masterGain").toDouble(1.0), 4.0);
     m_masterPan = qBound(-1.0, o.value("masterPan").toDouble(0.0), 1.0);
+    m_masterLimiterOn = o.value("masterLimiterOn").toBool(false);
+    m_masterCeilingDb = qBound(-12.0, o.value("masterCeilingDb").toDouble(-1.0), 0.0);
     m_inUs = qMax<qint64>(0, qint64(o.value("markInUs").toDouble(0)));
     m_outUs = qint64(o.value("markOutUs").toDouble(-1));
     m_selectedId = 0;
@@ -1564,6 +1704,14 @@ QVector<TimelineModel::AudioClip> TimelineModel::audioClips() const
         ac.eqOn = tr.eqOn; ac.eqLowDb = tr.eqLowDb; ac.eqMidDb = tr.eqMidDb; ac.eqHighDb = tr.eqHighDb;
         ac.compOn = tr.compOn; ac.compThreshDb = tr.compThreshDb;
         ac.compRatio = tr.compRatio; ac.compMakeupDb = tr.compMakeupDb;
+        ac.gateOn = tr.gateOn; ac.gateThreshDb = tr.gateThreshDb;
+        ac.deEssOn = tr.deEssOn; ac.deEssThreshDb = tr.deEssThreshDb;
+        ac.reverbOn = tr.reverbOn; ac.reverbMix = tr.reverbMix; ac.reverbSize = tr.reverbSize;
+        // Efectos POR CLIP (aplicados al PCM del clip antes del submix).
+        ac.clipEqOn = c.audio.eqOn; ac.clipEqLowDb = c.audio.eqLowDb;
+        ac.clipEqMidDb = c.audio.eqMidDb; ac.clipEqHighDb = c.audio.eqHighDb;
+        ac.clipCompOn = c.audio.compOn; ac.clipCompThreshDb = c.audio.compThreshDb;
+        ac.clipCompRatio = c.audio.compRatio; ac.clipCompMakeupDb = c.audio.compMakeupDb;
         out.push_back(ac);
     }
     return out;

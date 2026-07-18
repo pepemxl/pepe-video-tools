@@ -218,6 +218,15 @@ Rectangle {
                                     onPicked: (i) => { const p = root.presets[i]; Export.applyPreset(p.n, p.w, p.h, p.fps, p.mbps) }
                                 }
                             }
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: 8
+                                FLabel { text: "Audio" }
+                                Combo {
+                                    current: Export.audioKbps === 0 ? "Sin audio" : Export.audioKbps + " kbps"
+                                    options: ["Sin audio", "128 kbps", "192 kbps", "256 kbps", "320 kbps"]
+                                    onPicked: (i) => Export.audioKbps = (i === 0 ? 0 : parseInt(options[i]))
+                                }
+                            }
                         }
                         Rectangle { Layout.fillWidth: true; Layout.leftMargin: 14; Layout.rightMargin: 14; implicitHeight: 1; color: Theme.lineSoft }
 

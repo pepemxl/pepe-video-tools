@@ -63,11 +63,15 @@ struct FmtDesc {
     AVSampleFormat asfmt;
 };
 const FmtDesc kFormats[] = {
-    { "h264",   "H.264 · MP4",        "mp4",  "libx264",    AV_PIX_FMT_YUV420P,     nullptr,    true,  "aac",       AV_SAMPLE_FMT_FLTP },
-    { "h265",   "H.265/HEVC · MP4",   "mp4",  "libx265",    AV_PIX_FMT_YUV420P,     nullptr,    true,  "aac",       AV_SAMPLE_FMT_FLTP },
-    { "prores", "ProRes 422 HQ · MOV","mov",  "prores_ks",  AV_PIX_FMT_YUV422P10LE, "hq",       false, "pcm_s16le", AV_SAMPLE_FMT_S16 },
-    { "dnxhr",  "DNxHR HQ · MOV",     "mov",  "dnxhd",      AV_PIX_FMT_YUV422P,     "dnxhr_hq", false, "pcm_s16le", AV_SAMPLE_FMT_S16 },
-    { "vp9",    "VP9 · WebM",         "webm", "libvpx-vp9", AV_PIX_FMT_YUV420P,     nullptr,    true,  "libopus",   AV_SAMPLE_FMT_S16 },
+    { "h264",     "H.264 · MP4",        "mp4",  "libx264",    AV_PIX_FMT_YUV420P,     nullptr,     true,  "aac",       AV_SAMPLE_FMT_FLTP },
+    { "h265",     "H.265/HEVC · MP4",   "mp4",  "libx265",    AV_PIX_FMT_YUV420P,     nullptr,     true,  "aac",       AV_SAMPLE_FMT_FLTP },
+    { "prores_lt","ProRes 422 LT · MOV","mov",  "prores_ks",  AV_PIX_FMT_YUV422P10LE, "lt",        false, "pcm_s16le", AV_SAMPLE_FMT_S16 },
+    { "prores",   "ProRes 422 · MOV",   "mov",  "prores_ks",  AV_PIX_FMT_YUV422P10LE, "standard",  false, "pcm_s16le", AV_SAMPLE_FMT_S16 },
+    { "prores_hq","ProRes 422 HQ · MOV","mov",  "prores_ks",  AV_PIX_FMT_YUV422P10LE, "hq",        false, "pcm_s16le", AV_SAMPLE_FMT_S16 },
+    { "prores4444","ProRes 4444 · MOV", "mov",  "prores_ks",  AV_PIX_FMT_YUV444P10LE, "4444",      false, "pcm_s16le", AV_SAMPLE_FMT_S16 },
+    { "dnxhr_sq", "DNxHR SQ · MOV",     "mov",  "dnxhd",      AV_PIX_FMT_YUV422P,     "dnxhr_sq",  false, "pcm_s16le", AV_SAMPLE_FMT_S16 },
+    { "dnxhr",    "DNxHR HQ · MOV",     "mov",  "dnxhd",      AV_PIX_FMT_YUV422P,     "dnxhr_hq",  false, "pcm_s16le", AV_SAMPLE_FMT_S16 },
+    { "vp9",      "VP9 · WebM",         "webm", "libvpx-vp9", AV_PIX_FMT_YUV420P,     nullptr,     true,  "libopus",   AV_SAMPLE_FMT_S16 },
 };
 const FmtDesc &fmtById(const QString &id)
 {
@@ -349,6 +353,14 @@ void Exporter::setVideoMbps(int mbps)
     bumpCustom();
 }
 
+void Exporter::setAudioKbps(int kbps)
+{
+    if (kbps < 0) kbps = 0;
+    if (kbps == m_audioKbps) return;
+    m_audioKbps = kbps;
+    emit settingsChanged();
+}
+
 void Exporter::applyPreset(const QString &name, int w, int h, double fps, int mbps)
 {
     if (w <= 0 || h <= 0 || fps <= 0 || mbps <= 0) return;
@@ -357,7 +369,7 @@ void Exporter::applyPreset(const QString &name, int w, int h, double fps, int mb
     emit settingsChanged();
 }
 
-bool Exporter::buildJob(const QString &path, int w, int h, double fps, int mbps,
+bool Exporter::buildJob(const QString &path, int w, int h, double fps, int mbps, int audioKbps,
                         qint64 startUs, qint64 durUs, ExportJob &job)
 {
     if (!m_timeline) return false;
@@ -369,6 +381,7 @@ bool Exporter::buildJob(const QString &path, int w, int h, double fps, int mbps,
     job.path = path;
     job.width = w; job.height = h; job.fps = fps;
     job.videoBitrate = mbps * 1'000'000;
+    if (audioKbps > 0) job.audioBitrate = audioKbps * 1000;
     job.durationUs = durUs;
 
     // Instantánea de vídeo: RenderClipList por fotograma, desde startUs (rango I/O).
@@ -378,6 +391,10 @@ bool Exporter::buildJob(const QString &path, int w, int h, double fps, int mbps,
         const qint64 us = startUs + qint64((double(i) / fps) * 1e6);
         job.frames.push_back(m_timeline->clipsAt(us));
     }
+
+    // audioKbps<=0: exportar sin pista de audio.
+    if (audioKbps <= 0)
+        return true;
 
     // Instantánea de audio: hornea la mezcla maestra hasta el fin del rango y recorta
     // el tramo [startUs, startUs+durUs) (48 kHz S16 estéreo → 4 bytes por muestra).
@@ -392,11 +409,18 @@ bool Exporter::buildJob(const QString &path, int w, int h, double fps, int mbps,
         m.eqOn = a.eqOn; m.eqLowDb = a.eqLowDb; m.eqMidDb = a.eqMidDb; m.eqHighDb = a.eqHighDb;
         m.compOn = a.compOn; m.compThreshDb = a.compThreshDb;
         m.compRatio = a.compRatio; m.compMakeupDb = a.compMakeupDb;
+        m.gateOn = a.gateOn; m.gateThreshDb = a.gateThreshDb;
+        m.deEssOn = a.deEssOn; m.deEssThreshDb = a.deEssThreshDb;
+        m.reverbOn = a.reverbOn; m.reverbMix = a.reverbMix; m.reverbSize = a.reverbSize;
+        m.clipEqOn = a.clipEqOn; m.clipEqLowDb = a.clipEqLowDb; m.clipEqMidDb = a.clipEqMidDb; m.clipEqHighDb = a.clipEqHighDb;
+        m.clipCompOn = a.clipCompOn; m.clipCompThreshDb = a.clipCompThreshDb;
+        m.clipCompRatio = a.clipCompRatio; m.clipCompMakeupDb = a.clipCompMakeupDb;
         mix.push_back(m);
     }
     {
         AudioPlayer baker;
-        baker.setMix(mix, startUs + durUs, m_timeline->masterGain(), m_timeline->masterPan());
+        baker.setMix(mix, startUs + durUs, m_timeline->masterGain(), m_timeline->masterPan(),
+                     m_timeline->masterLimiterOn(), m_timeline->masterCeilingDb());
         const QByteArray &master = baker.master();
         const qint64 startByte = qint64(std::llround(startUs / 1e6 * 48000.0)) * 4;
         const qint64 lenByte = qint64(std::llround(durUs / 1e6 * 48000.0)) * 4;
@@ -417,7 +441,7 @@ void Exporter::exportTimeline(const QString &path, int width, int height,
     if (seconds > 0) { durUs = qint64(seconds * 1e6); }
     else { startUs = m_timeline->exportStartUs(); durUs = m_timeline->exportEndUs() - startUs; }
     ExportJob job;
-    if (!buildJob(path, width, height, fps, m_mbps, startUs, durUs, job)) {
+    if (!buildJob(path, width, height, fps, m_mbps, m_audioKbps, startUs, durUs, job)) {
         setStatus(QStringLiteral("El rango de exportación está vacío.")); return;
     }
     job.format = m_format;
@@ -533,6 +557,7 @@ void Exporter::enqueueCurrent()
     it.preset = m_preset;
     it.format = m_format;
     it.width = m_outW; it.height = m_outH; it.fps = m_outFps; it.mbps = m_mbps;
+    it.audioKbps = m_audioKbps;
     it.startUs = m_timeline->exportStartUs();
     it.durUs = m_timeline->exportEndUs() - it.startUs;
     it.status = 0;
@@ -584,7 +609,7 @@ void Exporter::renderNextInQueue()
 
     QueueItem &it = m_queue[idx];
     ExportJob job;
-    if (!buildJob(it.path, it.width, it.height, it.fps, it.mbps, it.startUs, it.durUs, job)) {
+    if (!buildJob(it.path, it.width, it.height, it.fps, it.mbps, it.audioKbps, it.startUs, it.durUs, job)) {
         it.status = 3;   // error (rango vacío)
         emit queueChanged();
         renderNextInQueue();

@@ -20,6 +20,9 @@ class TimelineModel : public QObject
     // Bus principal (MAIN): ganancia (1.0 = 0 dB) y pan (-1 izq … +1 der) del master.
     Q_PROPERTY(double masterGain READ masterGain NOTIFY audioChanged)
     Q_PROPERTY(double masterPan READ masterPan NOTIFY audioChanged)
+    // Limitador de pico del master (evita clipping bajo el techo indicado).
+    Q_PROPERTY(bool masterLimiterOn READ masterLimiterOn NOTIFY audioChanged)
+    Q_PROPERTY(double masterCeilingDb READ masterCeilingDb NOTIFY audioChanged)
     // Variantes QAbstractItemModel de tracks/audioTracks: dataChanged granular por
     // pista, así los delegados del Repeater PERSISTEN entre ediciones (con las
     // QVariantList, cada cambio destruía y recreaba todos los delegados).
@@ -71,6 +74,15 @@ class TimelineModel : public QObject
     Q_PROPERTY(double selAudioGain READ selAudioGain NOTIFY selectionChanged)
     Q_PROPERTY(double selPan READ selPan NOTIFY selectionChanged)
     Q_PROPERTY(bool selAudioMute READ selAudioMute NOTIFY selectionChanged)
+    // Efectos de audio POR CLIP del clip seleccionado (sección Audio del Inspector).
+    Q_PROPERTY(bool selAudioEqOn READ selAudioEqOn NOTIFY selectionChanged)
+    Q_PROPERTY(double selAudioEqLowDb READ selAudioEqLowDb NOTIFY selectionChanged)
+    Q_PROPERTY(double selAudioEqMidDb READ selAudioEqMidDb NOTIFY selectionChanged)
+    Q_PROPERTY(double selAudioEqHighDb READ selAudioEqHighDb NOTIFY selectionChanged)
+    Q_PROPERTY(bool selAudioCompOn READ selAudioCompOn NOTIFY selectionChanged)
+    Q_PROPERTY(double selAudioCompThreshDb READ selAudioCompThreshDb NOTIFY selectionChanged)
+    Q_PROPERTY(double selAudioCompRatio READ selAudioCompRatio NOTIFY selectionChanged)
+    Q_PROPERTY(double selAudioCompMakeupDb READ selAudioCompMakeupDb NOTIFY selectionChanged)
     // Título del clip seleccionado (para el Inspector).
     Q_PROPERTY(bool selIsAudio READ selIsAudio NOTIFY selectionChanged)
     // Bypass de nodos del clip seleccionado (página Fusión).
@@ -104,6 +116,13 @@ public:
         double eqLowDb = 0.0, eqMidDb = 0.0, eqHighDb = 0.0;
         bool compOn = false;
         double compThreshDb = -18.0, compRatio = 2.0, compMakeupDb = 0.0;
+        // Procesadores adicionales de pista: puerta de ruido, de-esser y reverb.
+        bool gateOn = false;
+        double gateThreshDb = -40.0;
+        bool deEssOn = false;
+        double deEssThreshDb = -24.0;
+        bool reverbOn = false;
+        double reverbMix = 0.25, reverbSize = 0.5;
     };
     // Un keyframe: valor de una propiedad en un tiempo de origen (sourceUs).
     // `interp` define la curva HACIA el siguiente keyframe: 0 = lineal,
@@ -148,6 +167,12 @@ public:
         bool mute = false;
         QVector<Keyframe> gainKf;
         QVector<Keyframe> panKf;
+        // Efectos por clip (insertos sobre el PCM del clip, antes del submix de pista):
+        // EQ de 3 bandas y compresor (mismo motor que los de pista).
+        bool eqOn = false;
+        double eqLowDb = 0.0, eqMidDb = 0.0, eqHighDb = 0.0;
+        bool compOn = false;
+        double compThreshDb = -18.0, compRatio = 2.0, compMakeupDb = 0.0;
     };
     // Título de texto renderizado como capa por el compositor (para kind == "title").
     struct Title {
@@ -203,6 +228,15 @@ public:
         double eqLowDb = 0.0, eqMidDb = 0.0, eqHighDb = 0.0;
         bool compOn = false;
         double compThreshDb = -18.0, compRatio = 2.0, compMakeupDb = 0.0;
+        // Procesadores adicionales de pista (puerta · de-esser · reverb).
+        bool gateOn = false; double gateThreshDb = -40.0;
+        bool deEssOn = false; double deEssThreshDb = -24.0;
+        bool reverbOn = false; double reverbMix = 0.25, reverbSize = 0.5;
+        // Efectos POR CLIP (insertos sobre el PCM del clip, antes del submix).
+        bool clipEqOn = false;
+        double clipEqLowDb = 0.0, clipEqMidDb = 0.0, clipEqHighDb = 0.0;
+        bool clipCompOn = false;
+        double clipCompThreshDb = -18.0, clipCompRatio = 2.0, clipCompMakeupDb = 0.0;
     };
     struct Marker {
         qint64 timeUs;
@@ -238,6 +272,8 @@ public:
     QVariantList audioTracks() const;   // estado mute/solo por pista (para el mezclador)
     double masterGain() const { return m_masterGain; }
     double masterPan() const { return m_masterPan; }
+    bool masterLimiterOn() const { return m_masterLimiterOn; }
+    double masterCeilingDb() const { return m_masterCeilingDb; }
     QAbstractItemModel *tracksModel();        // creado perezosamente (hijo del modelo)
     QAbstractItemModel *audioTracksModel();
     QVariantList markers() const;
@@ -307,6 +343,14 @@ public:
     double selAudioGain() const;
     double selPan() const;
     bool selAudioMute() const;
+    bool selAudioEqOn() const;
+    double selAudioEqLowDb() const;
+    double selAudioEqMidDb() const;
+    double selAudioEqHighDb() const;
+    bool selAudioCompOn() const;
+    double selAudioCompThreshDb() const;
+    double selAudioCompRatio() const;
+    double selAudioCompMakeupDb() const;
     bool selIsAudio() const;
     bool selBypassTransform() const;
     bool selBypassColor() const;
@@ -365,6 +409,11 @@ public:
     Q_INVOKABLE void setSelAudioGain(double v);
     Q_INVOKABLE void setSelPan(double v);
     Q_INVOKABLE void setSelAudioMute(bool m);
+    // Efectos de audio por clip del clip seleccionado (rehornean la mezcla).
+    Q_INVOKABLE void setSelAudioEqEnabled(bool on);
+    Q_INVOKABLE void setSelAudioEq(double lowDb, double midDb, double highDb);
+    Q_INVOKABLE void setSelAudioCompEnabled(bool on);
+    Q_INVOKABLE void setSelAudioComp(double threshDb, double ratio, double makeupDb);
     // Mute/solo por pista (índice de pista). Afectan a la mezcla completa.
     Q_INVOKABLE void setTrackMute(int trackIndex, bool m);
     Q_INVOKABLE void setTrackSolo(int trackIndex, bool s);
@@ -374,11 +423,21 @@ public:
     // Ganancia/paneo del bus MAIN (fader y perilla del canal MAIN del mezclador).
     Q_INVOKABLE void setMasterGain(double gain);
     Q_INVOKABLE void setMasterPan(double pan);
+    // Limitador del master: activar/desactivar y techo en dBFS (-12 … 0).
+    Q_INVOKABLE void setMasterLimiterOn(bool on);
+    Q_INVOKABLE void setMasterCeilingDb(double db);
     // Efectos de audio por pista (consola de la página Audio). Rehornean la mezcla.
     Q_INVOKABLE void setTrackEqEnabled(int trackIndex, bool on);
     Q_INVOKABLE void setTrackEq(int trackIndex, double lowDb, double midDb, double highDb);
     Q_INVOKABLE void setTrackCompEnabled(int trackIndex, bool on);
     Q_INVOKABLE void setTrackComp(int trackIndex, double threshDb, double ratio, double makeupDb);
+    // Procesadores adicionales de pista (puerta de ruido · de-esser · reverb).
+    Q_INVOKABLE void setTrackGateEnabled(int trackIndex, bool on);
+    Q_INVOKABLE void setTrackGate(int trackIndex, double threshDb);
+    Q_INVOKABLE void setTrackDeEsserEnabled(int trackIndex, bool on);
+    Q_INVOKABLE void setTrackDeEsser(int trackIndex, double threshDb);
+    Q_INVOKABLE void setTrackReverbEnabled(int trackIndex, bool on);
+    Q_INVOKABLE void setTrackReverb(int trackIndex, double mix, double size);
     // Visibilidad/bloqueo de pista de vídeo (cabecera 👁/🔒). Oculta = no se compone.
     Q_INVOKABLE void setTrackHidden(int trackIndex, bool hidden);
     Q_INVOKABLE void setTrackLocked(int trackIndex, bool locked);
@@ -528,6 +587,8 @@ private:
     bool m_subsEnabled = true;
     double m_masterGain = 1.0;          // ganancia del bus MAIN (1.0 = 0 dB)
     double m_masterPan = 0.0;           // pan del bus MAIN (-1 … +1)
+    bool m_masterLimiterOn = false;     // limitador de pico del master
+    double m_masterCeilingDb = -1.0;    // techo del limitador en dBFS
     qint64 m_inUs = 0;                  // marca de entrada (rango de exportación)
     qint64 m_outUs = -1;                // marca de salida (-1 = hasta el fin del contenido)
     qint64 m_totalUs = 300LL * 1000000; // ventana de 5 min

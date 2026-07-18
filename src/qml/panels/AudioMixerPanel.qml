@@ -106,6 +106,13 @@ Rectangle {
                         readonly property real compThresh: atrack ? atrack.compThreshDb : -18
                         readonly property real compRatio: atrack ? atrack.compRatio : 2
                         readonly property real compMakeup: atrack ? atrack.compMakeupDb : 0
+                        readonly property bool gateOn: atrack ? atrack.gateOn : false
+                        readonly property real gateThresh: atrack ? atrack.gateThreshDb : -40
+                        readonly property bool deEssOn: atrack ? atrack.deEssOn : false
+                        readonly property real deEssThresh: atrack ? atrack.deEssThreshDb : -24
+                        readonly property bool reverbOn: atrack ? atrack.reverbOn : false
+                        readonly property real reverbMix: atrack ? atrack.reverbMix : 0.25
+                        readonly property real reverbSize: atrack ? atrack.reverbSize : 0.5
 
                         ColumnLayout {
                             anchors.fill: parent; anchors.topMargin: 10; anchors.bottomMargin: 10; spacing: 8
@@ -118,7 +125,7 @@ Rectangle {
                             Rectangle {
                                 Layout.alignment: Qt.AlignHCenter; visible: !strip.modelData.main
                                 width: 46; height: 18; radius: 4
-                                readonly property bool active: strip.eqOn || strip.compOn
+                                readonly property bool active: strip.eqOn || strip.compOn || strip.gateOn || strip.deEssOn || strip.reverbOn
                                 color: fxPop.visible ? Theme.amber : (active ? Qt.rgba(0.88, 0.64, 0.29, 0.22) : Theme.hover2)
                                 border.color: active ? Theme.amber : Theme.line; border.width: 1
                                 TapHandler { onTapped: fxPop.open() }
@@ -178,6 +185,102 @@ Rectangle {
                                             FxSlider { label: "Makeup"; value: strip.compMakeup; from: 0; to: 24; defVal: 0
                                                        onMoved: (v) => TimelineModel.setTrackComp(strip.modelData.trk, strip.compThresh, strip.compRatio, v) }
                                         }
+
+                                        Rectangle { Layout.fillWidth: true; height: 1; color: Theme.lineSoft }
+
+                                        // ---- Puerta de ruido ----
+                                        RowLayout { Layout.fillWidth: true
+                                            Text { text: "Puerta de ruido"; color: Theme.textMid; font.pixelSize: 10; font.family: Theme.sans }
+                                            Item { Layout.fillWidth: true }
+                                            Rectangle { width: 34; height: 18; radius: 9; border.color: Theme.line; border.width: 1
+                                                color: strip.gateOn ? Theme.amber : Theme.sunken
+                                                Rectangle { width: 14; height: 14; radius: 7; color: Theme.textHi; y: 2
+                                                    x: strip.gateOn ? 18 : 2; Behavior on x { NumberAnimation { duration: 90 } } }
+                                                TapHandler { onTapped: TimelineModel.setTrackGateEnabled(strip.modelData.trk, !strip.gateOn) } }
+                                        }
+                                        ColumnLayout {
+                                            Layout.fillWidth: true; spacing: 5
+                                            opacity: strip.gateOn ? 1.0 : 0.4; enabled: strip.gateOn
+                                            FxSlider { label: "Umbral"; value: strip.gateThresh; from: -80; to: 0; defVal: -40
+                                                       onMoved: (v) => TimelineModel.setTrackGate(strip.modelData.trk, v) }
+                                        }
+
+                                        Rectangle { Layout.fillWidth: true; height: 1; color: Theme.lineSoft }
+
+                                        // ---- De-esser ----
+                                        RowLayout { Layout.fillWidth: true
+                                            Text { text: "De-esser"; color: Theme.textMid; font.pixelSize: 10; font.family: Theme.sans }
+                                            Item { Layout.fillWidth: true }
+                                            Rectangle { width: 34; height: 18; radius: 9; border.color: Theme.line; border.width: 1
+                                                color: strip.deEssOn ? Theme.amber : Theme.sunken
+                                                Rectangle { width: 14; height: 14; radius: 7; color: Theme.textHi; y: 2
+                                                    x: strip.deEssOn ? 18 : 2; Behavior on x { NumberAnimation { duration: 90 } } }
+                                                TapHandler { onTapped: TimelineModel.setTrackDeEsserEnabled(strip.modelData.trk, !strip.deEssOn) } }
+                                        }
+                                        ColumnLayout {
+                                            Layout.fillWidth: true; spacing: 5
+                                            opacity: strip.deEssOn ? 1.0 : 0.4; enabled: strip.deEssOn
+                                            FxSlider { label: "Umbral"; value: strip.deEssThresh; from: -48; to: 0; defVal: -24
+                                                       onMoved: (v) => TimelineModel.setTrackDeEsser(strip.modelData.trk, v) }
+                                        }
+
+                                        Rectangle { Layout.fillWidth: true; height: 1; color: Theme.lineSoft }
+
+                                        // ---- Reverb ----
+                                        RowLayout { Layout.fillWidth: true
+                                            Text { text: "Reverb"; color: Theme.textMid; font.pixelSize: 10; font.family: Theme.sans }
+                                            Item { Layout.fillWidth: true }
+                                            Rectangle { width: 34; height: 18; radius: 9; border.color: Theme.line; border.width: 1
+                                                color: strip.reverbOn ? Theme.amber : Theme.sunken
+                                                Rectangle { width: 14; height: 14; radius: 7; color: Theme.textHi; y: 2
+                                                    x: strip.reverbOn ? 18 : 2; Behavior on x { NumberAnimation { duration: 90 } } }
+                                                TapHandler { onTapped: TimelineModel.setTrackReverbEnabled(strip.modelData.trk, !strip.reverbOn) } }
+                                        }
+                                        ColumnLayout {
+                                            Layout.fillWidth: true; spacing: 5
+                                            opacity: strip.reverbOn ? 1.0 : 0.4; enabled: strip.reverbOn
+                                            FxSlider { label: "Mezcla"; value: strip.reverbMix; from: 0; to: 1; defVal: 0.25; unit: ""; decimals: 2
+                                                       onMoved: (v) => TimelineModel.setTrackReverb(strip.modelData.trk, v, strip.reverbSize) }
+                                            FxSlider { label: "Tamaño"; value: strip.reverbSize; from: 0; to: 1; defVal: 0.5; unit: ""; decimals: 2
+                                                       onMoved: (v) => TimelineModel.setTrackReverb(strip.modelData.trk, strip.reverbMix, v) }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // LIM (limitador del master): solo en el canal MAIN.
+                            Rectangle {
+                                Layout.alignment: Qt.AlignHCenter; visible: strip.modelData.main
+                                width: 46; height: 18; radius: 4
+                                color: limPop.visible ? Theme.amber : (TimelineModel.masterLimiterOn ? Qt.rgba(0.88, 0.64, 0.29, 0.22) : Theme.hover2)
+                                border.color: TimelineModel.masterLimiterOn ? Theme.amber : Theme.line; border.width: 1
+                                TapHandler { onTapped: limPop.open() }
+                                Text { anchors.centerIn: parent; text: "LIM"; font.pixelSize: 9; font.weight: Font.Bold; font.family: Theme.sans
+                                       color: limPop.visible ? Theme.amberInk : (TimelineModel.masterLimiterOn ? Theme.amber : Theme.textDim) }
+                                C.Popup {
+                                    id: limPop
+                                    y: parent.height + 4; x: -100
+                                    width: 240; padding: 12
+                                    background: Rectangle { color: Theme.panel2; border.color: Theme.line; border.width: 1; radius: 8 }
+                                    contentItem: ColumnLayout {
+                                        spacing: 7
+                                        RowLayout { Layout.fillWidth: true
+                                            Text { text: "Limitador del master"; color: Theme.textHi; font.pixelSize: 11; font.weight: Font.DemiBold; font.family: Theme.sans }
+                                            Item { Layout.fillWidth: true }
+                                            Rectangle { width: 34; height: 18; radius: 9; border.color: Theme.line; border.width: 1
+                                                color: TimelineModel.masterLimiterOn ? Theme.amber : Theme.sunken
+                                                Rectangle { width: 14; height: 14; radius: 7; color: Theme.textHi; y: 2
+                                                    x: TimelineModel.masterLimiterOn ? 18 : 2; Behavior on x { NumberAnimation { duration: 90 } } }
+                                                TapHandler { onTapped: TimelineModel.setMasterLimiterOn(!TimelineModel.masterLimiterOn) } }
+                                        }
+                                        ColumnLayout {
+                                            Layout.fillWidth: true; spacing: 5
+                                            opacity: TimelineModel.masterLimiterOn ? 1.0 : 0.4; enabled: TimelineModel.masterLimiterOn
+                                            FxSlider { label: "Techo"; value: TimelineModel.masterCeilingDb; from: -12; to: 0; defVal: -1
+                                                       onMoved: (v) => TimelineModel.setMasterCeilingDb(v) }
+                                        }
+                                        Text { text: "Evita el clipping bajo el techo indicado (dBFS)."
+                                               color: Theme.textFaint; font.pixelSize: 9; font.family: Theme.sans; Layout.fillWidth: true; wrapMode: Text.WordWrap }
                                     }
                                 }
                             }
