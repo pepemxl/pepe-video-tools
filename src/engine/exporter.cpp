@@ -3,12 +3,15 @@
 
 #include <QDir>
 #include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QSize>
 #include <QThread>
+#include <QTimer>
 #include <cmath>
 #include <cstring>
+#include <string>
 
 #include "audioengine.h" // AudioMixClip + AudioPlayer (horneado de la mezcla maestra)
 
@@ -49,6 +52,30 @@ bool drainEncoder(AVFormatContext *oc, AVCodecContext *enc, AVStream *st, AVPack
     }
 }
 
+// Tabla de formatos de salida: id · etiqueta · extensión · encoder de vídeo · pix_fmt ·
+// perfil (ProRes/DNxHR) · usa bitrate · encoder de audio · sample_fmt de audio.
+struct FmtDesc {
+    const char *id, *label, *ext, *venc;
+    AVPixelFormat pix;
+    const char *vprofile;   // nullptr, o perfil de calidad (prores/dnxhr)
+    bool useBitrate;        // true: H.264/H.265/VP9; false: calidad por perfil
+    const char *aenc;
+    AVSampleFormat asfmt;
+};
+const FmtDesc kFormats[] = {
+    { "h264",   "H.264 · MP4",        "mp4",  "libx264",    AV_PIX_FMT_YUV420P,     nullptr,    true,  "aac",       AV_SAMPLE_FMT_FLTP },
+    { "h265",   "H.265/HEVC · MP4",   "mp4",  "libx265",    AV_PIX_FMT_YUV420P,     nullptr,    true,  "aac",       AV_SAMPLE_FMT_FLTP },
+    { "prores", "ProRes 422 HQ · MOV","mov",  "prores_ks",  AV_PIX_FMT_YUV422P10LE, "hq",       false, "pcm_s16le", AV_SAMPLE_FMT_S16 },
+    { "dnxhr",  "DNxHR HQ · MOV",     "mov",  "dnxhd",      AV_PIX_FMT_YUV422P,     "dnxhr_hq", false, "pcm_s16le", AV_SAMPLE_FMT_S16 },
+    { "vp9",    "VP9 · WebM",         "webm", "libvpx-vp9", AV_PIX_FMT_YUV420P,     nullptr,    true,  "libopus",   AV_SAMPLE_FMT_S16 },
+};
+const FmtDesc &fmtById(const QString &id)
+{
+    for (const auto &f : kFormats)
+        if (id == QLatin1String(f.id)) return f;
+    return kFormats[0];   // por defecto H.264
+}
+
 } // namespace
 
 void ExportWorker::run(const ExportJob &job)
@@ -68,25 +95,37 @@ void ExportWorker::run(const ExportJob &job)
     avformat_alloc_output_context2(&oc, nullptr, nullptr, pathUtf8.constData());
     if (!oc) { fail(QStringLiteral("No se pudo crear el contenedor de salida.")); return; }
 
-    // --- Encoder de vídeo (H.264 / libx264) ---
-    const AVCodec *vcodec = avcodec_find_encoder_by_name("libx264");
-    if (!vcodec) vcodec = avcodec_find_encoder(AV_CODEC_ID_H264);
-    if (!vcodec) { avformat_free_context(oc); fail(QStringLiteral("Encoder H.264 no disponible.")); return; }
+    // --- Encoder de vídeo según el formato elegido ---
+    const FmtDesc &fmt = fmtById(job.format);
+    const AVCodec *vcodec = avcodec_find_encoder_by_name(fmt.venc);
+    if (!vcodec) {
+        avformat_free_context(oc);
+        fail(QStringLiteral("Encoder de vídeo no disponible: %1.").arg(QLatin1String(fmt.venc))); return;
+    }
 
     AVStream *vst = avformat_new_stream(oc, nullptr);
     AVCodecContext *vc = avcodec_alloc_context3(vcodec);
     vc->width = W; vc->height = H;
-    vc->pix_fmt = AV_PIX_FMT_YUV420P;
+    vc->pix_fmt = fmt.pix;
     vc->time_base = av_d2q(1.0 / job.fps, 1000000);
     vc->framerate = av_d2q(job.fps, 1000000);
     vc->gop_size = 12;
-    vc->bit_rate = job.videoBitrate;
+    if (fmt.useBitrate)
+        vc->bit_rate = job.videoBitrate;   // ProRes/DNxHR: la calidad la fija el perfil
     if (oc->oformat->flags & AVFMT_GLOBALHEADER)
         vc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-    av_opt_set(vc->priv_data, "preset", "medium", 0);
+    // Ajustes de velocidad/calidad por familia de encoder.
+    if (fmt.vprofile)
+        av_opt_set(vc->priv_data, "profile", fmt.vprofile, 0);   // prores_ks / dnxhd
+    if (qstrcmp(fmt.venc, "libx264") == 0 || qstrcmp(fmt.venc, "libx265") == 0)
+        av_opt_set(vc->priv_data, "preset", "medium", 0);
+    if (qstrcmp(fmt.venc, "libvpx-vp9") == 0) {
+        av_opt_set(vc->priv_data, "deadline", "good", 0);
+        av_opt_set_int(vc->priv_data, "cpu-used", 4, 0);
+    }
     if (avcodec_open2(vc, vcodec, nullptr) < 0) {
         avcodec_free_context(&vc); avformat_free_context(oc);
-        fail(QStringLiteral("No se pudo abrir el encoder de vídeo.")); return;
+        fail(QStringLiteral("No se pudo abrir el encoder de vídeo (%1).").arg(QLatin1String(fmt.venc))); return;
     }
     avcodec_parameters_from_context(vst->codecpar, vc);
     vst->time_base = vc->time_base;
@@ -96,14 +135,15 @@ void ExportWorker::run(const ExportJob &job)
     AVStream *ast = nullptr;
     AVCodecContext *ac = nullptr;
     if (hasAudio) {
-        const AVCodec *acodec = avcodec_find_encoder(AV_CODEC_ID_AAC);
+        const AVCodec *acodec = avcodec_find_encoder_by_name(fmt.aenc);
         if (acodec) {
             ast = avformat_new_stream(oc, nullptr);
             ac = avcodec_alloc_context3(acodec);
-            ac->sample_fmt = AV_SAMPLE_FMT_FLTP;
+            ac->sample_fmt = fmt.asfmt;   // FLTP (AAC) o S16 (PCM/Opus)
             ac->sample_rate = 48000;
             av_channel_layout_default(&ac->ch_layout, 2);
-            ac->bit_rate = job.audioBitrate;
+            if (qstrcmp(fmt.aenc, "pcm_s16le") != 0)
+                ac->bit_rate = job.audioBitrate;   // PCM no usa bitrate
             ac->time_base = AVRational{ 1, 48000 };
             if (oc->oformat->flags & AVFMT_GLOBALHEADER)
                 ac->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
@@ -132,11 +172,11 @@ void ExportWorker::run(const ExportJob &job)
         fail(QStringLiteral("Error al escribir la cabecera del MP4.")); return;
     }
 
-    // --- Conversión de color RGBA → YUV420P ---
-    SwsContext *sws = sws_getContext(W, H, AV_PIX_FMT_RGBA, W, H, AV_PIX_FMT_YUV420P,
+    // --- Conversión de color RGBA → pix_fmt del encoder ---
+    SwsContext *sws = sws_getContext(W, H, AV_PIX_FMT_RGBA, W, H, fmt.pix,
                                      SWS_BILINEAR, nullptr, nullptr, nullptr);
     AVFrame *vframe = av_frame_alloc();
-    vframe->format = AV_PIX_FMT_YUV420P; vframe->width = W; vframe->height = H;
+    vframe->format = fmt.pix; vframe->width = W; vframe->height = H;
     av_frame_get_buffer(vframe, 0);
     AVPacket *pkt = av_packet_alloc();
 
@@ -155,7 +195,7 @@ void ExportWorker::run(const ExportJob &job)
         }
         aFrameSize = ac->frame_size > 0 ? ac->frame_size : 1024;
         aframe = av_frame_alloc();
-        aframe->format = AV_SAMPLE_FMT_FLTP;
+        aframe->format = ac->sample_fmt;   // FLTP (AAC) o S16 empaquetado (PCM/Opus)
         av_channel_layout_default(&aframe->ch_layout, 2);
         aframe->sample_rate = 48000;
         aframe->nb_samples = aFrameSize;
@@ -169,8 +209,18 @@ void ExportWorker::run(const ExportJob &job)
             const int n = std::min(aFrameSize, aTotal - aStart);
             if (av_frame_make_writable(aframe) < 0) return false;
             aframe->nb_samples = n;
-            std::memcpy(aframe->data[0], aL.constData() + aStart, n * sizeof(float));
-            std::memcpy(aframe->data[1], aR.constData() + aStart, n * sizeof(float));
+            if (ac->sample_fmt == AV_SAMPLE_FMT_S16) {
+                // Empaquetado intercalado L R L R (PCM/Opus).
+                auto *d = reinterpret_cast<int16_t *>(aframe->data[0]);
+                for (int k = 0; k < n; ++k) {
+                    d[2 * k]     = int16_t(std::clamp(int(std::lround(aL[aStart + k] * 32767.0f)), -32768, 32767));
+                    d[2 * k + 1] = int16_t(std::clamp(int(std::lround(aR[aStart + k] * 32767.0f)), -32768, 32767));
+                }
+            } else {
+                // Planar float (AAC): un plano por canal.
+                std::memcpy(aframe->data[0], aL.constData() + aStart, n * sizeof(float));
+                std::memcpy(aframe->data[1], aR.constData() + aStart, n * sizeof(float));
+            }
             aframe->pts = aStart;
             if (avcodec_send_frame(ac, aframe) < 0) return false;
             if (!drainEncoder(oc, ac, ast, pkt)) return false;
@@ -240,10 +290,18 @@ Exporter::Exporter(QObject *parent) : QObject(parent)
     });
     connect(m_worker, &ExportWorker::finished, this, [this](bool ok, const QString &msg) {
         m_running = false; m_progress = ok ? 1.0 : m_progress;
-        setStatus(ok ? QStringLiteral("Exportado: %1").arg(QFileInfo(msg).fileName())
-                     : QStringLiteral("Error: %1").arg(msg));
         emit progressChanged();
         emit runningChanged();
+        // Si venimos de la cola de render: marca el trabajo y pasa al siguiente.
+        if (m_queueRunning && m_curQueueIdx >= 0 && m_curQueueIdx < m_queue.size()) {
+            m_queue[m_curQueueIdx].status = ok ? 2 : 3;
+            m_curQueueIdx = -1;
+            emit queueChanged();
+            renderNextInQueue();
+            return;
+        }
+        setStatus(ok ? QStringLiteral("Exportado: %1").arg(QFileInfo(msg).fileName())
+                     : QStringLiteral("Error: %1").arg(msg));
     });
     connect(m_thread, &QThread::finished, m_worker, &QObject::deleteLater);
     m_thread->start();
@@ -299,31 +357,30 @@ void Exporter::applyPreset(const QString &name, int w, int h, double fps, int mb
     emit settingsChanged();
 }
 
-void Exporter::exportTimeline(const QString &path, int width, int height,
-                              double fps, double seconds)
+bool Exporter::buildJob(const QString &path, int w, int h, double fps, int mbps,
+                        qint64 startUs, qint64 durUs, ExportJob &job)
 {
-    if (m_running || !m_timeline || path.isEmpty()) return;
-    if (width <= 0 || height <= 0 || fps <= 0) return;
+    if (!m_timeline) return false;
+    if (startUs < 0) startUs = 0;
+    if (durUs <= 0) durUs = m_timeline->contentEndUs() - startUs;   // hasta el fin
+    if (durUs <= 0) return false;
 
-    // Duración: por defecto, todo el contenido de la línea de tiempo.
-    qint64 durUs = seconds > 0 ? qint64(seconds * 1e6) : m_timeline->contentEndUs();
-    if (durUs <= 0) { setStatus(QStringLiteral("La línea de tiempo está vacía.")); return; }
-
-    ExportJob job;
+    job = ExportJob{};
     job.path = path;
-    job.width = width; job.height = height; job.fps = fps;
-    job.videoBitrate = m_mbps * 1'000'000;
+    job.width = w; job.height = h; job.fps = fps;
+    job.videoBitrate = mbps * 1'000'000;
     job.durationUs = durUs;
 
-    // Instantánea de vídeo: RenderClipList por fotograma (en el hilo de GUI, seguro).
-    const int frameCount = int(std::ceil(seconds > 0 ? seconds * fps : (durUs / 1e6) * fps));
+    // Instantánea de vídeo: RenderClipList por fotograma, desde startUs (rango I/O).
+    const int frameCount = int(std::ceil((durUs / 1e6) * fps));
     job.frames.reserve(frameCount);
     for (int i = 0; i < frameCount; ++i) {
-        const qint64 us = qint64((double(i) / fps) * 1e6);
+        const qint64 us = startUs + qint64((double(i) / fps) * 1e6);
         job.frames.push_back(m_timeline->clipsAt(us));
     }
 
-    // Instantánea de audio: hornea la mezcla maestra con un AudioPlayer temporal.
+    // Instantánea de audio: hornea la mezcla maestra hasta el fin del rango y recorta
+    // el tramo [startUs, startUs+durUs) (48 kHz S16 estéreo → 4 bytes por muestra).
     QVector<AudioMixClip> mix;
     for (const TimelineModel::AudioClip &a : m_timeline->audioClips()) {
         AudioMixClip m;
@@ -332,13 +389,38 @@ void Exporter::exportTimeline(const QString &path, int width, int height,
         m.speed = a.speed; m.gain = a.gain; m.pan = a.pan; m.mute = a.mute;
         for (const TimelineModel::Keyframe &k : a.gainKf) m.gainKf.push_back({ k.sourceUs, k.value });
         for (const TimelineModel::Keyframe &k : a.panKf) m.panKf.push_back({ k.sourceUs, k.value });
+        m.eqOn = a.eqOn; m.eqLowDb = a.eqLowDb; m.eqMidDb = a.eqMidDb; m.eqHighDb = a.eqHighDb;
+        m.compOn = a.compOn; m.compThreshDb = a.compThreshDb;
+        m.compRatio = a.compRatio; m.compMakeupDb = a.compMakeupDb;
         mix.push_back(m);
     }
     {
         AudioPlayer baker;
-        baker.setMix(mix, durUs);
-        job.audioS16 = baker.master();
+        baker.setMix(mix, startUs + durUs, m_timeline->masterGain(), m_timeline->masterPan());
+        const QByteArray &master = baker.master();
+        const qint64 startByte = qint64(std::llround(startUs / 1e6 * 48000.0)) * 4;
+        const qint64 lenByte = qint64(std::llround(durUs / 1e6 * 48000.0)) * 4;
+        if (startByte < master.size())
+            job.audioS16 = master.mid(int(startByte), int(qMin(lenByte, master.size() - startByte)));
     }
+    return true;
+}
+
+void Exporter::exportTimeline(const QString &path, int width, int height,
+                              double fps, double seconds)
+{
+    if (m_running || m_queueRunning || !m_timeline || path.isEmpty()) return;
+    if (width <= 0 || height <= 0 || fps <= 0) return;
+
+    // Rango: si se pide `seconds` explícito exporta [0, seconds]; si no, el rango I/O.
+    qint64 startUs = 0, durUs = 0;
+    if (seconds > 0) { durUs = qint64(seconds * 1e6); }
+    else { startUs = m_timeline->exportStartUs(); durUs = m_timeline->exportEndUs() - startUs; }
+    ExportJob job;
+    if (!buildJob(path, width, height, fps, m_mbps, startUs, durUs, job)) {
+        setStatus(QStringLiteral("El rango de exportación está vacío.")); return;
+    }
+    job.format = m_format;
 
     m_running = true; m_progress = 0.0;
     setStatus(QStringLiteral("Exportando…"));
@@ -347,8 +429,188 @@ void Exporter::exportTimeline(const QString &path, int width, int height,
     emit requestRun(job);
 }
 
+// ==================== Ruta de salida y cola de render (página Entregar) ====================
+
+QString Exporter::formatLabel() const { return QString::fromLatin1(fmtById(m_format).label); }
+QString Exporter::outExt() const { return QString::fromLatin1(fmtById(m_format).ext); }
+bool Exporter::formatUsesBitrate() const { return fmtById(m_format).useBitrate; }
+
+QVariantList Exporter::availableFormats() const
+{
+    QVariantList out;
+    for (const auto &f : kFormats)
+        if (avcodec_find_encoder_by_name(f.venc))
+            out.append(QVariantMap{ { "id", QString::fromLatin1(f.id) },
+                                    { "label", QString::fromLatin1(f.label) },
+                                    { "ext", QString::fromLatin1(f.ext) } });
+    return out;
+}
+
+void Exporter::setFormat(const QString &id)
+{
+    if (id == m_format) return;
+    bool ok = false;   // solo formatos cuyo encoder existe en este build
+    for (const auto &f : kFormats)
+        if (id == QLatin1String(f.id) && avcodec_find_encoder_by_name(f.venc)) { ok = true; break; }
+    if (!ok) return;
+    m_format = id;
+    emit settingsChanged();
+}
+
+QVariantList Exporter::queue() const
+{
+    QVariantList out;
+    for (const QueueItem &q : m_queue)
+        out.append(QVariantMap{
+            { "name", q.name }, { "path", q.path }, { "preset", q.preset },
+            { "format", q.format }, { "width", q.width }, { "height", q.height },
+            { "fps", q.fps }, { "mbps", q.mbps }, { "status", q.status } });
+    return out;
+}
+
+void Exporter::setOutName(const QString &name)
+{
+    const QString n = name.trimmed();
+    if (n == m_outName) return;
+    m_outName = n;
+    emit settingsChanged();
+}
+
+QString Exporter::absoluteOutputPath() const
+{
+    const QString base = m_outName.isEmpty() ? QStringLiteral("pepe_export") : m_outName;
+    const QString file = base + QLatin1Char('.') + outExt();
+    return m_outDir.isEmpty() ? file : m_outDir + QLatin1Char('/') + file;
+}
+
+void Exporter::chooseOutputFile()
+{
+#ifdef _WIN32
+    wchar_t file[MAX_PATH];
+    lstrcpynW(file, reinterpret_cast<const wchar_t *>(absoluteOutputPath().utf16()), MAX_PATH);
+    // Filtro y extensión por defecto según el formato elegido (doble-nulo requerido).
+    const QString ext = outExt();
+    std::wstring filt = (QStringLiteral("Vídeo (*.%1)").arg(ext)).toStdWString();
+    filt.push_back(L'\0'); filt += (QStringLiteral("*.") + ext).toStdWString();
+    filt.push_back(L'\0'); filt += L"Todos (*.*)";
+    filt.push_back(L'\0'); filt += L"*.*"; filt.push_back(L'\0'); filt.push_back(L'\0');
+    wchar_t extW[16]; lstrcpynW(extW, reinterpret_cast<const wchar_t *>(ext.utf16()), 16);
+    OPENFILENAMEW ofn; ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.lpstrFilter = filt.c_str();
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrDefExt = extW;
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
+    if (GetSaveFileNameW(&ofn)) {
+        const QFileInfo fi(QString::fromWCharArray(file));
+        m_outDir = fi.absolutePath();
+        m_outName = fi.completeBaseName();
+        emit settingsChanged();
+    }
+#else
+    setStatus(QStringLiteral("Diálogo de salida solo disponible en Windows."));
+#endif
+}
+
+void Exporter::enqueueCurrent()
+{
+    if (!m_timeline || m_timeline->contentEndUs() <= 0) {
+        setStatus(QStringLiteral("La línea de tiempo está vacía.")); return;
+    }
+    const QString base = m_outName.isEmpty() ? QStringLiteral("pepe_export") : m_outName;
+    // Nombre único dentro de la cola (…, _2, _3) para no pisar salidas.
+    QString name = base; int n = 2;
+    auto taken = [this](const QString &nm) {
+        for (const QueueItem &q : m_queue) if (q.name == nm) return true;
+        return false;
+    };
+    while (taken(name)) name = base + QStringLiteral("_") + QString::number(n++);
+    QueueItem it;
+    it.name = name;
+    const QString file = name + QLatin1Char('.') + outExt();
+    it.path = m_outDir.isEmpty() ? file : m_outDir + QLatin1Char('/') + file;
+    it.preset = m_preset;
+    it.format = m_format;
+    it.width = m_outW; it.height = m_outH; it.fps = m_outFps; it.mbps = m_mbps;
+    it.startUs = m_timeline->exportStartUs();
+    it.durUs = m_timeline->exportEndUs() - it.startUs;
+    it.status = 0;
+    m_queue.push_back(it);
+    emit queueChanged();
+}
+
+void Exporter::removeFromQueue(int index)
+{
+    if (index < 0 || index >= m_queue.size()) return;
+    if (m_queue[index].status == 1) return;   // no quitar el que se está renderizando
+    m_queue.remove(index);
+    emit queueChanged();
+}
+
+void Exporter::clearQueue()
+{
+    // Conserva el trabajo en curso; elimina el resto.
+    QVector<QueueItem> keep;
+    for (const QueueItem &q : m_queue) if (q.status == 1) keep.push_back(q);
+    m_queue = keep;
+    emit queueChanged();
+}
+
+void Exporter::startQueue()
+{
+    if (m_running || m_queueRunning) return;
+    bool anyPending = false;
+    for (const QueueItem &q : m_queue) if (q.status == 0) { anyPending = true; break; }
+    if (!anyPending) { setStatus(QStringLiteral("La cola no tiene trabajos pendientes.")); return; }
+    m_queueRunning = true;
+    emit queueChanged();
+    renderNextInQueue();
+}
+
+void Exporter::renderNextInQueue()
+{
+    // Busca el primer trabajo pendiente.
+    int idx = -1;
+    for (int i = 0; i < m_queue.size(); ++i)
+        if (m_queue[i].status == 0) { idx = i; break; }
+    if (idx < 0) {   // no queda nada: cola completada
+        m_queueRunning = false;
+        m_curQueueIdx = -1;
+        setStatus(QStringLiteral("Cola completada."));
+        emit queueChanged();
+        return;
+    }
+
+    QueueItem &it = m_queue[idx];
+    ExportJob job;
+    if (!buildJob(it.path, it.width, it.height, it.fps, it.mbps, it.startUs, it.durUs, job)) {
+        it.status = 3;   // error (rango vacío)
+        emit queueChanged();
+        renderNextInQueue();
+        return;
+    }
+    job.format = it.format;
+    it.status = 1;   // en curso
+    m_curQueueIdx = idx;
+    m_running = true; m_progress = 0.0;
+    setStatus(QStringLiteral("Renderizando cola: %1").arg(it.name));
+    emit queueChanged();
+    emit runningChanged();
+    emit progressChanged();
+    emit requestRun(job);
+}
+
+void Exporter::exportNow()
+{
+    if (m_running || m_queueRunning) return;
+    if (m_outDir.isEmpty()) { openExportDialog(); return; }   // sin carpeta: pide una
+    exportTimeline(absoluteOutputPath(), m_outW, m_outH, m_outFps, 0.0);
+}
+
 void Exporter::openExportDialog()
 {
+    if (m_running || m_queueRunning) return;
 #ifdef _WIN32
     wchar_t file[MAX_PATH] = L"pepe_export.mp4";
     OPENFILENAMEW ofn; ZeroMemory(&ofn, sizeof(ofn));
@@ -438,4 +700,119 @@ int runExportSelfTestIfRequested()
           int(ok), qUtf8Printable(job.path), exists ? fi.size() : -1,
           pass ? "PASS" : "FALLO");
     return pass ? 0 : 1;
+}
+
+int runDeliverSelfTestIfRequested()
+{
+    if (qEnvironmentVariableIsEmpty("PVS_DELIVER_SELFTEST"))
+        return -1;
+
+    int pass = 0, fail = 0;
+    auto check = [&](bool ok, const char *what) {
+        if (ok) ++pass; else { ++fail; qWarning("[DELIVER selftest] FALLO: %s", what); }
+    };
+
+    // Timeline con contenido mínimo: un título en el playhead 0 (aporta contentEndUs).
+    TimelineModel tl;
+    tl.setPlayheadUs(0);
+    tl.addTitleAtPlayhead();
+    check(tl.contentEndUs() > 0, "timeline con contenido");
+
+    // Salida en temp: CWD temporal para resolver las rutas relativas de la cola.
+    const QString prevCwd = QDir::currentPath();
+    QDir::setCurrent(QDir::tempPath());
+    const QString p1 = QDir(QDir::tempPath()).filePath(QStringLiteral("pvs_deliver.mp4"));
+    const QString p2 = QDir(QDir::tempPath()).filePath(QStringLiteral("pvs_deliver_2.mp4"));
+    QFile::remove(p1); QFile::remove(p2);
+
+    Exporter ex;
+    ex.setSources(&tl);
+    ex.setResolution(128, 72);
+    ex.setOutFps(6.0);
+    ex.setOutName(QStringLiteral("pvs_deliver"));
+    ex.enqueueCurrent();   // pvs_deliver: contenido completo (~15 s)
+    // El segundo trabajo usa un rango de entrada/salida (2–4 s): debe salir más corto.
+    tl.setPlayheadUs(2'000'000); tl.setMarkInAtPlayhead();
+    tl.setPlayheadUs(4'000'000); tl.setMarkOutAtPlayhead();
+    ex.enqueueCurrent();   // pvs_deliver_2 (rango I/O, nombre único autogenerado)
+    check(ex.queue().size() == 2, "dos trabajos encolados con nombres únicos");
+
+    // Renderiza la cola y espera (bucle de eventos) a que termine.
+    QEventLoop loop;
+    QObject::connect(&ex, &Exporter::queueChanged, &loop, [&]() {
+        if (!ex.queueRunning()) loop.quit();
+    });
+    QTimer::singleShot(90000, &loop, &QEventLoop::quit);   // tope de seguridad
+    ex.startQueue();
+    if (ex.queueRunning()) loop.exec();
+
+    const bool ok1 = QFileInfo(p1).exists() && QFileInfo(p1).size() > 1024;
+    const bool ok2 = QFileInfo(p2).exists() && QFileInfo(p2).size() > 1024;
+    check(ok1, "el primer trabajo de la cola produjo un MP4");
+    check(ok2, "el segundo trabajo de la cola produjo un MP4");
+    // El trabajo con rango I/O (2–4 s) es más corto que el completo (~15 s).
+    check(ok1 && ok2 && QFileInfo(p2).size() < QFileInfo(p1).size(),
+          "el trabajo con rango I/O produce un archivo más corto");
+    const QVariantList q = ex.queue();
+    check(q.size() == 2 && q[0].toMap()[QStringLiteral("status")].toInt() == 2
+              && q[1].toMap()[QStringLiteral("status")].toInt() == 2,
+          "ambos trabajos quedan marcados como hechos");
+    check(!ex.queueRunning(), "la cola queda parada al terminar");
+
+    QDir::setCurrent(prevCwd);
+    QFile::remove(p1); QFile::remove(p2);
+
+    qWarning("[DELIVER selftest] %d OK, %d FALLO  => %s", pass, fail, fail == 0 ? "PASS" : "FALLO");
+    return fail == 0 ? 0 : 1;
+}
+
+int runCodecSelfTestIfRequested()
+{
+    if (qEnvironmentVariableIsEmpty("PVS_CODEC_SELFTEST"))
+        return -1;
+
+    int pass = 0, fail = 0;
+    auto check = [&](bool ok, const char *what) {
+        qInfo("[CODEC selftest] %-8s %s", what, ok ? "OK" : "FAIL");
+        if (ok) ++pass; else ++fail;
+    };
+
+    const int W = 320, H = 180;
+    const double fps = 24.0;
+    const QByteArray audio(48000 * 2 * 2, '\0');   // 1 s de silencio S16 estéreo
+
+    for (const FmtDesc &f : kFormats) {
+        if (!avcodec_find_encoder_by_name(f.venc)) {
+            qInfo("[CODEC selftest] %-8s encoder no disponible (omitido)", f.id);
+            continue;
+        }
+        ExportJob job;
+        job.path = QDir(QDir::tempPath()).filePath(
+            QStringLiteral("pvs_codec_%1.%2").arg(QLatin1String(f.id), QLatin1String(f.ext)));
+        job.width = W; job.height = H; job.fps = fps; job.durationUs = 1'000'000;
+        job.videoBitrate = 8'000'000; job.format = QString::fromLatin1(f.id);
+        for (int i = 0; i < 24; ++i) {
+            TimelineModel::RenderClip rc;
+            rc.trackIndex = 0; rc.kind = QStringLiteral("video");
+            rc.fill = (i % 2) ? QStringLiteral("#3060c0") : QStringLiteral("#c06030");
+            rc.sourceUs = 0;
+            job.frames.push_back(QVector<TimelineModel::RenderClip>{ rc });
+        }
+        job.audioS16 = audio;
+
+        QFile::remove(job.path);
+        ExportWorker worker;
+        bool ok = false; QString msg;
+        QObject::connect(&worker, &ExportWorker::finished,
+                         [&](bool o, const QString &m) { ok = o; msg = m; });
+        worker.run(job);
+        const bool fileOk = ok && QFileInfo(job.path).size() > 1024;
+        check(fileOk, f.id);
+        if (!fileOk && !msg.isEmpty())
+            qWarning("[CODEC selftest]   %s: %s", f.id, qUtf8Printable(msg));
+        QFile::remove(job.path);
+    }
+
+    qWarning("[CODEC selftest] %d OK, %d FALLO => %s", pass, fail, fail == 0 ? "PASS" : "FALLO");
+    return fail == 0 ? 0 : 1;
 }
