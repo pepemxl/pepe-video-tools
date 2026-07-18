@@ -55,6 +55,47 @@ struct Biquad {
     }
 };
 
+// Coeficientes RBJ (Audio EQ Cookbook), ya normalizados por a0, para el EQ de pista.
+constexpr double kPi = 3.14159265358979323846;
+
+Biquad makeLowShelf(double fs, double f0, double dB)
+{
+    const double A = std::pow(10.0, dB / 40.0);
+    const double w0 = 2.0 * kPi * f0 / fs, cs = std::cos(w0), sn = std::sin(w0);
+    const double beta = 2.0 * std::sqrt(A) * (sn / 2.0 * std::sqrt(2.0)); // S = 1
+    const double b0 = A * ((A + 1) - (A - 1) * cs + beta);
+    const double b1 = 2 * A * ((A - 1) - (A + 1) * cs);
+    const double b2 = A * ((A + 1) - (A - 1) * cs - beta);
+    const double a0 = (A + 1) + (A - 1) * cs + beta;
+    const double a1 = -2 * ((A - 1) + (A + 1) * cs);
+    const double a2 = (A + 1) + (A - 1) * cs - beta;
+    return Biquad{ b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0 };
+}
+
+Biquad makeHighShelf(double fs, double f0, double dB)
+{
+    const double A = std::pow(10.0, dB / 40.0);
+    const double w0 = 2.0 * kPi * f0 / fs, cs = std::cos(w0), sn = std::sin(w0);
+    const double beta = 2.0 * std::sqrt(A) * (sn / 2.0 * std::sqrt(2.0)); // S = 1
+    const double b0 = A * ((A + 1) + (A - 1) * cs + beta);
+    const double b1 = -2 * A * ((A - 1) + (A + 1) * cs);
+    const double b2 = A * ((A + 1) + (A - 1) * cs - beta);
+    const double a0 = (A + 1) - (A - 1) * cs + beta;
+    const double a1 = 2 * ((A - 1) - (A + 1) * cs);
+    const double a2 = (A + 1) - (A - 1) * cs - beta;
+    return Biquad{ b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0 };
+}
+
+Biquad makePeak(double fs, double f0, double Q, double dB)
+{
+    const double A = std::pow(10.0, dB / 40.0);
+    const double w0 = 2.0 * kPi * f0 / fs, cs = std::cos(w0), sn = std::sin(w0);
+    const double alpha = sn / (2.0 * Q);
+    const double b0 = 1 + alpha * A, b1 = -2 * cs, b2 = 1 - alpha * A;
+    const double a0 = 1 + alpha / A, a1 = -2 * cs, a2 = 1 - alpha / A;
+    return Biquad{ b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0 };
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -245,7 +286,8 @@ QVector<float> AudioPlayer::decodeCached(const AudioMixClip &clip)
 
 // Hornea la mezcla: suma todos los clips (ganancia/automatización/pan/velocidad) en un
 // master float, guarda la envolvente de pico por pista y convierte el master a S16.
-void AudioPlayer::bake(const QVector<AudioMixClip> &clips, qint64 endUs)
+void AudioPlayer::bake(const QVector<AudioMixClip> &clips, qint64 endUs,
+                       double masterGain, double masterPan)
 {
     m_master.clear();
     m_env.clear();
@@ -271,41 +313,99 @@ void AudioPlayer::bake(const QVector<AudioMixClip> &clips, qint64 endUs)
         gR = pan >= 0.0 ? 1.0 : 1.0 + pan;
     };
 
-    for (const AudioMixClip &c : clips) {
-        if (c.mute) continue;
-        QVector<float> pcm = decodeCached(c);   // reutiliza PCM decodificado si no cambió
-        const qint64 outSamples = pcm.size() / 2;
-        if (outSamples <= 0) continue;
-        const qint64 startSample = qint64((c.startUs / 1e6) * kOutRate);
-        double sgL, sgR; balance(c.pan, sgL, sgR); // ganancias estáticas de pan
-        QVector<float> &env = m_env[qBound(0, c.trackIndex, nTracks - 1)];
-        const bool hasGainKf = !c.gainKf.isEmpty();
-        const bool hasPanKf = !c.panKf.isEmpty();
-        const bool needSrc = hasGainKf || hasPanKf;
-        for (qint64 k = 0; k < outSamples; ++k) {
-            const qint64 idx = startSample + k;
-            if (idx < 0 || idx >= totalSamples) continue;
-            double g = c.gain, gL = sgL, gR = sgR;
-            if (needSrc) {
-                const qint64 srcUs = c.inUs + qint64((k / double(kOutRate)) * 1e6 * c.speed);
-                if (hasGainKf) g = evalGainKf(c.gainKf, c.gain, srcUs);
-                if (hasPanKf) balance(evalGainKf(c.panKf, c.pan, srcUs), gL, gR);
+    // Agrupa los clips por pista: cada pista se mezcla en un submix propio, se procesa
+    // con sus efectos (EQ → compresor) y se suma al master. Así los efectos actúan
+    // sobre el bus de la pista, no clip a clip.
+    QHash<int, QVector<int>> byTrack;
+    for (int i = 0; i < clips.size(); ++i)
+        if (!clips[i].mute) byTrack[clips[i].trackIndex].push_back(i);
+
+    QVector<float> sub(int(totalSamples * 2));   // submix de la pista (reutilizado)
+    const double fs = double(kOutRate);
+
+    for (auto it = byTrack.constBegin(); it != byTrack.constEnd(); ++it) {
+        const int trackIndex = it.key();
+        const QVector<int> &idxs = it.value();
+        std::fill(sub.begin(), sub.end(), 0.0f);
+
+        // 1) Suma los clips de la pista (ganancia/pan de clip + automatización).
+        for (int ci : idxs) {
+            const AudioMixClip &c = clips[ci];
+            QVector<float> pcm = decodeCached(c);   // reutiliza PCM decodificado si no cambió
+            const qint64 outSamples = pcm.size() / 2;
+            if (outSamples <= 0) continue;
+            const qint64 startSample = qint64((c.startUs / 1e6) * kOutRate);
+            double sgL, sgR; balance(c.pan, sgL, sgR); // ganancias estáticas de pan
+            const bool hasGainKf = !c.gainKf.isEmpty();
+            const bool hasPanKf = !c.panKf.isEmpty();
+            const bool needSrc = hasGainKf || hasPanKf;
+            for (qint64 k = 0; k < outSamples; ++k) {
+                const qint64 idx = startSample + k;
+                if (idx < 0 || idx >= totalSamples) continue;
+                double g = c.gain, gL = sgL, gR = sgR;
+                if (needSrc) {
+                    const qint64 srcUs = c.inUs + qint64((k / double(kOutRate)) * 1e6 * c.speed);
+                    if (hasGainKf) g = evalGainKf(c.gainKf, c.gain, srcUs);
+                    if (hasPanKf) balance(evalGainKf(c.panKf, c.pan, srcUs), gL, gR);
+                }
+                sub[int(idx * 2)]     += pcm[int(k * 2)] * float(g * gL);
+                sub[int(idx * 2 + 1)] += pcm[int(k * 2 + 1)] * float(g * gR);
             }
-            const float l = pcm[int(k * 2)] * float(g * gL);
-            const float r = pcm[int(k * 2 + 1)] * float(g * gR);
-            mix[int(idx * 2)] += l;
-            mix[int(idx * 2 + 1)] += r;
+        }
+
+        // 2) Efectos de la pista (iguales para todos sus clips): EQ de 3 bandas → compresor.
+        const AudioMixClip &fx = clips[idxs.first()];
+        if (fx.eqOn) {
+            Biquad loL = makeLowShelf(fs, 120.0, fx.eqLowDb),  loR = loL;
+            Biquad miL = makePeak(fs, 1000.0, 0.9, fx.eqMidDb), miR = miL;
+            Biquad hiL = makeHighShelf(fs, 8000.0, fx.eqHighDb), hiR = hiL;
+            for (qint64 f = 0; f < totalSamples; ++f) {
+                sub[int(f * 2)]     = float(hiL.process(miL.process(loL.process(sub[int(f * 2)]))));
+                sub[int(f * 2 + 1)] = float(hiR.process(miR.process(loR.process(sub[int(f * 2 + 1)]))));
+            }
+        }
+        if (fx.compOn) {
+            const double thresh = std::pow(10.0, fx.compThreshDb / 20.0);
+            const double makeup = std::pow(10.0, fx.compMakeupDb / 20.0);
+            const double atk = std::exp(-1.0 / (fs * 0.010));   // 10 ms
+            const double rel = std::exp(-1.0 / (fs * 0.100));   // 100 ms
+            const double invR = 1.0 / fx.compRatio;
+            double envc = 0.0;
+            for (qint64 f = 0; f < totalSamples; ++f) {
+                const double l = sub[int(f * 2)], r = sub[int(f * 2 + 1)];
+                const double sidet = qMax(std::fabs(l), std::fabs(r));
+                envc = (sidet > envc ? atk : rel) * envc + (1.0 - (sidet > envc ? atk : rel)) * sidet;
+                double gr = 1.0;
+                if (envc > thresh && envc > 1e-9)
+                    gr = std::pow(envc / thresh, invR - 1.0);   // reducción (<1)
+                const double g = gr * makeup;
+                sub[int(f * 2)]     = float(l * g);
+                sub[int(f * 2 + 1)] = float(r * g);
+            }
+        }
+
+        // 3) Acumula en el master y calcula la envolvente de la pista (post-efectos).
+        QVector<float> &env = m_env[qBound(0, trackIndex, nTracks - 1)];
+        for (qint64 f = 0; f < totalSamples; ++f) {
+            const float l = sub[int(f * 2)], r = sub[int(f * 2 + 1)];
+            mix[int(f * 2)]     += l;
+            mix[int(f * 2 + 1)] += r;
             const float a = qMax(std::fabs(l), std::fabs(r));
-            float &ev = env[int(idx / kEnvHop)];
+            float &ev = env[int(f / kEnvHop)];
             if (a > ev) ev = a;
         }
     }
 
+    // Bus MAIN: ganancia + pan del master aplicados al bajar a S16 (post-mezcla).
+    double mgL, mgR; balance(masterPan, mgL, mgR);
+    const float masterL = float(masterGain * mgL), masterR = float(masterGain * mgR);
     m_master.resize(int(totalSamples * 2 * qint64(sizeof(int16_t))));
     auto *out = reinterpret_cast<int16_t *>(m_master.data());
-    for (qint64 i = 0; i < totalSamples * 2; ++i) {
-        const int v = int(std::lround(mix[int(i)] * 32767.0f));
-        out[i] = int16_t(std::clamp(v, -32768, 32767));
+    for (qint64 f = 0; f < totalSamples; ++f) {
+        const int vl = int(std::lround(mix[int(f * 2)] * masterL * 32767.0f));
+        const int vr = int(std::lround(mix[int(f * 2 + 1)] * masterR * 32767.0f));
+        out[f * 2] = int16_t(std::clamp(vl, -32768, 32767));
+        out[f * 2 + 1] = int16_t(std::clamp(vr, -32768, 32767));
     }
 
     m_lufs = kWeightAnalyze(m_master, kOutRate, kEnvHop, m_lufsEnv);
@@ -382,13 +482,14 @@ double AudioPlayer::lufsShortMax() const
     return mx;
 }
 
-void AudioPlayer::setMix(const QVector<AudioMixClip> &clips, qint64 endUs)
+void AudioPlayer::setMix(const QVector<AudioMixClip> &clips, qint64 endUs,
+                         double masterGain, double masterPan)
 {
     if (!qEnvironmentVariableIsEmpty("PVS_AUDIO_DEBUG"))
         qInfo("[AUDIO] setMix recibido: %lld clips, fin=%.1fs", qint64(clips.size()), endUs / 1e6);
     const bool wasPlaying = m_pump && m_pump->isActive();
     const qint64 keepCursor = m_cursor;
-    bake(clips, endUs);
+    bake(clips, endUs, masterGain, masterPan);
     if (wasPlaying) m_cursor = qBound<qint64>(0, keepCursor, m_master.size());
     emit mixReady(m_lufs);
 }
@@ -517,7 +618,8 @@ AudioEngine::AudioEngine(QObject *parent) : QObject(parent)
     m_rebake->setSingleShot(true);
     m_rebake->setInterval(180);
     connect(m_rebake, &QTimer::timeout, this,
-            [this]() { emit requestMix(m_pendingClips, m_pendingEnd); });
+            [this]() { emit requestMix(m_pendingClips, m_pendingEnd,
+                                       m_pendingMasterGain, m_pendingMasterPan); });
 
     m_thread->start();
 }
@@ -529,10 +631,13 @@ AudioEngine::~AudioEngine()
     m_thread->wait(2000);
 }
 
-void AudioEngine::setMixData(const QVector<AudioMixClip> &clips, qint64 endUs)
+void AudioEngine::setMixData(const QVector<AudioMixClip> &clips, qint64 endUs,
+                            double masterGain, double masterPan)
 {
     m_pendingClips = clips;
     m_pendingEnd = endUs;
+    m_pendingMasterGain = masterGain;
+    m_pendingMasterPan = masterPan;
     m_rebake->start(); // (re)arranca el temporizador; hornea cuando cesan las ediciones
 }
 
@@ -676,6 +781,21 @@ int runAudioSelfTestIfRequested()
         check(masterPeak(p.master(), 1) < 0.05, "pan izq: canal R ≈ 0");
     }
 
+    // 3b) Bus MAIN: ganancia del master 0.5 escala el pico a la mitad; pan del master
+    //     izquierda vacía el canal derecho (sobre un clip centrado a ganancia 1).
+    {
+        AudioPlayer full, half;
+        full.setMix({ clip(tone, 3, 0, 400000, 0, 1.0, 1.0, 0.0) }, 400000, 1.0, 0.0);
+        half.setMix({ clip(tone, 3, 0, 400000, 0, 1.0, 1.0, 0.0) }, 400000, 0.5, 0.0);
+        const double pf = masterPeak(full.master(), -1), ph = masterPeak(half.master(), -1);
+        check(pf > 0.4 && std::fabs(ph - pf * 0.5) < 0.05, "master gain 0.5 escala el pico a la mitad");
+
+        AudioPlayer pl;
+        pl.setMix({ clip(tone, 3, 0, 400000, 0, 1.0, 1.0, 0.0) }, 400000, 1.0, -1.0);
+        check(masterPeak(pl.master(), 0) > 0.4, "master pan izq: canal L presente");
+        check(masterPeak(pl.master(), 1) < 0.05, "master pan izq: canal R ≈ 0");
+    }
+
     // 4) Velocidad 2×: el clip de 400 ms de salida consume 800 ms de origen (no recorta pico).
     {
         AudioPlayer p;
@@ -720,6 +840,55 @@ int runAudioSelfTestIfRequested()
         AudioPlayer p;
         p.setMix({ clip(tone, 3, 0, 600000, 0, 1.0, 1.0, 0.0) }, 600000);
         check(p.lufsShortMax() > -30.0, "LUFS a corto plazo: envolvente poblada");
+    }
+
+    // Pico del master en un rango de tiempo (para medir en régimen permanente,
+    // saltándose los transitorios de ataque de los filtros/compresor).
+    auto peakRange = [](const QByteArray &m, double t0, double t1) {
+        const auto *s = reinterpret_cast<const int16_t *>(m.constData());
+        const qint64 frames = m.size() / 4;
+        qint64 a = qBound<qint64>(0, qint64(t0 * 48000), frames);
+        qint64 b = qBound<qint64>(a, qint64(t1 * 48000), frames);
+        double pk = 0.0;
+        for (qint64 i = a; i < b; ++i)
+            pk = qMax(pk, qMax(std::fabs(s[i * 2] / 32768.0), std::fabs(s[i * 2 + 1] / 32768.0)));
+        return pk;
+    };
+
+    // 9) EQ de pista: sobre el tono de 1 kHz, realzar/atenuar la banda MEDIA (peak @1 kHz)
+    //    sube/baja el pico. Con todas las bandas a 0 dB el EQ es transparente.
+    {
+        auto eqClip = [&](double midDb) {
+            AudioMixClip c = clip(tone, 3, 0, 400000, 0, 1.0, 0.4, 0.0);   // 0.4: margen para el boost
+            c.eqOn = true; c.eqMidDb = midDb;
+            return c;
+        };
+        AudioPlayer flat, boost, cut;
+        flat.setMix({ eqClip(0.0) }, 400000);
+        boost.setMix({ eqClip(12.0) }, 400000);
+        cut.setMix({ eqClip(-12.0) }, 400000);
+        const double pf = masterPeak(flat.master(), -1);
+        const double pb = masterPeak(boost.master(), -1);
+        const double pc = masterPeak(cut.master(), -1);
+        check(pb > pf * 1.5, "EQ: realce de medios sube el pico del tono de 1 kHz");
+        check(pc < pf * 0.7, "EQ: atenuacion de medios baja el pico del tono de 1 kHz");
+    }
+
+    // 10) Compresor de pista: reduce el pico de una señal por encima del umbral.
+    //     Medido en régimen permanente (0.2–0.4 s) para evitar el ataque de 10 ms.
+    {
+        auto compClip = [&](bool on) {
+            AudioMixClip c = clip(tone, 3, 0, 400000, 0, 1.0, 1.0, 0.0);   // pico ~0.5 (−6 dB)
+            c.compOn = on; c.compThreshDb = -18.0; c.compRatio = 4.0; c.compMakeupDb = 0.0;
+            return c;
+        };
+        AudioPlayer off, on;
+        off.setMix({ compClip(false) }, 400000);
+        on.setMix({ compClip(true) }, 400000);
+        const double poff = peakRange(off.master(), 0.2, 0.4);
+        const double pon = peakRange(on.master(), 0.2, 0.4);
+        check(poff > 0.4, "compresor: señal de referencia por encima del umbral");
+        check(pon < poff * 0.75, "compresor reduce el pico por encima del umbral");
     }
 
     QFile::remove(tone);
