@@ -125,7 +125,9 @@ void TimelineModel::seed()
     }
 }
 
-QVector<TimelineModel::RenderClip> TimelineModel::clipsAt(qint64 us) const
+QVector<TimelineModel::RenderClip> TimelineModel::resolveClipsAt(
+    const QVector<Track> &tracks, const QVector<Clip> &clips,
+    const QVector<Subtitle> &subs, bool subsEnabled, qint64 us)
 {
     QVector<RenderClip> out;
 
@@ -170,15 +172,15 @@ QVector<TimelineModel::RenderClip> TimelineModel::clipsAt(qint64 us) const
 
     // Pistas de vídeo de abajo (índice mayor, V1) hacia arriba (índice menor, V3),
     // para pintarlas en ese orden (las de arriba tapan a las de abajo).
-    for (int t = m_tracks.size() - 1; t >= 0; --t) {
-        if (m_tracks.at(t).kind != QLatin1String("video"))
+    for (int t = tracks.size() - 1; t >= 0; --t) {
+        if (tracks.at(t).kind != QLatin1String("video"))
             continue;
-        if (m_tracks.at(t).hidden)   // pista de vídeo oculta (👁): no se compone
+        if (tracks.at(t).hidden)   // pista de vídeo oculta (👁): no se compone
             continue;
 
         // Clips activos en la pista, ordenados por inicio.
         QVector<const Clip *> active;
-        for (const Clip &c : m_clips)
+        for (const Clip &c : clips)
             if (c.trackIndex == t && us >= c.startUs && us < c.startUs + c.durationUs)
                 active.push_back(&c);
         if (active.isEmpty())
@@ -216,8 +218,8 @@ QVector<TimelineModel::RenderClip> TimelineModel::clipsAt(qint64 us) const
     }
 
     // Subtítulo activo: se pinta encima de todo como un título en el tercio inferior.
-    if (m_subsEnabled) {
-        for (const Subtitle &s : m_subtitles) {
+    if (subsEnabled) {
+        for (const Subtitle &s : subs) {
             if (us >= s.startUs && us < s.endUs) {
                 RenderClip rc{};
                 rc.kind = QStringLiteral("title");
@@ -235,6 +237,21 @@ QVector<TimelineModel::RenderClip> TimelineModel::clipsAt(qint64 us) const
         }
     }
     return out;
+}
+
+QVector<TimelineModel::RenderClip> TimelineModel::clipsAt(qint64 us) const
+{
+    return resolveClipsAt(m_tracks, m_clips, m_subtitles, m_subsEnabled, us);
+}
+
+TimelineModel::RenderSnapshot TimelineModel::renderSnapshot() const
+{
+    return RenderSnapshot{ m_tracks, m_clips, m_subtitles, m_subsEnabled };
+}
+
+QVector<TimelineModel::RenderClip> TimelineModel::clipsAtSnapshot(const RenderSnapshot &snap, qint64 us)
+{
+    return resolveClipsAt(snap.tracks, snap.clips, snap.subtitles, snap.subsEnabled, us);
 }
 
 void TimelineModel::setClipMedia(quint64 id, const QString &path)
@@ -266,6 +283,17 @@ TimelineModel::Clip TimelineModel::doRemoveAt(int at)
     Clip c = m_clips.at(at);
     m_clips.remove(at);
     return c;
+}
+
+void TimelineModel::growWindow(qint64 neededUs)
+{
+    if (neededUs <= m_totalUs)
+        return;
+    // Redondea hacia arriba al minuto siguiente y añade 1 min de margen.
+    const qint64 minute = 60LL * 1000000;
+    const qint64 target = ((neededUs + minute - 1) / minute + 1) * minute;
+    m_totalUs = qMax(m_totalUs, target);
+    emit changed();
 }
 
 QVariantList TimelineModel::tracks() const
@@ -1048,11 +1076,14 @@ void TimelineModel::setSelAudioMute(bool m)
 bool TimelineModel::selAudioEqOn() const
 { const int i = indexOfClip(m_selectedId); return i >= 0 && m_clips[i].audio.eqOn; }
 double TimelineModel::selAudioEqLowDb() const
-{ const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].audio.eqLowDb : 0.0; }
+{ const int i = indexOfClip(m_selectedId); if (i < 0) return 0.0;
+  const Clip &c = m_clips[i]; return evalKf(c.audio.eqLowKf, c.audio.eqLowDb, srcAtPlayhead(c)); }
 double TimelineModel::selAudioEqMidDb() const
-{ const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].audio.eqMidDb : 0.0; }
+{ const int i = indexOfClip(m_selectedId); if (i < 0) return 0.0;
+  const Clip &c = m_clips[i]; return evalKf(c.audio.eqMidKf, c.audio.eqMidDb, srcAtPlayhead(c)); }
 double TimelineModel::selAudioEqHighDb() const
-{ const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].audio.eqHighDb : 0.0; }
+{ const int i = indexOfClip(m_selectedId); if (i < 0) return 0.0;
+  const Clip &c = m_clips[i]; return evalKf(c.audio.eqHighKf, c.audio.eqHighDb, srcAtPlayhead(c)); }
 bool TimelineModel::selAudioCompOn() const
 { const int i = indexOfClip(m_selectedId); return i >= 0 && m_clips[i].audio.compOn; }
 double TimelineModel::selAudioCompThreshDb() const
@@ -1074,9 +1105,10 @@ void TimelineModel::setSelAudioEq(double lowDb, double midDb, double highDb)
     const int i = indexOfClip(m_selectedId);
     if (i < 0) return;
     Audio &a = m_clips[i].audio;
-    a.eqLowDb = qBound(-18.0, lowDb, 18.0);
-    a.eqMidDb = qBound(-18.0, midDb, 18.0);
-    a.eqHighDb = qBound(-18.0, highDb, 18.0);
+    const qint64 src = srcAtPlayhead(m_clips[i]);   // escribe al keyframe del playhead si está animado
+    applyColorKf(a.eqLowKf,  a.eqLowDb,  src, qBound(-18.0, lowDb, 18.0));
+    applyColorKf(a.eqMidKf,  a.eqMidDb,  src, qBound(-18.0, midDb, 18.0));
+    applyColorKf(a.eqHighKf, a.eqHighDb, src, qBound(-18.0, highDb, 18.0));
     bumpSelection(); emit audioChanged();
 }
 void TimelineModel::setSelAudioCompEnabled(bool on)
@@ -1094,6 +1126,65 @@ void TimelineModel::setSelAudioComp(double threshDb, double ratio, double makeup
     a.compThreshDb = qBound(-48.0, threshDb, 0.0);
     a.compRatio = qBound(1.0, ratio, 20.0);
     a.compMakeupDb = qBound(0.0, makeupDb, 24.0);
+    bumpSelection(); emit audioChanged();
+}
+
+// Procesadores adicionales por clip (puerta · de-esser · reverb).
+bool TimelineModel::selAudioGateOn() const
+{ const int i = indexOfClip(m_selectedId); return i >= 0 && m_clips[i].audio.gateOn; }
+double TimelineModel::selAudioGateThreshDb() const
+{ const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].audio.gateThreshDb : -40.0; }
+bool TimelineModel::selAudioDeEssOn() const
+{ const int i = indexOfClip(m_selectedId); return i >= 0 && m_clips[i].audio.deEssOn; }
+double TimelineModel::selAudioDeEssThreshDb() const
+{ const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].audio.deEssThreshDb : -24.0; }
+bool TimelineModel::selAudioReverbOn() const
+{ const int i = indexOfClip(m_selectedId); return i >= 0 && m_clips[i].audio.reverbOn; }
+double TimelineModel::selAudioReverbMix() const
+{ const int i = indexOfClip(m_selectedId); if (i < 0) return 0.25;
+  const Clip &c = m_clips[i]; return evalKf(c.audio.reverbMixKf, c.audio.reverbMix, srcAtPlayhead(c)); }
+double TimelineModel::selAudioReverbSize() const
+{ const int i = indexOfClip(m_selectedId); return i >= 0 ? m_clips[i].audio.reverbSize : 0.5; }
+
+void TimelineModel::setSelAudioGateEnabled(bool on)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0 || m_clips[i].audio.gateOn == on) return;
+    m_clips[i].audio.gateOn = on; bumpSelection(); emit audioChanged();
+}
+void TimelineModel::setSelAudioGate(double threshDb)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return;
+    m_clips[i].audio.gateThreshDb = qBound(-80.0, threshDb, 0.0);
+    bumpSelection(); emit audioChanged();
+}
+void TimelineModel::setSelAudioDeEsserEnabled(bool on)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0 || m_clips[i].audio.deEssOn == on) return;
+    m_clips[i].audio.deEssOn = on; bumpSelection(); emit audioChanged();
+}
+void TimelineModel::setSelAudioDeEsser(double threshDb)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return;
+    m_clips[i].audio.deEssThreshDb = qBound(-48.0, threshDb, 0.0);
+    bumpSelection(); emit audioChanged();
+}
+void TimelineModel::setSelAudioReverbEnabled(bool on)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0 || m_clips[i].audio.reverbOn == on) return;
+    m_clips[i].audio.reverbOn = on; bumpSelection(); emit audioChanged();
+}
+void TimelineModel::setSelAudioReverb(double mix, double size)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0) return;
+    Audio &a = m_clips[i].audio;
+    applyColorKf(a.reverbMixKf, a.reverbMix, srcAtPlayhead(m_clips[i]), qBound(0.0, mix, 1.0));
+    a.reverbSize = qBound(0.0, size, 1.0);   // el tamaño (líneas de retardo) no se automatiza
     bumpSelection(); emit audioChanged();
 }
 
@@ -1241,9 +1332,9 @@ quint64 TimelineModel::addMediaClip(const QString &path, const QString &name,
     }
 
     qint64 dur = durationUs > 0 ? durationUs : 5LL * 1000000;
-    dur = qMin(dur, m_totalUs);
     qint64 start = qMax<qint64>(0, qint64(startFraction * m_totalUs));
-    if (start + dur > m_totalUs) start = qMax<qint64>(0, m_totalUs - dur);
+    // No truncar el medio: crece la ventana para que el clip completo quepa.
+    growWindow(start + dur);
     start = snapUs(start, 0);
 
     Clip c;
@@ -1455,7 +1546,13 @@ QJsonObject TimelineModel::toJson() const
                 { "eqOn", c.audio.eqOn }, { "eqLowDb", c.audio.eqLowDb },
                 { "eqMidDb", c.audio.eqMidDb }, { "eqHighDb", c.audio.eqHighDb },
                 { "compOn", c.audio.compOn }, { "compThreshDb", c.audio.compThreshDb },
-                { "compRatio", c.audio.compRatio }, { "compMakeupDb", c.audio.compMakeupDb } } },
+                { "compRatio", c.audio.compRatio }, { "compMakeupDb", c.audio.compMakeupDb },
+                { "gateOn", c.audio.gateOn }, { "gateThreshDb", c.audio.gateThreshDb },
+                { "deEssOn", c.audio.deEssOn }, { "deEssThreshDb", c.audio.deEssThreshDb },
+                { "reverbOn", c.audio.reverbOn }, { "reverbMix", c.audio.reverbMix },
+                { "reverbSize", c.audio.reverbSize },
+                { "eqLowKf", kfToJson(c.audio.eqLowKf) }, { "eqMidKf", kfToJson(c.audio.eqMidKf) },
+                { "eqHighKf", kfToJson(c.audio.eqHighKf) }, { "reverbMixKf", kfToJson(c.audio.reverbMixKf) } } },
             { "title", QJsonObject{
                 { "text", c.title.text }, { "sizePt", c.title.sizePt },
                 { "color", c.title.color }, { "align", c.title.align },
@@ -1590,6 +1687,17 @@ bool TimelineModel::fromJson(const QJsonObject &o)
         c.audio.compThreshDb = au.value("compThreshDb").toDouble(-18.0);
         c.audio.compRatio = au.value("compRatio").toDouble(2.0);
         c.audio.compMakeupDb = au.value("compMakeupDb").toDouble(0.0);
+        c.audio.gateOn = au.value("gateOn").toBool(false);
+        c.audio.gateThreshDb = au.value("gateThreshDb").toDouble(-40.0);
+        c.audio.deEssOn = au.value("deEssOn").toBool(false);
+        c.audio.deEssThreshDb = au.value("deEssThreshDb").toDouble(-24.0);
+        c.audio.reverbOn = au.value("reverbOn").toBool(false);
+        c.audio.reverbMix = au.value("reverbMix").toDouble(0.25);
+        c.audio.reverbSize = au.value("reverbSize").toDouble(0.5);
+        c.audio.eqLowKf = kfFromJson(au.value("eqLowKf"));
+        c.audio.eqMidKf = kfFromJson(au.value("eqMidKf"));
+        c.audio.eqHighKf = kfFromJson(au.value("eqHighKf"));
+        c.audio.reverbMixKf = kfFromJson(au.value("reverbMixKf"));
         const QJsonObject ti = cj.value("title").toObject();
         c.title.text = ti.value("text").toString();
         c.title.sizePt = ti.value("sizePt").toDouble(0.09);
@@ -1712,6 +1820,11 @@ QVector<TimelineModel::AudioClip> TimelineModel::audioClips() const
         ac.clipEqMidDb = c.audio.eqMidDb; ac.clipEqHighDb = c.audio.eqHighDb;
         ac.clipCompOn = c.audio.compOn; ac.clipCompThreshDb = c.audio.compThreshDb;
         ac.clipCompRatio = c.audio.compRatio; ac.clipCompMakeupDb = c.audio.compMakeupDb;
+        ac.clipGateOn = c.audio.gateOn; ac.clipGateThreshDb = c.audio.gateThreshDb;
+        ac.clipDeEssOn = c.audio.deEssOn; ac.clipDeEssThreshDb = c.audio.deEssThreshDb;
+        ac.clipReverbOn = c.audio.reverbOn; ac.clipReverbMix = c.audio.reverbMix; ac.clipReverbSize = c.audio.reverbSize;
+        ac.eqLowKf = c.audio.eqLowKf; ac.eqMidKf = c.audio.eqMidKf;
+        ac.eqHighKf = c.audio.eqHighKf; ac.reverbMixKf = c.audio.reverbMixKf;
         out.push_back(ac);
     }
     return out;
@@ -1735,6 +1848,26 @@ void TimelineModel::toggleKeyframe(const QString &prop)
             }
         kfa.push_back({ src, evalKf(kfa, sv, src) });
         std::sort(kfa.begin(), kfa.end(),
+                  [](const Keyframe &a, const Keyframe &b) { return a.sourceUs < b.sourceUs; });
+        bumpSelection();
+        emit audioChanged();
+        return;
+    }
+    // Automatización de efectos de audio por clip (EQ 3 bandas + mezcla de reverb).
+    if (prop == QLatin1String("clipEqLow") || prop == QLatin1String("clipEqMid")
+        || prop == QLatin1String("clipEqHigh") || prop == QLatin1String("clipReverbMix")) {
+        Clip &c = m_clips[i];
+        QVector<Keyframe> *kf = kfListFor(c, prop);
+        const double sv = prop == QLatin1String("clipEqLow")  ? c.audio.eqLowDb
+                        : prop == QLatin1String("clipEqMid")  ? c.audio.eqMidDb
+                        : prop == QLatin1String("clipEqHigh") ? c.audio.eqHighDb
+                                                              : c.audio.reverbMix;
+        const qint64 src = srcAtPlayhead(c);
+        const qint64 tol = 20000;
+        for (int k = 0; k < kf->size(); ++k)
+            if (qAbs((*kf)[k].sourceUs - src) < tol) { kf->remove(k); bumpSelection(); emit audioChanged(); return; }
+        kf->push_back({ src, evalKf(*kf, sv, src) });
+        std::sort(kf->begin(), kf->end(),
                   [](const Keyframe &a, const Keyframe &b) { return a.sourceUs < b.sourceUs; });
         bumpSelection();
         emit audioChanged();
@@ -1804,6 +1937,10 @@ QVector<TimelineModel::Keyframe> *TimelineModel::kfListFor(Clip &c, const QStrin
 {
     if (prop == QLatin1String("audioGain")) return &c.audio.gainKf;
     if (prop == QLatin1String("audioPan"))  return &c.audio.panKf;
+    if (prop == QLatin1String("clipEqLow"))  return &c.audio.eqLowKf;
+    if (prop == QLatin1String("clipEqMid"))  return &c.audio.eqMidKf;
+    if (prop == QLatin1String("clipEqHigh")) return &c.audio.eqHighKf;
+    if (prop == QLatin1String("clipReverbMix")) return &c.audio.reverbMixKf;
     if (prop == QLatin1String("temp"))      return &c.color.kfTemp;
     if (prop == QLatin1String("tint"))      return &c.color.kfTint;
     if (prop == QLatin1String("sat"))       return &c.color.kfSat;
@@ -2132,6 +2269,7 @@ void TimelineModel::moveClipToFraction(quint64 id, int trackIndex, double startF
     else
         newStart = snapEnd;
     newStart = qMax<qint64>(0, newStart);
+    growWindow(newStart + dur);   // arrastrar cerca del final extiende la ventana
 
     if (newTrack == oldTrack && newStart == oldStart)
         return;
@@ -3130,6 +3268,17 @@ void TimelineModel::runSelfTestIfRequested()
         check(markInUs() == end / 4 && markOutUs() == 3 * end / 4, "marcas I/O persisten en el .pvsproj");
         clearInOut();
         check(!hasInOut() && exportEndUs() == contentEndUs(), "clearInOut restablece el rango");
+    }
+
+    // 15) La ventana crece para abarcar un medio más largo que ella (no lo trunca).
+    {
+        const qint64 longDur = m_totalUs + 300LL * 1000000;   // 5 min más que la ventana
+        const quint64 cid = addMediaClip(QStringLiteral("x_long.mp4"), QStringLiteral("Largo"),
+                                         QStringLiteral("video"), longDur, 2, 0.0);
+        const int ci = indexOfClip(cid);
+        check(ci >= 0 && m_clips[ci].durationUs == longDur, "el medio largo no se trunca");
+        check(m_totalUs >= longDur, "la ventana crece para abarcar el medio");
+        undo();   // quita el clip (la ventana queda a la nueva escala)
     }
 
     setSnapEnabled(snapWas);

@@ -12,14 +12,19 @@ Rectangle {
     property int currentTool: 0   // A = Selección
     property real zoom: 1.0       // 1 = ajustar a la vista; >1 = ampliar horizontalmente
     property real scrollX: 0.0    // desplazamiento horizontal [0..1] cuando hay zoom
+    // Zoom máximo: escala con la duración de la ventana para poder editar timelines
+    // largas (al máximo, ~12 s visibles). Mínimo 10× para ventanas cortas.
+    readonly property real maxZoom: Math.max(10, TimelineModel.totalUsMs / 1000 / 12)
     // El imán real vive en el modelo (afecta al arrastre/recorte).
     readonly property bool snap: TimelineModel.snapEnabled
 
-    // Formatea milisegundos como mm:ss (regla de tiempo).
+    // Formatea milisegundos como mm:ss (o h:mm:ss si supera la hora).
     function fmtClock(ms) {
         var s = Math.max(0, Math.floor(ms / 1000))
+        var h = Math.floor(s / 3600); s = s % 3600
         var m = Math.floor(s / 60); s = s % 60
-        return (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s
+        var p = (n) => (n < 10 ? "0" : "") + n
+        return h > 0 ? (h + ":" + p(m) + ":" + p(s)) : (p(m) + ":" + p(s))
     }
 
     // Mapea una coordenada Y de escena al índice de pista (para arrastre vertical).
@@ -189,7 +194,7 @@ Rectangle {
                     spacing: 6; Layout.alignment: Qt.AlignVCenter
                     Text { text: "Zoom"; color: Theme.textDim; font.pixelSize: 11; font.family: Theme.sans; anchors.verticalCenter: parent.verticalCenter }
                     Rectangle { id: zoomTrack; width: 120; height: 5; radius: 3; color: Theme.sunken; anchors.verticalCenter: parent.verticalCenter
-                        readonly property real maxZoom: 10
+                        readonly property real maxZoom: tlRoot.maxZoom
                         readonly property real f: (tlRoot.zoom - 1) / (maxZoom - 1)
                         Rectangle { width: zoomTrack.width * zoomTrack.f; height: parent.height; radius: 3; color: "#4a4d55" }
                         Rectangle { width: 11; height: 11; radius: 6; color: zoomDrag.pressed ? Theme.amber : Theme.text; x: zoomTrack.width * zoomTrack.f - 5.5; y: -3 }
@@ -663,7 +668,7 @@ Rectangle {
                         property real px: 0
                         onPressed: (m) => { baseZoom = tlRoot.zoom; px = m.x }
                         onPositionChanged: (m) => {
-                            tlRoot.zoom = Math.max(1, Math.min(10, baseZoom * Math.exp((m.x - px) / 150)))
+                            tlRoot.zoom = Math.max(1, Math.min(tlRoot.maxZoom, baseZoom * Math.exp((m.x - px) / 150)))
                         }
                         onDoubleClicked: tlRoot.zoom = 1
                     }

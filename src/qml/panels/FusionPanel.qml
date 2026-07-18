@@ -107,7 +107,7 @@ Rectangle {
 
         // Preview del PROGRAMA (para ver el efecto del bypass en vivo)
         Rectangle {
-            Layout.fillWidth: true; Layout.preferredHeight: Math.round(parent.height * 0.44); color: "#000000"
+            Layout.fillWidth: true; Layout.preferredHeight: Math.round(root.height * 0.4); color: "#000000"
             Rectangle {
                 anchors.centerIn: parent
                 width: Math.min(parent.width - 32, (parent.height - 24) * 16 / 9)

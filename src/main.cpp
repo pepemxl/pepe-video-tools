@@ -1,4 +1,6 @@
 #include <QColor>
+#include <QDateTime>
+#include <QDebug>
 #include <QDir>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
@@ -7,6 +9,7 @@
 #include <QtQml>
 #include <functional>
 
+#include "app/logger.h"
 #include "app/mediapoolmodel.h"
 #include "app/projectmodel.h"
 #include "app/theme.h"
@@ -39,6 +42,13 @@ int main(int argc, char *argv[])
     // Auto-test de códecs (renderiza un clip corto en cada formato disponible).
     if (const int rc = runCodecSelfTestIfRequested(); rc >= 0)
         return rc;
+
+    // Logs de la sesión (solo en ejecuciones normales; los autotests salen antes).
+    const QString logPath = pvsInstallLogger();
+    qInfo().noquote() << "==== PepeVideo Studio ·" << QT_VERSION_STR
+                      << "· inicio" << QDateTime::currentDateTime().toString(Qt::ISODate);
+    qInfo().noquote() << "Log:" << (logPath.isEmpty() ? QStringLiteral("(no se pudo crear)") : logPath);
+    qInfo().noquote() << "Ejecutable:" << QCoreApplication::applicationDirPath();
     // Auto-test de formas de onda (envolvente de PCM real, decodificada en un hilo).
     if (const int rc = runWaveformSelfTestIfRequested(); rc >= 0)
         return rc;
@@ -127,6 +137,13 @@ int main(int argc, char *argv[])
             m.clipEqOn = a.clipEqOn; m.clipEqLowDb = a.clipEqLowDb; m.clipEqMidDb = a.clipEqMidDb; m.clipEqHighDb = a.clipEqHighDb;
             m.clipCompOn = a.clipCompOn; m.clipCompThreshDb = a.clipCompThreshDb;
             m.clipCompRatio = a.clipCompRatio; m.clipCompMakeupDb = a.clipCompMakeupDb;
+            m.clipGateOn = a.clipGateOn; m.clipGateThreshDb = a.clipGateThreshDb;
+            m.clipDeEssOn = a.clipDeEssOn; m.clipDeEssThreshDb = a.clipDeEssThreshDb;
+            m.clipReverbOn = a.clipReverbOn; m.clipReverbMix = a.clipReverbMix; m.clipReverbSize = a.clipReverbSize;
+            for (const TimelineModel::Keyframe &k : a.eqLowKf)  m.clipEqLowKf.push_back({ k.sourceUs, k.value });
+            for (const TimelineModel::Keyframe &k : a.eqMidKf)  m.clipEqMidKf.push_back({ k.sourceUs, k.value });
+            for (const TimelineModel::Keyframe &k : a.eqHighKf) m.clipEqHighKf.push_back({ k.sourceUs, k.value });
+            for (const TimelineModel::Keyframe &k : a.reverbMixKf) m.clipReverbMixKf.push_back({ k.sourceUs, k.value });
             mix.push_back(m);
         }
         audio.setMixData(mix, timelineModel.contentEndUs(),

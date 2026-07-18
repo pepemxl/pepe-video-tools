@@ -383,11 +383,11 @@ Rectangle {
                     ColumnLayout {
                         Layout.fillWidth: true; spacing: 6
                         opacity: TimelineModel.selAudioEqOn ? 1.0 : 0.4; enabled: TimelineModel.selAudioEqOn
-                        CSlider { label: "Graves"; from: -18; to: 18; defaultVal: 0; value: TimelineModel.selAudioEqLowDb
+                        CSlider { label: "Graves"; from: -18; to: 18; defaultVal: 0; prop: "clipEqLow"; value: TimelineModel.selAudioEqLowDb
                                   onMoved: (v) => TimelineModel.setSelAudioEq(v, TimelineModel.selAudioEqMidDb, TimelineModel.selAudioEqHighDb) }
-                        CSlider { label: "Medios"; from: -18; to: 18; defaultVal: 0; value: TimelineModel.selAudioEqMidDb
+                        CSlider { label: "Medios"; from: -18; to: 18; defaultVal: 0; prop: "clipEqMid"; value: TimelineModel.selAudioEqMidDb
                                   onMoved: (v) => TimelineModel.setSelAudioEq(TimelineModel.selAudioEqLowDb, v, TimelineModel.selAudioEqHighDb) }
-                        CSlider { label: "Agudos"; from: -18; to: 18; defaultVal: 0; value: TimelineModel.selAudioEqHighDb
+                        CSlider { label: "Agudos"; from: -18; to: 18; defaultVal: 0; prop: "clipEqHigh"; value: TimelineModel.selAudioEqHighDb
                                   onMoved: (v) => TimelineModel.setSelAudioEq(TimelineModel.selAudioEqLowDb, TimelineModel.selAudioEqMidDb, v) }
                     }
 
@@ -411,6 +411,59 @@ Rectangle {
                         CSlider { label: "Makeup"; from: 0; to: 24; defaultVal: 0; value: TimelineModel.selAudioCompMakeupDb
                                   onMoved: (v) => TimelineModel.setSelAudioComp(TimelineModel.selAudioCompThreshDb, TimelineModel.selAudioCompRatio, v) }
                     }
+
+                    // Puerta de ruido (por clip)
+                    RowLayout { Layout.fillWidth: true; Layout.topMargin: 2
+                        Text { text: "Puerta (por clip)"; color: Theme.textMid; font.pixelSize: 11; font.family: Theme.sans }
+                        Item { Layout.fillWidth: true }
+                        Rectangle { width: 34; height: 16; radius: 8; border.color: Theme.line; border.width: 1
+                            color: TimelineModel.selAudioGateOn ? Theme.amber : Theme.sunken
+                            Rectangle { width: 12; height: 12; radius: 6; color: Theme.textHi; y: 2
+                                x: TimelineModel.selAudioGateOn ? 20 : 2; Behavior on x { NumberAnimation { duration: 90 } } }
+                            TapHandler { onTapped: TimelineModel.setSelAudioGateEnabled(!TimelineModel.selAudioGateOn) } }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true; spacing: 6
+                        opacity: TimelineModel.selAudioGateOn ? 1.0 : 0.4; enabled: TimelineModel.selAudioGateOn
+                        CSlider { label: "Umbral"; from: -80; to: 0; defaultVal: -40; value: TimelineModel.selAudioGateThreshDb
+                                  onMoved: (v) => TimelineModel.setSelAudioGate(v) }
+                    }
+
+                    // De-esser (por clip)
+                    RowLayout { Layout.fillWidth: true; Layout.topMargin: 2
+                        Text { text: "De-esser (por clip)"; color: Theme.textMid; font.pixelSize: 11; font.family: Theme.sans }
+                        Item { Layout.fillWidth: true }
+                        Rectangle { width: 34; height: 16; radius: 8; border.color: Theme.line; border.width: 1
+                            color: TimelineModel.selAudioDeEssOn ? Theme.amber : Theme.sunken
+                            Rectangle { width: 12; height: 12; radius: 6; color: Theme.textHi; y: 2
+                                x: TimelineModel.selAudioDeEssOn ? 20 : 2; Behavior on x { NumberAnimation { duration: 90 } } }
+                            TapHandler { onTapped: TimelineModel.setSelAudioDeEsserEnabled(!TimelineModel.selAudioDeEssOn) } }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true; spacing: 6
+                        opacity: TimelineModel.selAudioDeEssOn ? 1.0 : 0.4; enabled: TimelineModel.selAudioDeEssOn
+                        CSlider { label: "Umbral"; from: -48; to: 0; defaultVal: -24; value: TimelineModel.selAudioDeEssThreshDb
+                                  onMoved: (v) => TimelineModel.setSelAudioDeEsser(v) }
+                    }
+
+                    // Reverb (por clip)
+                    RowLayout { Layout.fillWidth: true; Layout.topMargin: 2
+                        Text { text: "Reverb (por clip)"; color: Theme.textMid; font.pixelSize: 11; font.family: Theme.sans }
+                        Item { Layout.fillWidth: true }
+                        Rectangle { width: 34; height: 16; radius: 8; border.color: Theme.line; border.width: 1
+                            color: TimelineModel.selAudioReverbOn ? Theme.amber : Theme.sunken
+                            Rectangle { width: 12; height: 12; radius: 6; color: Theme.textHi; y: 2
+                                x: TimelineModel.selAudioReverbOn ? 20 : 2; Behavior on x { NumberAnimation { duration: 90 } } }
+                            TapHandler { onTapped: TimelineModel.setSelAudioReverbEnabled(!TimelineModel.selAudioReverbOn) } }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true; spacing: 6
+                        opacity: TimelineModel.selAudioReverbOn ? 1.0 : 0.4; enabled: TimelineModel.selAudioReverbOn
+                        CSlider { label: "Mezcla"; from: 0; to: 1; defaultVal: 0.25; prop: "clipReverbMix"; value: TimelineModel.selAudioReverbMix
+                                  onMoved: (v) => TimelineModel.setSelAudioReverb(v, TimelineModel.selAudioReverbSize) }
+                        CSlider { label: "Tamaño"; from: 0; to: 1; defaultVal: 0.5; value: TimelineModel.selAudioReverbSize
+                                  onMoved: (v) => TimelineModel.setSelAudioReverb(TimelineModel.selAudioReverbMix, v) }
+                    }
                 }
                 Rectangle { visible: inspTabs.current === 0; Layout.fillWidth: true; height: 1; color: Theme.lineSoft }
 
@@ -430,7 +483,11 @@ Rectangle {
                         { p: "tint", l: "Tinte", min: -1, max: 1 },
                         { p: "sat", l: "Saturac.", min: 0, max: 2 },
                         { p: "audioGain", l: "Gan. audio", min: 0, max: 2 },
-                        { p: "audioPan", l: "Pan", min: -1, max: 1 } ]
+                        { p: "audioPan", l: "Pan", min: -1, max: 1 },
+                        { p: "clipEqLow", l: "EQ Graves", min: -18, max: 18 },
+                        { p: "clipEqMid", l: "EQ Medios", min: -18, max: 18 },
+                        { p: "clipEqHigh", l: "EQ Agudos", min: -18, max: 18 },
+                        { p: "clipReverbMix", l: "Reverb mix", min: 0, max: 1 } ]
                     readonly property var animatedProps: {
                         TimelineModel.hasSelection
                         return allProps.filter(e => TimelineModel.isKeyframed(e.p))

@@ -83,6 +83,13 @@ class TimelineModel : public QObject
     Q_PROPERTY(double selAudioCompThreshDb READ selAudioCompThreshDb NOTIFY selectionChanged)
     Q_PROPERTY(double selAudioCompRatio READ selAudioCompRatio NOTIFY selectionChanged)
     Q_PROPERTY(double selAudioCompMakeupDb READ selAudioCompMakeupDb NOTIFY selectionChanged)
+    Q_PROPERTY(bool selAudioGateOn READ selAudioGateOn NOTIFY selectionChanged)
+    Q_PROPERTY(double selAudioGateThreshDb READ selAudioGateThreshDb NOTIFY selectionChanged)
+    Q_PROPERTY(bool selAudioDeEssOn READ selAudioDeEssOn NOTIFY selectionChanged)
+    Q_PROPERTY(double selAudioDeEssThreshDb READ selAudioDeEssThreshDb NOTIFY selectionChanged)
+    Q_PROPERTY(bool selAudioReverbOn READ selAudioReverbOn NOTIFY selectionChanged)
+    Q_PROPERTY(double selAudioReverbMix READ selAudioReverbMix NOTIFY selectionChanged)
+    Q_PROPERTY(double selAudioReverbSize READ selAudioReverbSize NOTIFY selectionChanged)
     // Título del clip seleccionado (para el Inspector).
     Q_PROPERTY(bool selIsAudio READ selIsAudio NOTIFY selectionChanged)
     // Bypass de nodos del clip seleccionado (página Fusión).
@@ -168,11 +175,16 @@ public:
         QVector<Keyframe> gainKf;
         QVector<Keyframe> panKf;
         // Efectos por clip (insertos sobre el PCM del clip, antes del submix de pista):
-        // EQ de 3 bandas y compresor (mismo motor que los de pista).
+        // cadena puerta → EQ → compresor → de-esser → reverb (mismo motor que la pista).
         bool eqOn = false;
         double eqLowDb = 0.0, eqMidDb = 0.0, eqHighDb = 0.0;
         bool compOn = false;
         double compThreshDb = -18.0, compRatio = 2.0, compMakeupDb = 0.0;
+        bool gateOn = false; double gateThreshDb = -40.0;
+        bool deEssOn = false; double deEssThreshDb = -24.0;
+        bool reverbOn = false; double reverbMix = 0.25, reverbSize = 0.5;
+        // Automatización por keyframes de efectos: EQ de 3 bandas y mezcla de reverb.
+        QVector<Keyframe> eqLowKf, eqMidKf, eqHighKf, reverbMixKf;
     };
     // Título de texto renderizado como capa por el compositor (para kind == "title").
     struct Title {
@@ -237,6 +249,11 @@ public:
         double clipEqLowDb = 0.0, clipEqMidDb = 0.0, clipEqHighDb = 0.0;
         bool clipCompOn = false;
         double clipCompThreshDb = -18.0, clipCompRatio = 2.0, clipCompMakeupDb = 0.0;
+        bool clipGateOn = false; double clipGateThreshDb = -40.0;
+        bool clipDeEssOn = false; double clipDeEssThreshDb = -24.0;
+        bool clipReverbOn = false; double clipReverbMix = 0.25, clipReverbSize = 0.5;
+        // Automatización por keyframes de efectos (EQ de 3 bandas y mezcla de reverb).
+        QVector<Keyframe> eqLowKf, eqMidKf, eqHighKf, reverbMixKf;
     };
     struct Marker {
         qint64 timeUs;
@@ -267,6 +284,15 @@ public:
         // distintos no se roben la posición del decode secuencial.
         quint64 clipId = 0;
     };
+    // Instantánea autónoma del estado de render (pistas + clips + subtítulos), copiada en
+    // el hilo de GUI y pasada al worker de exportación para resolver cada fotograma bajo
+    // demanda (`clipsAtSnapshot`) sin materializar cientos de miles de listas por adelantado.
+    struct RenderSnapshot {
+        QVector<Track> tracks;
+        QVector<Clip> clips;
+        QVector<Subtitle> subtitles;
+        bool subsEnabled = true;
+    };
 
     QVariantList tracks() const;
     QVariantList audioTracks() const;   // estado mute/solo por pista (para el mezclador)
@@ -280,6 +306,10 @@ public:
     // Clips de vídeo activos en el tiempo us, ordenados de abajo (V1) a arriba (V3)
     // para pintarlos en ese orden. Uso del compositor (no expuesto a QML).
     QVector<RenderClip> clipsAt(qint64 us) const;
+    // Instantánea de render (copia) para la exportación en streaming, y resolución de un
+    // fotograma a partir de una instantánea (pura, segura entre hilos).
+    RenderSnapshot renderSnapshot() const;
+    static QVector<RenderClip> clipsAtSnapshot(const RenderSnapshot &snap, qint64 us);
     // Instantánea de todos los clips con audio (media no vacía). Uso del motor de audio.
     QVector<AudioClip> audioClips() const;
     double playheadFraction() const { return m_totalUs > 0 ? double(m_playheadUs) / m_totalUs : 0.0; }
@@ -351,6 +381,13 @@ public:
     double selAudioCompThreshDb() const;
     double selAudioCompRatio() const;
     double selAudioCompMakeupDb() const;
+    bool selAudioGateOn() const;
+    double selAudioGateThreshDb() const;
+    bool selAudioDeEssOn() const;
+    double selAudioDeEssThreshDb() const;
+    bool selAudioReverbOn() const;
+    double selAudioReverbMix() const;
+    double selAudioReverbSize() const;
     bool selIsAudio() const;
     bool selBypassTransform() const;
     bool selBypassColor() const;
@@ -414,6 +451,12 @@ public:
     Q_INVOKABLE void setSelAudioEq(double lowDb, double midDb, double highDb);
     Q_INVOKABLE void setSelAudioCompEnabled(bool on);
     Q_INVOKABLE void setSelAudioComp(double threshDb, double ratio, double makeupDb);
+    Q_INVOKABLE void setSelAudioGateEnabled(bool on);
+    Q_INVOKABLE void setSelAudioGate(double threshDb);
+    Q_INVOKABLE void setSelAudioDeEsserEnabled(bool on);
+    Q_INVOKABLE void setSelAudioDeEsser(double threshDb);
+    Q_INVOKABLE void setSelAudioReverbEnabled(bool on);
+    Q_INVOKABLE void setSelAudioReverb(double mix, double size);
     // Mute/solo por pista (índice de pista). Afectan a la mezcla completa.
     Q_INVOKABLE void setTrackMute(int trackIndex, bool m);
     Q_INVOKABLE void setTrackSolo(int trackIndex, bool s);
@@ -552,6 +595,9 @@ private:
     int indexOfClip(quint64 id) const;
     void doInsert(const Clip &c, int at);
     Clip doRemoveAt(int at);
+    // Crece la ventana de la línea de tiempo (nunca encoge) para que quepa `neededUs`,
+    // con un minuto de margen. La ventana define la escala tiempo↔fracción de la UI.
+    void growWindow(qint64 neededUs);
     // Núcleo de la gestión de pistas (compartido por los comandos de undo/redo).
     // insertTrackAt desplaza +1 los clips con trackIndex >= at; removeTrackAt borra
     // los clips de esa pista y desplaza -1 los de trackIndex > at.
@@ -563,6 +609,13 @@ private:
     // dentro de una tolerancia, si el imán (snap) está activo. excludeId se ignora.
     qint64 snapUs(qint64 us, quint64 excludeId) const;
     void runSelfTestIfRequested();
+
+    // Núcleo puro de clipsAt/clipsAtSnapshot: resuelve los RenderClip de un instante a
+    // partir de pistas/clips/subtítulos (sin estado, seguro entre hilos).
+    static QVector<RenderClip> resolveClipsAt(const QVector<Track> &tracks,
+                                              const QVector<Clip> &clips,
+                                              const QVector<Subtitle> &subs,
+                                              bool subsEnabled, qint64 us);
 
     // --- Keyframes ---
     // Interpola linealmente el valor de una propiedad en sourceUs; si no hay keyframes

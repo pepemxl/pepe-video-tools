@@ -197,16 +197,54 @@ Rectangle {
                                     onPicked: (i) => Export.outFps = parseFloat(options[i])
                                 }
                             }
+                            // Calidad: por bitrate o CRF (solo H.264/H.265/VP9).
                             RowLayout {
                                 Layout.fillWidth: true; spacing: 8
-                                // ProRes/DNxHR: calidad por perfil, el bitrate no aplica.
                                 opacity: Export.formatUsesBitrate ? 1.0 : 0.4
                                 enabled: Export.formatUsesBitrate
+                                FLabel { text: "Calidad" }
+                                Combo {
+                                    readonly property var crfOpts: ["Por bitrate", "CRF 18 (alta)", "CRF 23 (media)", "CRF 28 (baja)"]
+                                    readonly property var crfVals: [-1, 18, 23, 28]
+                                    current: !Export.crfEnabled ? "Por bitrate" : "CRF " + Export.crf
+                                    options: crfOpts
+                                    onPicked: (i) => {
+                                        if (crfVals[i] < 0) { Export.crfEnabled = false }
+                                        else { Export.crfEnabled = true; Export.crf = crfVals[i] }
+                                    }
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: 8
+                                // Bitrate: no aplica en ProRes/DNxHR ni en modo CRF.
+                                opacity: (Export.formatUsesBitrate && !Export.crfEnabled) ? 1.0 : 0.4
+                                enabled: Export.formatUsesBitrate && !Export.crfEnabled
                                 FLabel { text: "Bitrate" }
                                 Combo {
-                                    current: Export.formatUsesBitrate ? Export.videoMbps + " Mb/s" : "(por perfil)"
+                                    current: !Export.formatUsesBitrate ? "(por perfil)"
+                                             : Export.crfEnabled ? "(CRF)" : Export.videoMbps + " Mb/s"
                                     options: ["8 Mb/s", "12 Mb/s", "16 Mb/s", "24 Mb/s", "40 Mb/s"]
                                     onPicked: (i) => Export.videoMbps = parseInt(options[i])
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: 8
+                                // 2 pasadas: solo en modo bitrate (no CRF, no ProRes/DNxHR).
+                                readonly property bool avail: Export.formatUsesBitrate && !Export.crfEnabled
+                                opacity: avail ? 1.0 : 0.4
+                                enabled: avail
+                                FLabel { text: "2 pasadas" }
+                                Rectangle {
+                                    Layout.fillWidth: true; implicitHeight: 22; radius: 5; color: "transparent"
+                                    Rectangle { width: 40; height: 20; radius: 10; border.color: Theme.line; border.width: 1
+                                        anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
+                                        color: Export.twoPass ? Theme.amber : Theme.sunken
+                                        Rectangle { width: 16; height: 16; radius: 8; color: Theme.textHi; y: 2
+                                            x: Export.twoPass ? 22 : 2; Behavior on x { NumberAnimation { duration: 90 } } }
+                                        TapHandler { onTapped: Export.twoPass = !Export.twoPass } }
+                                    Text { anchors.left: parent.left; anchors.leftMargin: 48; anchors.verticalCenter: parent.verticalCenter
+                                           text: Export.twoPass ? "Mejor calidad · más lento" : "Desactivado"
+                                           color: Theme.textFaint; font.pixelSize: 9; font.family: Theme.sans }
                                 }
                             }
                             RowLayout {
@@ -225,6 +263,17 @@ Rectangle {
                                     current: Export.audioKbps === 0 ? "Sin audio" : Export.audioKbps + " kbps"
                                     options: ["Sin audio", "128 kbps", "192 kbps", "256 kbps", "320 kbps"]
                                     onPicked: (i) => Export.audioKbps = (i === 0 ? 0 : parseInt(options[i]))
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: 8
+                                opacity: Export.audioKbps > 0 ? 1.0 : 0.4
+                                enabled: Export.audioKbps > 0
+                                FLabel { text: "Canales" }
+                                Combo {
+                                    current: Export.audioChannels === 1 ? "Mono" : (Export.audioChannels === 6 ? "5.1" : "Estéreo")
+                                    options: ["Estéreo", "Mono", "5.1"]
+                                    onPicked: (i) => Export.audioChannels = [2, 1, 6][i]
                                 }
                             }
                         }
@@ -272,9 +321,10 @@ Rectangle {
             ColumnLayout {
                 Layout.fillWidth: true; Layout.fillHeight: true; spacing: 0
 
-                // Preview del PROGRAMA
+                // Preview del PROGRAMA (altura relativa al panel, no a la propia layout,
+                // para evitar un bucle de reordenación).
                 Rectangle {
-                    Layout.fillWidth: true; Layout.preferredHeight: Math.round(parent.height * 0.42); color: "#000000"
+                    Layout.fillWidth: true; Layout.preferredHeight: Math.round(root.height * 0.38); color: "#000000"
                     Rectangle {
                         anchors.centerIn: parent
                         width: Math.min(parent.width - 32, (parent.height - 24) * 16 / 9)

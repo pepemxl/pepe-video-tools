@@ -47,6 +47,11 @@ struct AudioMixClip {
     double clipEqLowDb = 0.0, clipEqMidDb = 0.0, clipEqHighDb = 0.0;
     bool clipCompOn = false;
     double clipCompThreshDb = -18.0, clipCompRatio = 2.0, clipCompMakeupDb = 0.0;
+    bool clipGateOn = false; double clipGateThreshDb = -40.0;
+    bool clipDeEssOn = false; double clipDeEssThreshDb = -24.0;
+    bool clipReverbOn = false; double clipReverbMix = 0.25, clipReverbSize = 0.5;
+    // Automatización por keyframes (sourceUs, valor): EQ de 3 bandas y mezcla de reverb.
+    QVector<QPair<qint64, double>> clipEqLowKf, clipEqMidKf, clipEqHighKf, clipReverbMixKf;
 };
 Q_DECLARE_METATYPE(AudioMixClip)
 
@@ -64,6 +69,7 @@ public:
     bool openSource(const QString &path);
     void closeSource();
     QByteArray decodeChunk(double &peakL, double &peakR); // S16 estéreo, bloque a bloque
+    void seekMs(qint64 ms);                               // reposiciona el decodificador
     // Decodifica un clip completo a float estéreo intercalado (48 kHz), sin ganancia/pan,
     // aplicando el remapeo de velocidad. Longitud = outSamples*2.
     QVector<float> decodeClipFloat(const AudioMixClip &clip);
@@ -92,7 +98,6 @@ signals:
 private:
     void pump();
     bool ensureSwr();
-    void seekMs(qint64 ms);
     void bake(const QVector<AudioMixClip> &clips, qint64 endUs,
               double masterGain, double masterPan, bool limiterOn, double ceilingDb);
     // Filtra el master con K-weighting: devuelve el LUFS integrado (puerta) y llena la

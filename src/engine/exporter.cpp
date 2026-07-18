@@ -11,6 +11,7 @@
 #include <QTimer>
 #include <cmath>
 #include <cstring>
+#include <new>
 #include <string>
 
 #include "audioengine.h" // AudioMixClip + AudioPlayer (horneado de la mezcla maestra)
@@ -84,11 +85,24 @@ const FmtDesc &fmtById(const QString &id)
 
 void ExportWorker::run(const ExportJob &job)
 {
-    auto fail = [this](const QString &m) { emit finished(false, m); };
+    auto fail = [this](const QString &m) {
+        qCritical("[export] FALLO: %s", qUtf8Printable(m));
+        emit finished(false, m);
+    };
 
     const int W = job.width, H = job.height;
-    const int frameCount = job.frames.size();
+    const int frameCount = job.streamFrames ? job.frameCount : int(job.frames.size());
+    qInfo("[export] run: %dx%d @%.3f fps, %d fotogramas (%s), formato=%s, audio=%d B -> %s",
+          W, H, job.fps, frameCount, job.streamFrames ? "streaming" : "materializados",
+          qUtf8Printable(job.format), int(job.audioS16.size()), qUtf8Printable(job.path));
     if (frameCount == 0) { fail(QStringLiteral("Nada que exportar (sin fotogramas).")); return; }
+
+    // Resolución de un fotograma (streaming o materializado), reutilizada por ambas pasadas.
+    auto frameAt = [&](int i) -> QVector<TimelineModel::RenderClip> {
+        return job.streamFrames
+            ? TimelineModel::clipsAtSnapshot(job.snapshot, job.startUs + qint64((double(i) / job.fps) * 1e6))
+            : job.frames[i];
+    };
 
     // --- Compositor propio de este hilo (posee sus FrameGrabber) ---
     CompositorWorker comp(QSize(W, H));
@@ -107,6 +121,54 @@ void ExportWorker::run(const ExportJob &job)
         fail(QStringLiteral("Encoder de vídeo no disponible: %1.").arg(QLatin1String(fmt.venc))); return;
     }
 
+    // 2 pasadas: solo en modo bitrate con H.264/H.265. La 1.ª analiza y escribe stats.
+    const bool twoPass = job.twoPass && fmt.useBitrate && !job.useCrf
+                         && (qstrcmp(fmt.venc, "libx264") == 0 || qstrcmp(fmt.venc, "libx265") == 0);
+    const QByteArray statsFile = QFile::encodeName(job.path + QStringLiteral(".pass.log"));
+    if (twoPass) {
+        qInfo("[export] 2-pass: pasada 1 (análisis)…");
+        AVCodecContext *p1 = avcodec_alloc_context3(vcodec);
+        p1->width = W; p1->height = H; p1->pix_fmt = fmt.pix;
+        p1->time_base = av_d2q(1.0 / job.fps, 1000000);
+        p1->framerate = av_d2q(job.fps, 1000000);
+        p1->gop_size = 12; p1->bit_rate = job.videoBitrate;
+        p1->flags |= AV_CODEC_FLAG_PASS1;
+        av_opt_set(p1->priv_data, "preset", "medium", 0);
+        av_opt_set(p1->priv_data, "stats", statsFile.constData(), 0);
+        bool p1ok = (avcodec_open2(p1, vcodec, nullptr) == 0);
+        SwsContext *sws1 = p1ok ? sws_getContext(W, H, AV_PIX_FMT_RGBA, W, H, fmt.pix,
+                                                  SWS_BILINEAR, nullptr, nullptr, nullptr) : nullptr;
+        AVFrame *vf1 = av_frame_alloc(); vf1->format = fmt.pix; vf1->width = W; vf1->height = H;
+        av_frame_get_buffer(vf1, 0);
+        AVPacket *pk1 = av_packet_alloc();
+        QImage blk(W, H, QImage::Format_RGBA8888); blk.fill(Qt::black);
+        for (int i = 0; p1ok && i < frameCount; ++i) {
+            bool hc = false;
+            QImage img = comp.renderFrame(frameAt(i), hc);
+            if (img.isNull() || img.size() != QSize(W, H)) img = blk;
+            if (img.format() != QImage::Format_RGBA8888) img = img.convertToFormat(QImage::Format_RGBA8888);
+            if (av_frame_make_writable(vf1) < 0) { p1ok = false; break; }
+            const uint8_t *sd[4] = { img.constBits(), nullptr, nullptr, nullptr };
+            int ss[4] = { int(img.bytesPerLine()), 0, 0, 0 };
+            sws_scale(sws1, sd, ss, 0, H, vf1->data, vf1->linesize);
+            vf1->pts = i;
+            if (avcodec_send_frame(p1, vf1) < 0) { p1ok = false; break; }
+            while (avcodec_receive_packet(p1, pk1) == 0) av_packet_unref(pk1);   // descarta paquetes
+            if ((i & 31) == 0) emit progress(0.5 * double(i + 1) / frameCount);   // 1.ª mitad de la barra
+        }
+        if (p1ok) { avcodec_send_frame(p1, nullptr);
+                    while (avcodec_receive_packet(p1, pk1) == 0) av_packet_unref(pk1); }
+        av_frame_free(&vf1); av_packet_free(&pk1);
+        if (sws1) sws_freeContext(sws1);
+        avcodec_free_context(&p1);
+        if (!p1ok) {
+            avformat_free_context(oc);
+            QFile::remove(QFile::decodeName(statsFile));
+            fail(QStringLiteral("Fallo en la 1.ª pasada.")); return;
+        }
+        qInfo("[export] 2-pass: pasada 1 completa; pasada 2 (codificación)…");
+    }
+
     AVStream *vst = avformat_new_stream(oc, nullptr);
     AVCodecContext *vc = avcodec_alloc_context3(vcodec);
     vc->width = W; vc->height = H;
@@ -114,8 +176,13 @@ void ExportWorker::run(const ExportJob &job)
     vc->time_base = av_d2q(1.0 / job.fps, 1000000);
     vc->framerate = av_d2q(job.fps, 1000000);
     vc->gop_size = 12;
-    if (fmt.useBitrate)
-        vc->bit_rate = job.videoBitrate;   // ProRes/DNxHR: la calidad la fija el perfil
+    // ProRes/DNxHR fijan la calidad por perfil. H.264/H.265/VP9: bitrate o CRF.
+    if (fmt.useBitrate) {
+        if (job.useCrf)
+            av_opt_set_int(vc->priv_data, "crf", job.crf, 0);   // calidad constante (bit_rate=0)
+        else
+            vc->bit_rate = job.videoBitrate;
+    }
     if (oc->oformat->flags & AVFMT_GLOBALHEADER)
         vc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     // Ajustes de velocidad/calidad por familia de encoder.
@@ -126,6 +193,10 @@ void ExportWorker::run(const ExportJob &job)
     if (qstrcmp(fmt.venc, "libvpx-vp9") == 0) {
         av_opt_set(vc->priv_data, "deadline", "good", 0);
         av_opt_set_int(vc->priv_data, "cpu-used", 4, 0);
+    }
+    if (twoPass) {   // 2.ª pasada: usa las stats de la 1.ª
+        vc->flags |= AV_CODEC_FLAG_PASS2;
+        av_opt_set(vc->priv_data, "stats", statsFile.constData(), 0);
     }
     if (avcodec_open2(vc, vcodec, nullptr) < 0) {
         avcodec_free_context(&vc); avformat_free_context(oc);
@@ -145,7 +216,10 @@ void ExportWorker::run(const ExportJob &job)
             ac = avcodec_alloc_context3(acodec);
             ac->sample_fmt = fmt.asfmt;   // FLTP (AAC) o S16 (PCM/Opus)
             ac->sample_rate = 48000;
-            av_channel_layout_default(&ac->ch_layout, 2);
+            // Canales: 1 mono · 2 estéreo · 6 (5.1, upmix). Opus no lo soporta aquí → estéreo.
+            int chOut = (job.channels == 6 && qstrcmp(fmt.aenc, "libopus") == 0) ? 2 : job.channels;
+            if (chOut != 1 && chOut != 2 && chOut != 6) chOut = 2;
+            av_channel_layout_default(&ac->ch_layout, chOut);   // 6 → 5.1 (FL FR FC LFE BL BR)
             if (qstrcmp(fmt.aenc, "pcm_s16le") != 0)
                 ac->bit_rate = job.audioBitrate;   // PCM no usa bitrate
             ac->time_base = AVRational{ 1, 48000 };
@@ -200,7 +274,7 @@ void ExportWorker::run(const ExportJob &job)
         aFrameSize = ac->frame_size > 0 ? ac->frame_size : 1024;
         aframe = av_frame_alloc();
         aframe->format = ac->sample_fmt;   // FLTP (AAC) o S16 empaquetado (PCM/Opus)
-        av_channel_layout_default(&aframe->ch_layout, 2);
+        av_channel_layout_copy(&aframe->ch_layout, &ac->ch_layout);
         aframe->sample_rate = 48000;
         aframe->nb_samples = aFrameSize;
         av_frame_get_buffer(aframe, 0);
@@ -213,17 +287,24 @@ void ExportWorker::run(const ExportJob &job)
             const int n = std::min(aFrameSize, aTotal - aStart);
             if (av_frame_make_writable(aframe) < 0) return false;
             aframe->nb_samples = n;
-            if (ac->sample_fmt == AV_SAMPLE_FMT_S16) {
-                // Empaquetado intercalado L R L R (PCM/Opus).
-                auto *d = reinterpret_cast<int16_t *>(aframe->data[0]);
-                for (int k = 0; k < n; ++k) {
-                    d[2 * k]     = int16_t(std::clamp(int(std::lround(aL[aStart + k] * 32767.0f)), -32768, 32767));
-                    d[2 * k + 1] = int16_t(std::clamp(int(std::lround(aR[aStart + k] * 32767.0f)), -32768, 32767));
+            const int ch = aframe->ch_layout.nb_channels;   // 1 mono · 2 estéreo · 6 (5.1)
+            const bool s16 = (ac->sample_fmt == AV_SAMPLE_FMT_S16);
+            for (int k = 0; k < n; ++k) {
+                const float l = aL[aStart + k], r = aR[aStart + k];
+                // Valores por canal. 5.1 = upmix pasivo (FL FR FC LFE BL BR).
+                float v[6];
+                if (ch == 1) { v[0] = (l + r) * 0.5f; }
+                else if (ch == 6) {
+                    v[0] = l; v[1] = r; v[2] = (l + r) * 0.5f; v[3] = 0.0f; v[4] = l * 0.6f; v[5] = r * 0.6f;
+                } else { v[0] = l; v[1] = r; }
+                if (s16) {   // empaquetado intercalado
+                    auto *d = reinterpret_cast<int16_t *>(aframe->data[0]);
+                    for (int c = 0; c < ch; ++c)
+                        d[k * ch + c] = int16_t(std::clamp(int(std::lround(v[c] * 32767.0f)), -32768, 32767));
+                } else {     // planar float (un plano por canal)
+                    for (int c = 0; c < ch; ++c)
+                        reinterpret_cast<float *>(aframe->data[c])[k] = v[c];
                 }
-            } else {
-                // Planar float (AAC): un plano por canal.
-                std::memcpy(aframe->data[0], aL.constData() + aStart, n * sizeof(float));
-                std::memcpy(aframe->data[1], aR.constData() + aStart, n * sizeof(float));
             }
             aframe->pts = aStart;
             if (avcodec_send_frame(ac, aframe) < 0) return false;
@@ -234,12 +315,14 @@ void ExportWorker::run(const ExportJob &job)
     };
 
     // --- Bucle principal: componer + codificar cada fotograma ---
+    // En 2 pasadas, esta es la 2.ª: la barra va del 50 % al 100 %.
+    const double progBase = twoPass ? 0.5 : 0.0, progSpan = twoPass ? 0.5 : 1.0;
     bool ok = true;
     QImage black(W, H, QImage::Format_RGBA8888);
     black.fill(Qt::black);
     for (int i = 0; i < frameCount && ok; ++i) {
         bool hasContent = false;
-        QImage img = comp.renderFrame(job.frames[i], hasContent);
+        QImage img = comp.renderFrame(frameAt(i), hasContent);   // streaming o materializado
         if (img.isNull() || img.size() != QSize(W, H))
             img = black;
         if (img.format() != QImage::Format_RGBA8888)
@@ -257,7 +340,7 @@ void ExportWorker::run(const ExportJob &job)
         if (!encodeAudioUntil(double(i + 1) / job.fps)) { ok = false; break; }
 
         if ((i & 7) == 0 || i == frameCount - 1)
-            emit progress(double(i + 1) / frameCount);
+            emit progress(progBase + progSpan * double(i + 1) / frameCount);
     }
 
     // --- Vaciado (flush) de ambos encoders ---
@@ -276,8 +359,21 @@ void ExportWorker::run(const ExportJob &job)
     if (!(oc->oformat->flags & AVFMT_NOFILE)) avio_closep(&oc->pb);
     avformat_free_context(oc);
 
-    if (ok) emit finished(true, job.path);
-    else    emit finished(false, QStringLiteral("Fallo durante la codificación."));
+    if (twoPass) {   // limpia los ficheros de estadísticas de la 1.ª pasada
+        const QString sf = QFile::decodeName(statsFile);
+        QFile::remove(sf);
+        QFile::remove(sf + QStringLiteral(".mbtree"));
+        QFile::remove(sf + QStringLiteral(".cutree"));
+    }
+
+    if (ok) {
+        qInfo("[export] completado: %s (%lld bytes)",
+              qUtf8Printable(job.path), qint64(QFileInfo(job.path).size()));
+        emit finished(true, job.path);
+    } else {
+        qCritical("[export] error durante la codificación de %s", qUtf8Printable(job.path));
+        emit finished(false, QStringLiteral("Fallo durante la codificación."));
+    }
 }
 
 // ============================ Exporter (fachada) ============================
@@ -361,6 +457,36 @@ void Exporter::setAudioKbps(int kbps)
     emit settingsChanged();
 }
 
+void Exporter::setAudioChannels(int ch)
+{
+    if (ch != 1 && ch != 2 && ch != 6) ch = 2;   // mono · estéreo · 5.1
+    if (ch == m_audioChannels) return;
+    m_audioChannels = ch;
+    emit settingsChanged();
+}
+
+void Exporter::setCrfEnabled(bool on)
+{
+    if (on == m_crfEnabled) return;
+    m_crfEnabled = on;
+    emit settingsChanged();
+}
+
+void Exporter::setCrf(int v)
+{
+    v = qBound(0, v, 51);
+    if (v == m_crf) return;
+    m_crf = v;
+    emit settingsChanged();
+}
+
+void Exporter::setTwoPass(bool on)
+{
+    if (on == m_twoPass) return;
+    m_twoPass = on;
+    emit settingsChanged();
+}
+
 void Exporter::applyPreset(const QString &name, int w, int h, double fps, int mbps)
 {
     if (w <= 0 || h <= 0 || fps <= 0 || mbps <= 0) return;
@@ -384,13 +510,20 @@ bool Exporter::buildJob(const QString &path, int w, int h, double fps, int mbps,
     if (audioKbps > 0) job.audioBitrate = audioKbps * 1000;
     job.durationUs = durUs;
 
-    // Instantánea de vídeo: RenderClipList por fotograma, desde startUs (rango I/O).
+    // Vídeo en STREAMING: se guarda una instantánea del timeline y el worker resuelve
+    // cada fotograma bajo demanda (no se materializan los cientos de miles de listas).
     const int frameCount = int(std::ceil((durUs / 1e6) * fps));
-    job.frames.reserve(frameCount);
-    for (int i = 0; i < frameCount; ++i) {
-        const qint64 us = startUs + qint64((double(i) / fps) * 1e6);
-        job.frames.push_back(m_timeline->clipsAt(us));
-    }
+    const double estAudioMB = (durUs / 1e6) * 48000.0 * 4.0 / (1024 * 1024);   // master S16
+    qInfo("[export] buildJob: rango %.1f-%.1f s, %.3f fps => %d fotogramas (%dx%d); audio ~%.0f MB",
+          startUs / 1e6, (startUs + durUs) / 1e6, fps, frameCount, w, h, estAudioMB);
+    if (estAudioMB > 512.0)
+        qWarning("[export] AVISO: exportación larga (%d fotogramas, master ~%.0f MB).", frameCount, estAudioMB);
+    job.streamFrames = true;
+    job.frameCount = frameCount;
+    job.startUs = startUs;
+    job.snapshot = m_timeline->renderSnapshot();   // copia ligera (O(clips), no O(fotogramas))
+    qInfo("[export] instantánea de timeline lista (%lld clips, %lld pistas)",
+          qint64(job.snapshot.clips.size()), qint64(job.snapshot.tracks.size()));
 
     // audioKbps<=0: exportar sin pista de audio.
     if (audioKbps <= 0)
@@ -415,6 +548,13 @@ bool Exporter::buildJob(const QString &path, int w, int h, double fps, int mbps,
         m.clipEqOn = a.clipEqOn; m.clipEqLowDb = a.clipEqLowDb; m.clipEqMidDb = a.clipEqMidDb; m.clipEqHighDb = a.clipEqHighDb;
         m.clipCompOn = a.clipCompOn; m.clipCompThreshDb = a.clipCompThreshDb;
         m.clipCompRatio = a.clipCompRatio; m.clipCompMakeupDb = a.clipCompMakeupDb;
+        m.clipGateOn = a.clipGateOn; m.clipGateThreshDb = a.clipGateThreshDb;
+        m.clipDeEssOn = a.clipDeEssOn; m.clipDeEssThreshDb = a.clipDeEssThreshDb;
+        m.clipReverbOn = a.clipReverbOn; m.clipReverbMix = a.clipReverbMix; m.clipReverbSize = a.clipReverbSize;
+        for (const TimelineModel::Keyframe &k : a.eqLowKf)  m.clipEqLowKf.push_back({ k.sourceUs, k.value });
+        for (const TimelineModel::Keyframe &k : a.eqMidKf)  m.clipEqMidKf.push_back({ k.sourceUs, k.value });
+        for (const TimelineModel::Keyframe &k : a.eqHighKf) m.clipEqHighKf.push_back({ k.sourceUs, k.value });
+        for (const TimelineModel::Keyframe &k : a.reverbMixKf) m.clipReverbMixKf.push_back({ k.sourceUs, k.value });
         mix.push_back(m);
     }
     {
@@ -442,9 +582,11 @@ void Exporter::exportTimeline(const QString &path, int width, int height,
     else { startUs = m_timeline->exportStartUs(); durUs = m_timeline->exportEndUs() - startUs; }
     ExportJob job;
     if (!buildJob(path, width, height, fps, m_mbps, m_audioKbps, startUs, durUs, job)) {
-        setStatus(QStringLiteral("El rango de exportación está vacío.")); return;
+        setStatus(QStringLiteral("No se pudo preparar la exportación (rango vacío o memoria insuficiente; ver el log)."));
+        return;
     }
     job.format = m_format;
+    job.channels = m_audioChannels; job.useCrf = m_crfEnabled; job.crf = m_crf; job.twoPass = m_twoPass;
 
     m_running = true; m_progress = 0.0;
     setStatus(QStringLiteral("Exportando…"));
@@ -558,6 +700,7 @@ void Exporter::enqueueCurrent()
     it.format = m_format;
     it.width = m_outW; it.height = m_outH; it.fps = m_outFps; it.mbps = m_mbps;
     it.audioKbps = m_audioKbps;
+    it.channels = m_audioChannels; it.useCrf = m_crfEnabled; it.crf = m_crf; it.twoPass = m_twoPass;
     it.startUs = m_timeline->exportStartUs();
     it.durUs = m_timeline->exportEndUs() - it.startUs;
     it.status = 0;
@@ -616,6 +759,7 @@ void Exporter::renderNextInQueue()
         return;
     }
     job.format = it.format;
+    job.channels = it.channels; job.useCrf = it.useCrf; job.crf = it.crf; job.twoPass = it.twoPass;
     it.status = 1;   // en curso
     m_curQueueIdx = idx;
     m_running = true; m_progress = 0.0;
@@ -806,6 +950,32 @@ int runCodecSelfTestIfRequested()
     const double fps = 24.0;
     const QByteArray audio(48000 * 2 * 2, '\0');   // 1 s de silencio S16 estéreo
 
+    auto makeFrames = []() {
+        QVector<QVector<TimelineModel::RenderClip>> fr;
+        for (int i = 0; i < 24; ++i) {
+            TimelineModel::RenderClip rc;
+            rc.trackIndex = 0; rc.kind = QStringLiteral("video");
+            rc.fill = (i % 2) ? QStringLiteral("#3060c0") : QStringLiteral("#c06030");
+            rc.sourceUs = 0;
+            fr.push_back(QVector<TimelineModel::RenderClip>{ rc });
+        }
+        return fr;
+    };
+    // Renderiza un ExportJob y verifica que produce archivo. Devuelve el tamaño (0 si falla).
+    auto renderCheck = [&](ExportJob job, const char *label) -> qint64 {
+        QFile::remove(job.path);
+        ExportWorker worker;
+        bool ok = false; QString msg;
+        QObject::connect(&worker, &ExportWorker::finished, [&](bool o, const QString &m) { ok = o; msg = m; });
+        worker.run(job);
+        const qint64 sz = QFileInfo(job.path).size();
+        const bool fileOk = ok && sz > 1024;
+        check(fileOk, label);
+        if (!fileOk && !msg.isEmpty()) qWarning("[CODEC selftest]   %s: %s", label, qUtf8Printable(msg));
+        QFile::remove(job.path);
+        return fileOk ? sz : 0;
+    };
+
     for (const FmtDesc &f : kFormats) {
         if (!avcodec_find_encoder_by_name(f.venc)) {
             qInfo("[CODEC selftest] %-8s encoder no disponible (omitido)", f.id);
@@ -836,6 +1006,37 @@ int runCodecSelfTestIfRequested()
         if (!fileOk && !msg.isEmpty())
             qWarning("[CODEC selftest]   %s: %s", f.id, qUtf8Printable(msg));
         QFile::remove(job.path);
+    }
+
+    // Audio mono (downmix) y modo CRF sobre H.264 → ambos producen archivo válido.
+    {
+        ExportJob mono;
+        mono.path = QDir(QDir::tempPath()).filePath(QStringLiteral("pvs_codec_mono.mp4"));
+        mono.width = W; mono.height = H; mono.fps = fps; mono.durationUs = 1'000'000;
+        mono.videoBitrate = 8'000'000; mono.format = QStringLiteral("h264");
+        mono.frames = makeFrames(); mono.audioS16 = audio; mono.channels = 1;
+        renderCheck(mono, "mono");
+
+        ExportJob crf;
+        crf.path = QDir(QDir::tempPath()).filePath(QStringLiteral("pvs_codec_crf.mp4"));
+        crf.width = W; crf.height = H; crf.fps = fps; crf.durationUs = 1'000'000;
+        crf.format = QStringLiteral("h264"); crf.useCrf = true; crf.crf = 23;
+        crf.frames = makeFrames(); crf.audioS16 = audio;
+        renderCheck(crf, "crf");
+
+        ExportJob s51;   // 5.1 (upmix) sobre AAC/MP4
+        s51.path = QDir(QDir::tempPath()).filePath(QStringLiteral("pvs_codec_51.mp4"));
+        s51.width = W; s51.height = H; s51.fps = fps; s51.durationUs = 1'000'000;
+        s51.videoBitrate = 8'000'000; s51.format = QStringLiteral("h264");
+        s51.frames = makeFrames(); s51.audioS16 = audio; s51.channels = 6;
+        renderCheck(s51, "5.1");
+
+        ExportJob tp;    // 2 pasadas sobre H.264 (bitrate)
+        tp.path = QDir(QDir::tempPath()).filePath(QStringLiteral("pvs_codec_2pass.mp4"));
+        tp.width = W; tp.height = H; tp.fps = fps; tp.durationUs = 1'000'000;
+        tp.videoBitrate = 8'000'000; tp.format = QStringLiteral("h264");
+        tp.frames = makeFrames(); tp.audioS16 = audio; tp.twoPass = true;
+        renderCheck(tp, "2pass");
     }
 
     qWarning("[CODEC selftest] %d OK, %d FALLO => %s", pass, fail, fail == 0 ? "PASS" : "FALLO");
