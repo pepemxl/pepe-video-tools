@@ -60,6 +60,9 @@ qt_add_qml_module(PepeVideoStudio
         src/qml/panels/MonitorsRow.qml
         src/qml/panels/Inspector.qml
         src/qml/panels/TimelinePanel.qml
+        src/qml/panels/DeliverPanel.qml
+        src/qml/panels/FusionPanel.qml
+        src/qml/panels/AudioMixerPanel.qml
 )
 
 # `Theme` es un singleton de C++ (src/app/theme.h) registrado en main.cpp.

@@ -46,7 +46,7 @@ export QML_IMPORT_PATH := $(QT_DIR)/qml
 export QML2_IMPORT_PATH := $(QT_DIR)/qml
 
 .PHONY: all help configure build rebuild run run-wait clean distclean deploy installer \
-        selftest selftest-audio selftest-comp selftest-tl selftest-export selftest-wave \
+        selftest selftest-audio selftest-comp selftest-tl selftest-export selftest-deliver selftest-codec selftest-wave \
         selftest-proj selftest-pool selftest-grab selftest-yuv selftest-prog
 
 all: build
@@ -59,6 +59,8 @@ help:
 	@echo   rebuild     Recompila desde cero
 	@echo   run         Ejecuta la aplicacion
 	@echo   selftest    Auto-test de audio (deterministico, sin ventana)
+	@echo   selftest-deliver  Auto-test de la cola de render (deterministico, sin ventana)
+	@echo   selftest-codec  Auto-test de codecs de exportacion (deterministico, sin ventana)
 	@echo   selftest-wave  Auto-test de formas de onda (deterministico, sin ventana)
 	@echo   selftest-proj  Auto-test de proyecto guardar/abrir (deterministico, sin ventana)
 	@echo   selftest-pool  Auto-test del Media Pool: filtro y bins (deterministico, sin ventana)
@@ -102,6 +104,14 @@ selftest selftest-audio: build
 ## selftest-export: compone y codifica ~2 s a un MP4 temporal (H.264/AAC); termina solo
 selftest-export: build
 	set "PVS_EXPORT_SELFTEST=1" && set "QT_QPA_PLATFORM=offscreen" && set "QT_QPA_FONTDIR=C:\Windows\Fonts" && set "QT_FORCE_STDERR_LOGGING=1" && "$(EXE_WIN)"
+
+## selftest-deliver: encola dos trabajos y los renderiza en serie (cola de render); termina solo
+selftest-deliver: build
+	set "PVS_DELIVER_SELFTEST=1" && set "QT_QPA_PLATFORM=offscreen" && set "QT_QPA_FONTDIR=C:\Windows\Fonts" && set "QT_FORCE_STDERR_LOGGING=1" && "$(EXE_WIN)"
+
+## selftest-codec: renderiza un clip corto en cada formato disponible (H.264/H.265/ProRes/DNxHR/VP9); termina solo
+selftest-codec: build
+	set "PVS_CODEC_SELFTEST=1" && set "QT_QPA_PLATFORM=offscreen" && set "QT_QPA_FONTDIR=C:\Windows\Fonts" && set "QT_FORCE_STDERR_LOGGING=1" && "$(EXE_WIN)"
 
 ## selftest-wave: envolvente de PCM real (formas de onda del timeline); termina solo
 selftest-wave: build
