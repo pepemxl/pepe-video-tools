@@ -84,6 +84,27 @@ Rectangle {
                     }
                 }
 
+                // Añadir pista de vídeo / audio
+                Rectangle { width: 1; height: 18; color: Theme.line; anchors.verticalCenter: parent.verticalCenter }
+                Row {
+                    spacing: 3; anchors.verticalCenter: parent.verticalCenter
+                    Repeater {
+                        model: [ { l: "+ V", kind: "video", tip: "Añadir pista de vídeo" },
+                                 { l: "+ A", kind: "audio", tip: "Añadir pista de audio" } ]
+                        delegate: Rectangle {
+                            required property var modelData
+                            width: addTrkRow.width + 14; height: 28; radius: 5
+                            color: addTrkHov.hovered ? Theme.hover : "transparent"; border.color: Theme.line; border.width: 1
+                            HoverHandler { id: addTrkHov }
+                            TapHandler { onTapped: modelData.kind === "video" ? TimelineModel.addVideoTrack()
+                                                                             : TimelineModel.addAudioTrack() }
+                            Row { id: addTrkRow; anchors.centerIn: parent; spacing: 2
+                                Text { text: modelData.l; font.pixelSize: 11; font.weight: Font.Bold; font.family: Theme.sans
+                                       color: Theme.textMid; anchors.verticalCenter: parent.verticalCenter } }
+                        }
+                    }
+                }
+
                 Item { Layout.fillWidth: true }
 
                 // Añadir título (Ctrl+T)
@@ -131,6 +152,27 @@ Rectangle {
                     Canvas { anchors.centerIn: parent; width: 9; height: 11
                         onPaint: { var c=getContext("2d"); c.fillStyle=Theme.amber; c.beginPath()
                             c.moveTo(0,0); c.lineTo(9,0); c.lineTo(9,7.7); c.lineTo(4.5,11); c.lineTo(0,7.7); c.closePath(); c.fill() } }
+                }
+                // Rango de exportación: Entrada (I) · Salida (O) · Limpiar
+                Rectangle { width: 1; height: 18; color: Theme.line; anchors.verticalCenter: parent.verticalCenter }
+                Row {
+                    spacing: 3; anchors.verticalCenter: parent.verticalCenter
+                    Rectangle { width: 30; height: 28; radius: 5; border.color: Theme.line; border.width: 1
+                        color: inHov.hovered ? Theme.hover : "transparent"
+                        HoverHandler { id: inHov }
+                        TapHandler { onTapped: TimelineModel.setMarkInAtPlayhead() }
+                        Text { anchors.centerIn: parent; text: "⟤"; font.pixelSize: 14; color: Theme.amber } }
+                    Rectangle { width: 30; height: 28; radius: 5; border.color: Theme.line; border.width: 1
+                        color: outHov.hovered ? Theme.hover : "transparent"
+                        HoverHandler { id: outHov }
+                        TapHandler { onTapped: TimelineModel.setMarkOutAtPlayhead() }
+                        Text { anchors.centerIn: parent; text: "⟥"; font.pixelSize: 14; color: Theme.amber } }
+                    Rectangle { width: 26; height: 28; radius: 5; border.color: Theme.line; border.width: 1
+                        visible: TimelineModel.hasInOut
+                        color: clrHov.hovered ? Theme.hover : "transparent"
+                        HoverHandler { id: clrHov }
+                        TapHandler { onTapped: TimelineModel.clearInOut() }
+                        Text { anchors.centerIn: parent; text: "✕"; font.pixelSize: 11; color: Theme.textMid } }
                 }
                 // Snap
                 Rectangle {
@@ -200,6 +242,20 @@ Rectangle {
                                            color: Theme.textFaint; font.pixelSize: 9; font.family: Theme.mono; x: 2; y: 5 }
                                 }
                             }
+                            // Rango de exportación (marcas I/O): banda ámbar + corchetes.
+                            Rectangle {
+                                visible: TimelineModel.hasInOut
+                                anchors.top: parent.top; anchors.bottom: parent.bottom
+                                x: scaleArea.offX + scaleArea.contentW * TimelineModel.markInFraction
+                                width: Math.max(2, scaleArea.contentW * (TimelineModel.markOutFraction - TimelineModel.markInFraction))
+                                color: "#26e2a24b"
+                                Rectangle { anchors.left: parent.left; width: 2; height: parent.height; color: Theme.amber }
+                                Rectangle { anchors.right: parent.right; width: 2; height: parent.height; color: Theme.amber }
+                                Text { anchors.left: parent.left; anchors.leftMargin: 4; anchors.top: parent.top; anchors.topMargin: 1
+                                       text: "IN"; color: Theme.amber; font.pixelSize: 7; font.family: Theme.mono; font.weight: Font.Bold }
+                                Text { anchors.right: parent.right; anchors.rightMargin: 4; anchors.top: parent.top; anchors.topMargin: 1
+                                       text: "OUT"; color: Theme.amber; font.pixelSize: 7; font.family: Theme.mono; font.weight: Font.Bold }
+                            }
                             // Marcadores (desde el modelo); clic para eliminar
                             Repeater {
                                 model: TimelineModel.markers
@@ -245,12 +301,53 @@ Rectangle {
                                 width: tracksCol.width; height: modelData.height
                                 // Cabecera de pista
                                 Rectangle {
+                                    id: trackHdr
                                     width: 158; height: parent.height; color: Theme.panel2
+                                    // Renombrar en línea (doble clic sobre el nombre).
+                                    property bool editing: false
+                                    function startEdit() {
+                                        editing = true
+                                        hdrEdit.text = trackRow.modelData.name
+                                        hdrEdit.forceActiveFocus(); hdrEdit.selectAll()
+                                    }
+                                    function commitEdit() {
+                                        if (!editing) return
+                                        editing = false
+                                        TimelineModel.renameTrack(trackRow.trackIndex, hdrEdit.text)
+                                    }
+                                    HoverHandler { id: hdrHover }
                                     Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: Theme.line }
                                     Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#202127" }
-                                    Text { anchors.left: parent.left; anchors.leftMargin: 8; anchors.verticalCenter: parent.verticalCenter
-                                           text: modelData.name; color: modelData.idColor; font.pixelSize: 10; font.weight: Font.Bold; font.family: Theme.mono }
-                                    Row { anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter; spacing: 3
+                                    Text { visible: !trackHdr.editing
+                                           anchors.left: parent.left; anchors.leftMargin: 8; anchors.verticalCenter: parent.verticalCenter
+                                           text: modelData.name; color: modelData.idColor; font.pixelSize: 10; font.weight: Font.Bold; font.family: Theme.mono
+                                           TapHandler { onDoubleTapped: trackHdr.startEdit() } }
+                                    // Editor de renombrado: Enter confirma, Esc cancela, perder foco confirma.
+                                    TextInput {
+                                        id: hdrEdit
+                                        visible: trackHdr.editing
+                                        anchors.left: parent.left; anchors.leftMargin: 8
+                                        anchors.verticalCenter: parent.verticalCenter; width: 60
+                                        clip: true; selectByMouse: true
+                                        color: Theme.textHi; font.pixelSize: 10; font.weight: Font.Bold; font.family: Theme.mono
+                                        selectionColor: Theme.amber; selectedTextColor: Theme.amberInk
+                                        onAccepted: trackHdr.commitEdit()
+                                        Keys.onEscapePressed: { trackHdr.editing = false; focus = false }
+                                        onActiveFocusChanged: if (!activeFocus) trackHdr.commitEdit()
+                                    }
+                                    // Eliminar pista (✕, al pasar el ratón; abajo-izquierda).
+                                    Rectangle {
+                                        visible: hdrHover.hovered && !trackHdr.editing
+                                        anchors.left: parent.left; anchors.leftMargin: 6
+                                        anchors.bottom: parent.bottom; anchors.bottomMargin: 5
+                                        width: 15; height: 14; radius: 3
+                                        color: delTrkHover.hovered ? Theme.red : Theme.hover2
+                                        HoverHandler { id: delTrkHover }
+                                        TapHandler { onTapped: TimelineModel.removeTrack(trackRow.trackIndex) }
+                                        Text { anchors.centerIn: parent; text: "✕"; font.pixelSize: 8
+                                               color: delTrkHover.hovered ? "#ffffff" : Theme.textDim }
+                                    }
+                                    Row { anchors.right: parent.right; anchors.rightMargin: 8; anchors.top: parent.top; anchors.topMargin: 6; spacing: 3
                                         Repeater { model: trackRow.modelData.kind === "video" ? ["👁","🔒"] : ["M","S"]
                                             delegate: Rectangle {
                                                 id: hdrBtn
@@ -612,12 +709,23 @@ Rectangle {
                     RowLayout {
                         Layout.fillWidth: true; Layout.fillHeight: true; Layout.margins: 8; spacing: 4
                         Repeater {
-                            model: [
-                                { id: "A1", col: Theme.green,  trk: 3, cap: 0.34, db: "-3.2",  main: false },
-                                { id: "A2", col: Theme.purple, trk: 4, cap: 0.52, db: "-9.5",  main: false },
-                                { id: "A3", col: Theme.green,  trk: 5, cap: 0.64, db: "-14.0", main: false },
-                                { id: "MAIN", col: Theme.amber, trk: -1, cap: 0.28, db: "0.0", main: true }
-                            ]
+                            // Canales derivados de las pistas de AUDIO reales del modelo
+                            // (se reconstruye al añadir/eliminar/renombrar pistas, señal
+                            // audioChanged) + el bus MAIN. `trk` es el índice GLOBAL de la
+                            // pista (así casa con setTrackGain/audioTracks[trk]).
+                            model: {
+                                var out = []
+                                var palette = [Theme.green, Theme.purple, Theme.blue]
+                                var ats = TimelineModel.audioTracks
+                                var k = 0
+                                for (var i = 0; i < ats.length; i++) {
+                                    if (ats[i].kind !== "audio") continue
+                                    out.push({ id: ats[i].name, col: palette[k % palette.length], trk: ats[i].index, main: false })
+                                    k++
+                                }
+                                out.push({ id: "MAIN", col: Theme.amber, trk: -1, main: true })
+                                return out
+                            }
                             delegate: ColumnLayout {
                                 id: chan
                                 required property var modelData
@@ -625,10 +733,10 @@ Rectangle {
                                 readonly property real lvl: modelData.main
                                     ? Math.max(Audio.peakL, Audio.peakR)
                                     : (Audio.trackPeaks[modelData.trk] || 0)
-                                // Pista de audio asociada (null para MAIN): ganancia/paneo del fader.
+                                // Pista de audio asociada (null para MAIN, que usa el bus master).
                                 readonly property var atrack: modelData.trk >= 0 ? TimelineModel.audioTracks[modelData.trk] : null
-                                readonly property real trackGain: atrack ? atrack.gain : 1.0
-                                readonly property real trackPan: atrack ? atrack.pan : 0.0
+                                readonly property real trackGain: modelData.main ? TimelineModel.masterGain : (atrack ? atrack.gain : 1.0)
+                                readonly property real trackPan: modelData.main ? TimelineModel.masterPan : (atrack ? atrack.pan : 0.0)
                                 Layout.fillWidth: true; Layout.fillHeight: true; spacing: 5
                                 Text { Layout.alignment: Qt.AlignHCenter; text: modelData.id; color: modelData.col; font.pixelSize: 9; font.weight: Font.Bold; font.family: Theme.mono }
                                 // Perilla de paneo: arrástrala en horizontal (doble clic = centro).
@@ -637,11 +745,12 @@ Rectangle {
                                         x: parent.width/2 - 0.75; y: 2; transformOrigin: Item.Bottom; rotation: chan.trackPan * 135 }
                                     MouseArea {
                                         id: panKnob; anchors.fill: parent; anchors.margins: -3
-                                        enabled: modelData.trk >= 0; cursorShape: Qt.SizeHorCursor
+                                        cursorShape: Qt.SizeHorCursor
                                         property real base; property real px
                                         onPressed: (m) => { base = chan.trackPan; px = m.x }
-                                        onPositionChanged: (m) => TimelineModel.setTrackPan(modelData.trk, base + (m.x - px) * 0.02)
-                                        onDoubleClicked: TimelineModel.setTrackPan(modelData.trk, 0)
+                                        onPositionChanged: (m) => { var v = base + (m.x - px) * 0.02
+                                            modelData.main ? TimelineModel.setMasterPan(v) : TimelineModel.setTrackPan(modelData.trk, v) }
+                                        onDoubleClicked: modelData.main ? TimelineModel.setMasterPan(0) : TimelineModel.setTrackPan(modelData.trk, 0)
                                     }
                                 }
                                 // Medidor + fader
@@ -657,14 +766,15 @@ Rectangle {
                                         readonly property real capY: (1 - Math.min(1, chan.trackGain / 4)) * (height - 11)
                                         Rectangle { width: 20; height: 11; radius: 2; color: faderDrag.pressed ? Theme.amber : "#3a3d45"
                                             border.color: modelData.main ? Theme.amber : "#55575f"; border.width: 1
-                                            x: parent.width/2 - 10; y: modelData.main ? parent.height * modelData.cap : faderTrack.capY }
+                                            x: parent.width/2 - 10; y: faderTrack.capY }
                                         MouseArea {
                                             id: faderDrag; anchors.fill: parent; anchors.margins: -6
-                                            enabled: modelData.trk >= 0; cursorShape: Qt.SizeVerCursor
-                                            function setFromY(my) { var f = 1 - Math.max(0, Math.min(1, my / faderTrack.height)); TimelineModel.setTrackGain(modelData.trk, f * 4) }
+                                            cursorShape: Qt.SizeVerCursor
+                                            function setFromY(my) { var f = 1 - Math.max(0, Math.min(1, my / faderTrack.height))
+                                                modelData.main ? TimelineModel.setMasterGain(f * 4) : TimelineModel.setTrackGain(modelData.trk, f * 4) }
                                             onPressed: (m) => setFromY(m.y)
                                             onPositionChanged: (m) => setFromY(m.y)
-                                            onDoubleClicked: TimelineModel.setTrackGain(modelData.trk, 1.0)
+                                            onDoubleClicked: modelData.main ? TimelineModel.setMasterGain(1.0) : TimelineModel.setTrackGain(modelData.trk, 1.0)
                                         } }
                                 }
                                 Text { Layout.alignment: Qt.AlignHCenter

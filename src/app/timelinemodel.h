@@ -17,6 +17,9 @@ class TimelineModel : public QObject
     Q_OBJECT
     Q_PROPERTY(QVariantList tracks READ tracks NOTIFY changed)
     Q_PROPERTY(QVariantList audioTracks READ audioTracks NOTIFY audioChanged)
+    // Bus principal (MAIN): ganancia (1.0 = 0 dB) y pan (-1 izq … +1 der) del master.
+    Q_PROPERTY(double masterGain READ masterGain NOTIFY audioChanged)
+    Q_PROPERTY(double masterPan READ masterPan NOTIFY audioChanged)
     // Variantes QAbstractItemModel de tracks/audioTracks: dataChanged granular por
     // pista, así los delegados del Repeater PERSISTEN entre ediciones (con las
     // QVariantList, cada cambio destruía y recreaba todos los delegados).
@@ -27,6 +30,15 @@ class TimelineModel : public QObject
     Q_PROPERTY(qint64 playheadUs READ playheadUs NOTIFY playheadChanged)
     Q_PROPERTY(qint64 contentEndUs READ contentEndUs NOTIFY changed)  // fin del último clip
     Q_PROPERTY(double totalUsMs READ totalUsMs NOTIFY changed)   // duración de la ventana en ms
+    // Rango de entrada/salida (marcas I/O): acota la exportación. markOutUs = -1 → hasta
+    // el final del contenido. Las fracciones son sobre la ventana total (para la regla).
+    Q_PROPERTY(qint64 markInUs READ markInUs NOTIFY changed)
+    Q_PROPERTY(qint64 markOutUs READ markOutUs NOTIFY changed)
+    Q_PROPERTY(bool hasInOut READ hasInOut NOTIFY changed)
+    Q_PROPERTY(qint64 exportStartUs READ exportStartUs NOTIFY changed)
+    Q_PROPERTY(qint64 exportEndUs READ exportEndUs NOTIFY changed)
+    Q_PROPERTY(double markInFraction READ markInFraction NOTIFY changed)
+    Q_PROPERTY(double markOutFraction READ markOutFraction NOTIFY changed)
     Q_PROPERTY(bool snapEnabled READ snapEnabled WRITE setSnapEnabled NOTIFY snapChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY changed)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY changed)
@@ -61,6 +73,9 @@ class TimelineModel : public QObject
     Q_PROPERTY(bool selAudioMute READ selAudioMute NOTIFY selectionChanged)
     // Título del clip seleccionado (para el Inspector).
     Q_PROPERTY(bool selIsAudio READ selIsAudio NOTIFY selectionChanged)
+    // Bypass de nodos del clip seleccionado (página Fusión).
+    Q_PROPERTY(bool selBypassTransform READ selBypassTransform NOTIFY selectionChanged)
+    Q_PROPERTY(bool selBypassColor READ selBypassColor NOTIFY selectionChanged)
 
     Q_PROPERTY(bool selIsTitle READ selIsTitle NOTIFY selectionChanged)
     Q_PROPERTY(QString selTitleText READ selTitleText NOTIFY selectionChanged)
@@ -83,6 +98,12 @@ public:
         double pan = 0.0;   // paneo de pista (-1 izq … +1 der)
         bool hidden = false; // pista de vídeo oculta (no se compone)
         bool locked = false; // pista de vídeo bloqueada (no editable)
+        // Efectos de audio por pista (insertados sobre el submix de la pista):
+        // EQ de 3 bandas (graves/medios/agudos en dB) y compresor.
+        bool eqOn = false;
+        double eqLowDb = 0.0, eqMidDb = 0.0, eqHighDb = 0.0;
+        bool compOn = false;
+        double compThreshDb = -18.0, compRatio = 2.0, compMakeupDb = 0.0;
     };
     // Un keyframe: valor de una propiedad en un tiempo de origen (sourceUs).
     // `interp` define la curva HACIA el siguiente keyframe: 0 = lineal,
@@ -150,6 +171,11 @@ public:
         qint64 inUs;
         QString mediaPath;
         double speed = 1.0;     // remapeo de velocidad (1.0 = normal, 2.0 = 2×, 0.5 = lento)
+        // Bypass de etapas del pipeline (página Fusión): al desactivar un nodo, el
+        // compositor lo salta. Transformar → geometría identidad (conserva opacidad);
+        // Color → corrección neutra.
+        bool bypassTransform = false;
+        bool bypassColor = false;
         // Tipo de transición cuando este clip ENTRA solapado sobre el anterior:
         // "cross" (disolvencia), "dip" (fundido por negro) o "wipe" (barrido).
         QString transition = QStringLiteral("cross");
@@ -171,6 +197,12 @@ public:
         bool mute;
         QVector<Keyframe> gainKf;
         QVector<Keyframe> panKf;
+        // Efectos de la pista a la que pertenece el clip (iguales para todos los
+        // clips de la pista; el motor agrupa por pista y los aplica al submix).
+        bool eqOn = false;
+        double eqLowDb = 0.0, eqMidDb = 0.0, eqHighDb = 0.0;
+        bool compOn = false;
+        double compThreshDb = -18.0, compRatio = 2.0, compMakeupDb = 0.0;
     };
     struct Marker {
         qint64 timeUs;
@@ -204,6 +236,8 @@ public:
 
     QVariantList tracks() const;
     QVariantList audioTracks() const;   // estado mute/solo por pista (para el mezclador)
+    double masterGain() const { return m_masterGain; }
+    double masterPan() const { return m_masterPan; }
     QAbstractItemModel *tracksModel();        // creado perezosamente (hijo del modelo)
     QAbstractItemModel *audioTracksModel();
     QVariantList markers() const;
@@ -218,6 +252,20 @@ public:
     double totalUsMs() const { return m_totalUs / 1000.0; }
     // Fin del contenido: mayor (inicio + duración) entre todos los clips.
     qint64 contentEndUs() const;
+    // Marcas de entrada/salida y rango de exportación resuelto.
+    qint64 markInUs() const { return m_inUs; }
+    qint64 markOutUs() const { return m_outUs; }
+    bool hasInOut() const { return m_inUs > 0 || m_outUs >= 0; }
+    qint64 exportStartUs() const;
+    qint64 exportEndUs() const;
+    double markInFraction() const { return m_totalUs > 0 ? double(m_inUs) / m_totalUs : 0.0; }
+    double markOutFraction() const
+    { return m_totalUs > 0 ? double(m_outUs < 0 ? contentEndUs() : m_outUs) / m_totalUs : 0.0; }
+    Q_INVOKABLE void setMarkInAtPlayhead();
+    Q_INVOKABLE void setMarkOutAtPlayhead();
+    Q_INVOKABLE void setMarkInFraction(double f);
+    Q_INVOKABLE void setMarkOutFraction(double f);
+    Q_INVOKABLE void clearInOut();
     bool snapEnabled() const { return m_snap; }
     void setSnapEnabled(bool on);
     bool canUndo() const { return m_undo.canUndo(); }
@@ -260,6 +308,8 @@ public:
     double selPan() const;
     bool selAudioMute() const;
     bool selIsAudio() const;
+    bool selBypassTransform() const;
+    bool selBypassColor() const;
     bool selIsTitle() const;
     QString selTitleText() const;
     double selTitleSize() const;
@@ -306,6 +356,9 @@ public:
     Q_INVOKABLE void setSelTint(double v);
     Q_INVOKABLE void setSelSat(double v);
     Q_INVOKABLE void resetSelColor();
+    // Bypass de nodos del clip seleccionado (página Fusión): salta la etapa en el compositor.
+    Q_INVOKABLE void setSelBypassTransform(bool bypass);
+    Q_INVOKABLE void setSelBypassColor(bool bypass);
     Q_INVOKABLE void setSelSpeed(double v);   // remapeo de velocidad del clip seleccionado
     // Audio del clip seleccionado. La ganancia respeta la automatización (aplica al keyframe
     // del playhead si está animada, igual que la transformación).
@@ -318,9 +371,24 @@ public:
     // Ganancia/paneo de pista (faders y perillas del mezclador). Rehornean la mezcla.
     Q_INVOKABLE void setTrackGain(int trackIndex, double gain);
     Q_INVOKABLE void setTrackPan(int trackIndex, double pan);
+    // Ganancia/paneo del bus MAIN (fader y perilla del canal MAIN del mezclador).
+    Q_INVOKABLE void setMasterGain(double gain);
+    Q_INVOKABLE void setMasterPan(double pan);
+    // Efectos de audio por pista (consola de la página Audio). Rehornean la mezcla.
+    Q_INVOKABLE void setTrackEqEnabled(int trackIndex, bool on);
+    Q_INVOKABLE void setTrackEq(int trackIndex, double lowDb, double midDb, double highDb);
+    Q_INVOKABLE void setTrackCompEnabled(int trackIndex, bool on);
+    Q_INVOKABLE void setTrackComp(int trackIndex, double threshDb, double ratio, double makeupDb);
     // Visibilidad/bloqueo de pista de vídeo (cabecera 👁/🔒). Oculta = no se compone.
     Q_INVOKABLE void setTrackHidden(int trackIndex, bool hidden);
     Q_INVOKABLE void setTrackLocked(int trackIndex, bool locked);
+    // Gestión de pistas (undoable). El vídeo se añade arriba (índice 0) y el audio
+    // al final, preservando el invariante "todas las de vídeo antes que las de audio".
+    // Añadir/eliminar reindexa los clips (cada clip referencia su pista por índice).
+    Q_INVOKABLE void addVideoTrack();
+    Q_INVOKABLE void addAudioTrack();
+    Q_INVOKABLE void removeTrack(int trackIndex);
+    Q_INVOKABLE void renameTrack(int trackIndex, const QString &name);
     // Título del clip seleccionado.
     Q_INVOKABLE void setSelTitleText(const QString &text);
     Q_INVOKABLE void setSelTitleSize(double v);
@@ -425,6 +493,13 @@ private:
     int indexOfClip(quint64 id) const;
     void doInsert(const Clip &c, int at);
     Clip doRemoveAt(int at);
+    // Núcleo de la gestión de pistas (compartido por los comandos de undo/redo).
+    // insertTrackAt desplaza +1 los clips con trackIndex >= at; removeTrackAt borra
+    // los clips de esa pista y desplaza -1 los de trackIndex > at.
+    void insertTrackAt(const Track &t, int at);
+    void removeTrackAt(int at);
+    // Nombre único para una nueva pista del tipo dado ("V4", "A2", …).
+    QString uniqueTrackName(const QString &kind) const;
     // Ajusta una marca de tiempo al borde de clip / playhead / marcador más cercano
     // dentro de una tolerancia, si el imán (snap) está activo. excludeId se ignora.
     qint64 snapUs(qint64 us, quint64 excludeId) const;
@@ -451,6 +526,10 @@ private:
     QVector<Marker> m_markers;
     QVector<Subtitle> m_subtitles;
     bool m_subsEnabled = true;
+    double m_masterGain = 1.0;          // ganancia del bus MAIN (1.0 = 0 dB)
+    double m_masterPan = 0.0;           // pan del bus MAIN (-1 … +1)
+    qint64 m_inUs = 0;                  // marca de entrada (rango de exportación)
+    qint64 m_outUs = -1;                // marca de salida (-1 = hasta el fin del contenido)
     qint64 m_totalUs = 300LL * 1000000; // ventana de 5 min
     qint64 m_playheadUs = 0;
     quint64 m_selectedId = 0;

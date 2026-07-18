@@ -78,6 +78,8 @@ Window {
             case Qt.Key_Z: timeline.currentTool = 9; e.accepted = true; break;
             case Qt.Key_S: TimelineModel.snapEnabled = !TimelineModel.snapEnabled; e.accepted = true; break;
             case Qt.Key_M: TimelineModel.addMarkerAtPlayhead(); e.accepted = true; break;
+            case Qt.Key_I: TimelineModel.setMarkInAtPlayhead(); e.accepted = true; break;   // entrada
+            case Qt.Key_O: TimelineModel.setMarkOutAtPlayhead(); e.accepted = true; break;  // salida
             case Qt.Key_Delete:
             case Qt.Key_Backspace:
                 (e.modifiers & Qt.ShiftModifier) ? TimelineModel.rippleDeleteSelected()
@@ -111,17 +113,38 @@ Window {
                     visible: topBar.currentMode <= 1
                     Layout.preferredWidth: topBar.currentMode === 0 ? 460 : 272
                 }
-                MonitorsRow  { Layout.fillWidth: true; Layout.fillHeight: true }
+                MonitorsRow  {
+                    Layout.fillWidth: true; Layout.fillHeight: true
+                    // Fusión (2), Audio (4) y Entregar (5) tienen su propia página principal.
+                    visible: topBar.currentMode !== 2 && topBar.currentMode !== 4 && topBar.currentMode !== 5
+                }
                 Inspector {
                     id: inspector
                     Layout.fillHeight: true
                     // Editar / Fusión / Color; oculto en Medios, Audio y Entregar.
                     visible: topBar.currentMode >= 1 && topBar.currentMode <= 3
                 }
+                // Fusión (2): grafo de nodos del clip (con preview y bypass).
+                FusionPanel {
+                    Layout.fillWidth: true; Layout.fillHeight: true
+                    visible: topBar.currentMode === 2
+                    onStageSelected: (tab) => inspector.currentTab = tab
+                }
+                // Audio (4): consola de mezcla dedicada.
+                AudioMixerPanel {
+                    Layout.fillWidth: true; Layout.fillHeight: true
+                    visible: topBar.currentMode === 4
+                }
+                // Entregar (5): página dedicada de render (ajustes + preview + cola).
+                DeliverPanel {
+                    Layout.fillWidth: true; Layout.fillHeight: true
+                    visible: topBar.currentMode === 5
+                }
             }
 
-            // Sin timeline en Medios (0): esa vista es para revisar material.
-            TimelinePanel { id: timeline; Layout.fillWidth: true; visible: topBar.currentMode !== 0 }
+            // Sin timeline en Medios (0) ni en Entregar (5, tiene su propia página).
+            TimelinePanel { id: timeline; Layout.fillWidth: true
+                            visible: topBar.currentMode !== 0 && topBar.currentMode !== 5 }
             StatusBar     { Layout.fillWidth: true }
         }
     }

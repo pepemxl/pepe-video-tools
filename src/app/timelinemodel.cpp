@@ -154,6 +154,15 @@ QVector<TimelineModel::RenderClip> TimelineModel::clipsAt(qint64 us) const
         rc.kfTemp.clear(); rc.kfTint.clear(); rc.kfSat.clear();
         rc.kfLiftX.clear(); rc.kfLiftY.clear(); rc.kfGammaX.clear();
         rc.kfGammaY.clear(); rc.kfGainX.clear(); rc.kfGainY.clear();
+        // Bypass de nodos (Fusión): Transformar → geometría identidad (conserva la
+        // opacidad, que es el nodo de salida); Color → corrección neutra.
+        if (c.bypassTransform) {
+            const double op = rt.opacity;
+            rt = Transform{};
+            rt.opacity = op;
+        }
+        if (c.bypassColor)
+            rc = Color{};
         RenderClip r{ c.trackIndex, c.kind, c.fill, c.mediaPath, srcUs, rt, rc, c.title };
         r.clipId = c.id;
         return r;
@@ -778,6 +787,175 @@ void TimelineModel::setTrackLocked(int trackIndex, bool locked)
     emit edited();
 }
 
+void TimelineModel::setMasterGain(double gain)
+{
+    gain = qBound(0.0, gain, 4.0);   // hasta +12 dB
+    if (qFuzzyCompare(m_masterGain, gain)) return;
+    m_masterGain = gain;
+    emit audioChanged();
+    emit edited();
+}
+void TimelineModel::setMasterPan(double pan)
+{
+    pan = qBound(-1.0, pan, 1.0);
+    if (qFuzzyCompare(m_masterPan, pan)) return;
+    m_masterPan = pan;
+    emit audioChanged();
+    emit edited();
+}
+
+// ---- Efectos de audio por pista ----
+void TimelineModel::setTrackEqEnabled(int trackIndex, bool on)
+{
+    if (trackIndex < 0 || trackIndex >= m_tracks.size()) return;
+    if (m_tracks[trackIndex].eqOn == on) return;
+    m_tracks[trackIndex].eqOn = on;
+    emit audioChanged();
+    emit edited();
+}
+void TimelineModel::setTrackEq(int trackIndex, double lowDb, double midDb, double highDb)
+{
+    if (trackIndex < 0 || trackIndex >= m_tracks.size()) return;
+    lowDb = qBound(-18.0, lowDb, 18.0);
+    midDb = qBound(-18.0, midDb, 18.0);
+    highDb = qBound(-18.0, highDb, 18.0);
+    Track &t = m_tracks[trackIndex];
+    if (qFuzzyCompare(t.eqLowDb, lowDb) && qFuzzyCompare(t.eqMidDb, midDb)
+        && qFuzzyCompare(t.eqHighDb, highDb))
+        return;
+    t.eqLowDb = lowDb; t.eqMidDb = midDb; t.eqHighDb = highDb;
+    emit audioChanged();
+    emit edited();
+}
+void TimelineModel::setTrackCompEnabled(int trackIndex, bool on)
+{
+    if (trackIndex < 0 || trackIndex >= m_tracks.size()) return;
+    if (m_tracks[trackIndex].compOn == on) return;
+    m_tracks[trackIndex].compOn = on;
+    emit audioChanged();
+    emit edited();
+}
+void TimelineModel::setTrackComp(int trackIndex, double threshDb, double ratio, double makeupDb)
+{
+    if (trackIndex < 0 || trackIndex >= m_tracks.size()) return;
+    threshDb = qBound(-48.0, threshDb, 0.0);
+    ratio = qBound(1.0, ratio, 20.0);
+    makeupDb = qBound(0.0, makeupDb, 24.0);
+    Track &t = m_tracks[trackIndex];
+    if (qFuzzyCompare(t.compThreshDb, threshDb) && qFuzzyCompare(t.compRatio, ratio)
+        && qFuzzyCompare(t.compMakeupDb, makeupDb))
+        return;
+    t.compThreshDb = threshDb; t.compRatio = ratio; t.compMakeupDb = makeupDb;
+    emit audioChanged();
+    emit edited();
+}
+
+// ==================== Gestión de pistas ====================
+
+void TimelineModel::insertTrackAt(const Track &t, int at)
+{
+    at = qBound(0, at, int(m_tracks.size()));
+    for (Clip &c : m_clips)
+        if (c.trackIndex >= at)
+            c.trackIndex += 1;
+    m_tracks.insert(at, t);
+}
+
+void TimelineModel::removeTrackAt(int at)
+{
+    if (at < 0 || at >= m_tracks.size()) return;
+    for (int i = int(m_clips.size()) - 1; i >= 0; --i) {
+        if (m_clips[i].trackIndex == at) {
+            if (m_clips[i].id == m_selectedId) m_selectedId = 0;
+            m_clips.remove(i);
+        } else if (m_clips[i].trackIndex > at) {
+            m_clips[i].trackIndex -= 1;
+        }
+    }
+    m_tracks.remove(at);
+}
+
+QString TimelineModel::uniqueTrackName(const QString &kind) const
+{
+    const QChar prefix = (kind == QLatin1String("audio")) ? QLatin1Char('A') : QLatin1Char('V');
+    int maxN = 0;
+    for (const Track &t : m_tracks) {
+        if (t.kind != kind || t.name.isEmpty() || t.name.at(0) != prefix)
+            continue;
+        bool ok = false;
+        const int n = t.name.mid(1).toInt(&ok);
+        if (ok && n > maxN) maxN = n;
+    }
+    return QString(prefix) + QString::number(maxN + 1);
+}
+
+void TimelineModel::addVideoTrack()
+{
+    Track t;
+    t.name = uniqueTrackName(QStringLiteral("video"));
+    t.kind = QStringLiteral("video");
+    t.idColor = QStringLiteral("#5b8dd6");
+    t.height = 56;
+    // El vídeo se añade ARRIBA (índice 0): la pista nueva queda como la capa superior.
+    m_undo.push(new TimelineCommand(
+        QStringLiteral("Añadir pista de vídeo"),
+        [this, t]() { insertTrackAt(t, 0); emit changed(); emit audioChanged(); bumpSelection(); },
+        [this]() { removeTrackAt(0); emit changed(); emit audioChanged(); bumpSelection(); }));
+}
+
+void TimelineModel::addAudioTrack()
+{
+    Track t;
+    t.name = uniqueTrackName(QStringLiteral("audio"));
+    t.kind = QStringLiteral("audio");
+    t.idColor = QStringLiteral("#4a9e6b");
+    t.height = 48;
+    // El audio se añade al FINAL (mantiene el invariante vídeo-antes-que-audio).
+    const int at = int(m_tracks.size());
+    m_undo.push(new TimelineCommand(
+        QStringLiteral("Añadir pista de audio"),
+        [this, t, at]() { insertTrackAt(t, at); emit changed(); emit audioChanged(); },
+        [this, at]() { removeTrackAt(at); emit changed(); emit audioChanged(); }));
+}
+
+void TimelineModel::removeTrack(int trackIndex)
+{
+    if (trackIndex < 0 || trackIndex >= m_tracks.size()) return;
+    if (m_tracks.size() <= 1) return;   // no dejar la secuencia sin ninguna pista
+    const Track removedTrack = m_tracks.at(trackIndex);
+    // Instantánea de los clips de esta pista para el undo (vuelven con su trackIndex).
+    QVector<Clip> removedClips;
+    for (const Clip &c : m_clips)
+        if (c.trackIndex == trackIndex)
+            removedClips.push_back(c);
+
+    m_undo.push(new TimelineCommand(
+        QStringLiteral("Eliminar pista"),
+        [this, trackIndex]() { removeTrackAt(trackIndex); emit changed(); emit audioChanged(); bumpSelection(); },
+        [this, removedTrack, trackIndex, removedClips]() {
+            insertTrackAt(removedTrack, trackIndex);   // reindexa +1 los clips >= trackIndex
+            for (const Clip &c : removedClips)         // los eliminados vuelven a su pista
+                m_clips.push_back(c);
+            emit changed(); emit audioChanged(); bumpSelection();
+        }));
+}
+
+void TimelineModel::renameTrack(int trackIndex, const QString &name)
+{
+    if (trackIndex < 0 || trackIndex >= m_tracks.size()) return;
+    const QString n = name.trimmed();
+    if (n.isEmpty() || n == m_tracks[trackIndex].name) return;
+    const QString old = m_tracks[trackIndex].name;
+    m_undo.push(new TimelineCommand(
+        QStringLiteral("Renombrar pista"),
+        [this, trackIndex, n]() {
+            if (trackIndex < m_tracks.size()) { m_tracks[trackIndex].name = n; emit changed(); emit audioChanged(); }
+        },
+        [this, trackIndex, old]() {
+            if (trackIndex < m_tracks.size()) { m_tracks[trackIndex].name = old; emit changed(); emit audioChanged(); }
+        }));
+}
+
 QVariantList TimelineModel::audioTracks() const
 {
     QVariantList out;
@@ -786,7 +964,11 @@ QVariantList TimelineModel::audioTracks() const
         out.append(QVariantMap{
             { "index", t }, { "name", tr.name }, { "kind", tr.kind },
             { "mute", tr.mute }, { "solo", tr.solo },
-            { "gain", tr.gain }, { "pan", tr.pan } });
+            { "gain", tr.gain }, { "pan", tr.pan },
+            { "eqOn", tr.eqOn }, { "eqLowDb", tr.eqLowDb },
+            { "eqMidDb", tr.eqMidDb }, { "eqHighDb", tr.eqHighDb },
+            { "compOn", tr.compOn }, { "compThreshDb", tr.compThreshDb },
+            { "compRatio", tr.compRatio }, { "compMakeupDb", tr.compMakeupDb } });
     }
     return out;
 }
@@ -804,6 +986,36 @@ bool TimelineModel::selIsAudio() const
 {
     const int i = indexOfClip(m_selectedId);
     return i >= 0 && m_clips[i].kind == QLatin1String("audio");
+}
+
+// ---- Bypass de nodos (página Fusión) ----
+bool TimelineModel::selBypassTransform() const
+{
+    const int i = indexOfClip(m_selectedId);
+    return i >= 0 && m_clips[i].bypassTransform;
+}
+bool TimelineModel::selBypassColor() const
+{
+    const int i = indexOfClip(m_selectedId);
+    return i >= 0 && m_clips[i].bypassColor;
+}
+void TimelineModel::setSelBypassTransform(bool bypass)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0 || m_clips[i].bypassTransform == bypass) return;
+    m_clips[i].bypassTransform = bypass;
+    bumpSelection();
+    emit changed();   // recompón el PROGRAMA
+    emit edited();
+}
+void TimelineModel::setSelBypassColor(bool bypass)
+{
+    const int i = indexOfClip(m_selectedId);
+    if (i < 0 || m_clips[i].bypassColor == bypass) return;
+    m_clips[i].bypassColor = bypass;
+    bumpSelection();
+    emit changed();
+    emit edited();
 }
 
 // ---- Título del clip seleccionado ----
@@ -1083,7 +1295,11 @@ QJsonObject TimelineModel::toJson() const
             { "name", t.name }, { "kind", t.kind }, { "idColor", t.idColor },
             { "height", t.height }, { "mute", t.mute }, { "solo", t.solo },
             { "gain", t.gain }, { "pan", t.pan },
-            { "hidden", t.hidden }, { "locked", t.locked } });
+            { "hidden", t.hidden }, { "locked", t.locked },
+            { "eqOn", t.eqOn }, { "eqLowDb", t.eqLowDb },
+            { "eqMidDb", t.eqMidDb }, { "eqHighDb", t.eqHighDb },
+            { "compOn", t.compOn }, { "compThreshDb", t.compThreshDb },
+            { "compRatio", t.compRatio }, { "compMakeupDb", t.compMakeupDb } });
 
     QJsonArray clips;
     for (const Clip &c : m_clips) {
@@ -1096,6 +1312,7 @@ QJsonObject TimelineModel::toJson() const
             { "startUs", double(c.startUs) }, { "durationUs", double(c.durationUs) },
             { "inUs", double(c.inUs) }, { "mediaPath", c.mediaPath },
             { "speed", c.speed }, { "transition", c.transition },
+            { "bypassTransform", c.bypassTransform }, { "bypassColor", c.bypassColor },
             { "transform", QJsonObject{
                 { "posX", tf.posX }, { "posY", tf.posY }, { "scale", tf.scale },
                 { "rotation", tf.rotation }, { "opacity", tf.opacity },
@@ -1137,6 +1354,8 @@ QJsonObject TimelineModel::toJson() const
     return QJsonObject{
         { "totalUs", double(m_totalUs) }, { "playheadUs", double(m_playheadUs) },
         { "snap", m_snap }, { "subsEnabled", m_subsEnabled },
+        { "masterGain", m_masterGain }, { "masterPan", m_masterPan },
+        { "markInUs", double(m_inUs) }, { "markOutUs", double(m_outUs) },
         { "tracks", tracks }, { "clips", clips },
         { "markers", markers }, { "subtitles", subs } };
 }
@@ -1160,6 +1379,14 @@ bool TimelineModel::fromJson(const QJsonObject &o)
         tr.pan = t.value("pan").toDouble(0.0);
         tr.hidden = t.value("hidden").toBool();
         tr.locked = t.value("locked").toBool();
+        tr.eqOn = t.value("eqOn").toBool(false);
+        tr.eqLowDb = t.value("eqLowDb").toDouble(0.0);
+        tr.eqMidDb = t.value("eqMidDb").toDouble(0.0);
+        tr.eqHighDb = t.value("eqHighDb").toDouble(0.0);
+        tr.compOn = t.value("compOn").toBool(false);
+        tr.compThreshDb = t.value("compThreshDb").toDouble(-18.0);
+        tr.compRatio = t.value("compRatio").toDouble(2.0);
+        tr.compMakeupDb = t.value("compMakeupDb").toDouble(0.0);
         tracks.push_back(tr);
     }
     if (tracks.isEmpty())
@@ -1183,6 +1410,8 @@ bool TimelineModel::fromJson(const QJsonObject &o)
         c.mediaPath = cj.value("mediaPath").toString();
         c.speed = cj.value("speed").toDouble(1.0);
         c.transition = cj.value("transition").toString(QStringLiteral("cross"));
+        c.bypassTransform = cj.value("bypassTransform").toBool(false);
+        c.bypassColor = cj.value("bypassColor").toBool(false);
         const QJsonObject tf = cj.value("transform").toObject();
         c.transform.posX = tf.value("posX").toDouble();
         c.transform.posY = tf.value("posY").toDouble();
@@ -1255,6 +1484,10 @@ bool TimelineModel::fromJson(const QJsonObject &o)
     m_playheadUs = qBound<qint64>(0, qint64(o.value("playheadUs").toDouble()), m_totalUs);
     m_snap = o.value("snap").toBool(true);
     m_subsEnabled = o.value("subsEnabled").toBool(true);
+    m_masterGain = qBound(0.0, o.value("masterGain").toDouble(1.0), 4.0);
+    m_masterPan = qBound(-1.0, o.value("masterPan").toDouble(0.0), 1.0);
+    m_inUs = qMax<qint64>(0, qint64(o.value("markInUs").toDouble(0)));
+    m_outUs = qint64(o.value("markOutUs").toDouble(-1));
     m_selectedId = 0;
     m_nextId = maxId + 1;
     m_undo.clear();
@@ -1325,8 +1558,13 @@ QVector<TimelineModel::AudioClip> TimelineModel::audioClips() const
         const double pan = qBound(-1.0, c.audio.pan + tr.pan, 1.0);
         QVector<Keyframe> gainKf = c.audio.gainKf;
         for (Keyframe &k : gainKf) k.value *= tr.gain;   // escala la automatización por el fader
-        out.push_back({ c.mediaPath, c.trackIndex, c.startUs, c.durationUs, c.inUs,
-                        c.speed, gain, pan, eff, gainKf, c.audio.panKf });
+        AudioClip ac{ c.mediaPath, c.trackIndex, c.startUs, c.durationUs, c.inUs,
+                      c.speed, gain, pan, eff, gainKf, c.audio.panKf };
+        // Efectos de la pista (iguales para todos sus clips; el motor los aplica al submix).
+        ac.eqOn = tr.eqOn; ac.eqLowDb = tr.eqLowDb; ac.eqMidDb = tr.eqMidDb; ac.eqHighDb = tr.eqHighDb;
+        ac.compOn = tr.compOn; ac.compThreshDb = tr.compThreshDb;
+        ac.compRatio = tr.compRatio; ac.compMakeupDb = tr.compMakeupDb;
+        out.push_back(ac);
     }
     return out;
 }
@@ -2250,6 +2488,56 @@ qint64 TimelineModel::contentEndUs() const
     return end;
 }
 
+// ---- Rango de entrada/salida (marcas I/O) ----
+qint64 TimelineModel::exportStartUs() const
+{
+    return qBound<qint64>(0, m_inUs, qMax<qint64>(0, contentEndUs()));
+}
+qint64 TimelineModel::exportEndUs() const
+{
+    const qint64 end = contentEndUs();
+    const qint64 out = m_outUs < 0 ? end : qMin(m_outUs, end);
+    return qMax(out, exportStartUs());
+}
+void TimelineModel::setMarkInAtPlayhead()
+{
+    qint64 us = qBound<qint64>(0, m_playheadUs, contentEndUs());
+    if (m_outUs >= 0 && us >= m_outUs) return;   // la entrada debe ir antes de la salida
+    if (m_inUs == us) return;
+    m_inUs = us;
+    emit changed(); emit edited();
+}
+void TimelineModel::setMarkOutAtPlayhead()
+{
+    qint64 us = qBound<qint64>(0, m_playheadUs, contentEndUs());
+    if (us <= m_inUs) return;                    // la salida debe ir después de la entrada
+    if (m_outUs == us) return;
+    m_outUs = us;
+    emit changed(); emit edited();
+}
+void TimelineModel::setMarkInFraction(double f)
+{
+    qint64 us = qBound<qint64>(0, qint64(f * m_totalUs), contentEndUs());
+    if (m_outUs >= 0 && us >= m_outUs) us = m_outUs - 1;
+    if (us < 0 || m_inUs == us) return;
+    m_inUs = us;
+    emit changed(); emit edited();
+}
+void TimelineModel::setMarkOutFraction(double f)
+{
+    qint64 us = qBound<qint64>(0, qint64(f * m_totalUs), contentEndUs());
+    if (us <= m_inUs) us = m_inUs + 1;
+    if (m_outUs == us) return;
+    m_outUs = us;
+    emit changed(); emit edited();
+}
+void TimelineModel::clearInOut()
+{
+    if (m_inUs == 0 && m_outUs < 0) return;
+    m_inUs = 0; m_outUs = -1;
+    emit changed(); emit edited();
+}
+
 void TimelineModel::runSelfTestIfRequested()
 {
     if (qEnvironmentVariableIsEmpty("PVS_TL_SELFTEST"))
@@ -2598,6 +2886,102 @@ void TimelineModel::runSelfTestIfRequested()
         check(clipById(cid).startUs == st + 33366, "nudge derecha desplaza el clip");
         undo();
         check(clipById(cid).startUs == st, "undo del nudge restaura la posición");
+    }
+
+    // 12) Gestión de pistas: añadir/eliminar/renombrar con reindexado y undo.
+    {
+        const int nVid0 = std::count_if(m_tracks.begin(), m_tracks.end(),
+                                        [](const Track &t){ return t.kind == "video"; });
+        const int nTrk0 = int(m_tracks.size());
+        // Un clip de referencia en V1 (índice 2) y su posición actual.
+        const quint64 cid = v1sorted().first().id;
+        check(clipById(cid).trackIndex == 2, "clip de referencia en V1 (índice 2)");
+
+        // Añadir pista de vídeo (arriba, índice 0): reindexa +1 los clips.
+        addVideoTrack();
+        check(int(m_tracks.size()) == nTrk0 + 1, "añadir vídeo aumenta el nº de pistas");
+        check(m_tracks[0].kind == "video" && m_tracks[0].name == QString("V%1").arg(nVid0 + 1),
+              "la nueva pista de vídeo va arriba con nombre único");
+        check(clipById(cid).trackIndex == 3, "añadir vídeo arriba reindexa +1 los clips");
+        undo();
+        check(int(m_tracks.size()) == nTrk0 && clipById(cid).trackIndex == 2,
+              "undo de añadir vídeo restaura pistas e índices");
+
+        // Añadir pista de audio (al final): no reindexa clips de vídeo.
+        addAudioTrack();
+        check(int(m_tracks.size()) == nTrk0 + 1 && m_tracks.last().kind == "audio",
+              "añadir audio va al final");
+        check(clipById(cid).trackIndex == 2, "añadir audio no reindexa los clips de vídeo");
+        undo();
+        check(int(m_tracks.size()) == nTrk0, "undo de añadir audio restaura");
+
+        // Renombrar una pista (con undo).
+        const QString nm0 = m_tracks[2].name;
+        renameTrack(2, "Principal");
+        check(m_tracks[2].name == "Principal", "renombrar pista aplica el nombre");
+        undo();
+        check(m_tracks[2].name == nm0, "undo de renombrar restaura");
+
+        // Eliminar la pista V1 (índice 2): sus clips desaparecen y el resto reindexa;
+        // el undo restaura la pista y todos sus clips.
+        const int clipsOnV1 = std::count_if(m_clips.begin(), m_clips.end(),
+                                            [](const Clip &c){ return c.trackIndex == 2; });
+        const int nClips0 = int(m_clips.size());
+        removeTrack(2);
+        check(int(m_tracks.size()) == nTrk0 - 1, "eliminar pista reduce el nº de pistas");
+        check(int(m_clips.size()) == nClips0 - clipsOnV1, "eliminar pista borra sus clips");
+        undo();
+        check(int(m_tracks.size()) == nTrk0 && int(m_clips.size()) == nClips0,
+              "undo de eliminar pista restaura pistas y clips");
+        check(m_tracks[2].name == nm0, "undo de eliminar pista restaura la pista correcta");
+    }
+
+    // 13) Bypass de nodos (Fusión): saltar Transformar/Color en el compositor.
+    {
+        const quint64 cid = v1sorted().first().id;   // primer clip de V1 (empieza en 0)
+        selectClip(cid);
+        setSelBypassTransform(false); setSelBypassColor(false);
+        setSelScale(1.5);
+        setSelTemp(0.8);
+        auto rcFor = [this](quint64 id, qint64 us) -> RenderClip {
+            for (const RenderClip &r : clipsAt(us)) if (r.clipId == id) return r;
+            return RenderClip{};
+        };
+        const qint64 tmid = 1000;   // 1 ms: dentro del primer clip, sin solape
+        check(qAbs(rcFor(cid, tmid).transform.scale - 1.5) < 1e-6, "el compositor aplica la escala");
+        check(qAbs(rcFor(cid, tmid).color.temp - 0.8) < 1e-6, "el compositor aplica el color");
+        setSelBypassTransform(true);
+        check(qAbs(rcFor(cid, tmid).transform.scale - 1.0) < 1e-6, "bypass Transformar → escala identidad");
+        check(qAbs(rcFor(cid, tmid).color.temp - 0.8) < 1e-6, "bypass Transformar no toca el color");
+        setSelBypassColor(true);
+        check(qAbs(rcFor(cid, tmid).color.temp) < 1e-6, "bypass Color → corrección neutra");
+        check(selBypassTransform() && selBypassColor(), "las propiedades de bypass reflejan el estado");
+        // Restaura para no afectar a otras pruebas.
+        setSelBypassTransform(false); setSelBypassColor(false);
+        setSelScale(1.0); setSelTemp(0.0);
+    }
+
+    // 14) Rango de entrada/salida (marcas I/O) y su resolución para exportar.
+    {
+        clearInOut();
+        check(!hasInOut(), "sin marcas: rango = contenido completo");
+        check(exportStartUs() == 0 && exportEndUs() == contentEndUs(), "rango por defecto = [0, fin]");
+        const qint64 end = contentEndUs();
+        setPlayheadUs(end / 4);     setMarkInAtPlayhead();
+        setPlayheadUs(3 * end / 4); setMarkOutAtPlayhead();
+        check(hasInOut(), "marcas I/O activas");
+        check(exportStartUs() == end / 4 && exportEndUs() == 3 * end / 4, "rango resuelto = [in, out]");
+        // Una entrada posterior a la salida se rechaza (in < out).
+        const qint64 inBefore = markInUs();
+        setPlayheadUs(end); setMarkInAtPlayhead();
+        check(markInUs() == inBefore, "entrada posterior a la salida se rechaza");
+        // Round-trip por el .pvsproj.
+        const QJsonObject j = toJson();
+        clearInOut();
+        fromJson(j);
+        check(markInUs() == end / 4 && markOutUs() == 3 * end / 4, "marcas I/O persisten en el .pvsproj");
+        clearInOut();
+        check(!hasInOut() && exportEndUs() == contentEndUs(), "clearInOut restablece el rango");
     }
 
     setSnapEnabled(snapWas);

@@ -33,6 +33,12 @@ int main(int argc, char *argv[])
     // Auto-test de exportación (compone + codifica H.264/AAC a un MP4 temporal).
     if (const int rc = runExportSelfTestIfRequested(); rc >= 0)
         return rc;
+    // Auto-test de la cola de render (encola dos trabajos y los renderiza en serie).
+    if (const int rc = runDeliverSelfTestIfRequested(); rc >= 0)
+        return rc;
+    // Auto-test de códecs (renderiza un clip corto en cada formato disponible).
+    if (const int rc = runCodecSelfTestIfRequested(); rc >= 0)
+        return rc;
     // Auto-test de formas de onda (envolvente de PCM real, decodificada en un hilo).
     if (const int rc = runWaveformSelfTestIfRequested(); rc >= 0)
         return rc;
@@ -112,9 +118,13 @@ int main(int argc, char *argv[])
                 m.gainKf.push_back({ k.sourceUs, k.value });
             for (const TimelineModel::Keyframe &k : a.panKf)
                 m.panKf.push_back({ k.sourceUs, k.value });
+            m.eqOn = a.eqOn; m.eqLowDb = a.eqLowDb; m.eqMidDb = a.eqMidDb; m.eqHighDb = a.eqHighDb;
+            m.compOn = a.compOn; m.compThreshDb = a.compThreshDb;
+            m.compRatio = a.compRatio; m.compMakeupDb = a.compMakeupDb;
             mix.push_back(m);
         }
-        audio.setMixData(mix, timelineModel.contentEndUs());
+        audio.setMixData(mix, timelineModel.contentEndUs(),
+                         timelineModel.masterGain(), timelineModel.masterPan());
     };
     rebuildMix();
     // Rehornea la mezcla cuando cambia la estructura o algún parámetro de audio.

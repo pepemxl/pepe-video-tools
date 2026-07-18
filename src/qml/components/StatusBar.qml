@@ -101,8 +101,13 @@ Rectangle {
 
         Text { text: "Exportar:"; color: Theme.textDim; font.pixelSize: 11; font.family: Theme.sans }
 
-        // Formato (fijo: único códec de salida disponible)
-        Chip { label: "MP4 · H.264" }
+        // Formato de salida (códec + contenedor)
+        Chip {
+            label: Export.formatLabel
+            current: Export.formatLabel
+            options: Export.availableFormats.map(f => f.label)
+            onPicked: (i) => Export.format = Export.availableFormats[i].id
+        }
         // Resolución
         Chip {
             label: Export.outWidth + "×" + Export.outHeight
