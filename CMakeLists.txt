@@ -14,6 +14,8 @@ qt_add_executable(PepeVideoStudio
     src/main.cpp
     src/app/theme.h
     src/app/demodata.h
+    src/app/logger.h
+    src/app/logger.cpp
     src/app/mediapoolmodel.h
     src/app/mediapoolmodel.cpp
     src/app/timelinemodel.h
@@ -56,6 +58,7 @@ qt_add_qml_module(PepeVideoStudio
         src/qml/components/TopBar.qml
         src/qml/components/MenuButton.qml
         src/qml/components/StatusBar.qml
+        src/qml/components/Tip.qml
         src/qml/panels/MediaPool.qml
         src/qml/panels/MonitorsRow.qml
         src/qml/panels/Inspector.qml
