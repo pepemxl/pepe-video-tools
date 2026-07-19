@@ -244,7 +244,7 @@ Rectangle {
                                 Combo {
                                     current: !Export.formatUsesBitrate ? "(por perfil)"
                                              : Export.crfEnabled ? "(CRF)" : Export.videoMbps + " Mb/s"
-                                    options: ["8 Mb/s", "12 Mb/s", "16 Mb/s", "24 Mb/s", "40 Mb/s"]
+                                    options: ["4 Mb/s", "8 Mb/s", "12 Mb/s", "16 Mb/s", "24 Mb/s", "40 Mb/s"]
                                     onPicked: (i) => Export.videoMbps = parseInt(options[i])
                                 }
                             }
