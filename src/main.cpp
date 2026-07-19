@@ -42,6 +42,9 @@ int main(int argc, char *argv[])
     // Auto-test de códecs (renderiza un clip corto en cada formato disponible).
     if (const int rc = runCodecSelfTestIfRequested(); rc >= 0)
         return rc;
+    // Auto-test de copia directa (remux sin recodificar de un sub-rango).
+    if (const int rc = runCopySelfTestIfRequested(); rc >= 0)
+        return rc;
 
     // Logs de la sesión (solo en ejecuciones normales; los autotests salen antes).
     const QString logPath = pvsInstallLogger();

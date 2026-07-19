@@ -37,6 +37,17 @@ struct ExportJob {
     TimelineModel::RenderSnapshot snapshot;             // instantánea (streaming)
     QVector<QVector<TimelineModel::RenderClip>> frames; // materializados (no streaming)
     QByteArray audioS16;   // PCM S16 estéreo intercalado a 48 kHz (mezcla maestra)
+    // Copia directa (stream copy): remultiplexa el origen SIN recodificar. No usa el
+    // compositor ni los encoders; ignora efectos/color/audio de la mezcla. El corte
+    // arranca en el keyframe <= copySrcStartUs (limitación inherente a copiar sin recodificar).
+    bool streamCopy = false;
+    QString copySrcPath;         // archivo de origen a copiar
+    qint64 copySrcStartUs = 0;   // inicio en tiempo de origen (µs)
+    qint64 copySrcEndUs = 0;     // fin en tiempo de origen (µs)
+    // Recorte de salida (reencuadre): fracción [0..0.49] de cada margen a descartar del
+    // fotograma compuesto; el rectángulo restante se escala a width×height. Requiere
+    // recodificar (no aplica en copia directa). 0 = sin recorte.
+    double cropLeft = 0.0, cropRight = 0.0, cropTop = 0.0, cropBottom = 0.0;
 };
 Q_DECLARE_METATYPE(ExportJob)
 
@@ -70,6 +81,12 @@ class Exporter : public QObject
     Q_PROPERTY(int audioKbps READ audioKbps WRITE setAudioKbps NOTIFY settingsChanged)
     // Canales de audio (1 = mono, 2 = estéreo).
     Q_PROPERTY(int audioChannels READ audioChannels WRITE setAudioChannels NOTIFY settingsChanged)
+    // Recorte de salida (reencuadre) en % de cada margen [0..45]. Recorta el fotograma
+    // compuesto y escala el resto a la resolución de salida. Recodifica (no en copia directa).
+    Q_PROPERTY(int cropTop READ cropTop WRITE setCropTop NOTIFY settingsChanged)
+    Q_PROPERTY(int cropBottom READ cropBottom WRITE setCropBottom NOTIFY settingsChanged)
+    Q_PROPERTY(int cropLeft READ cropLeft WRITE setCropLeft NOTIFY settingsChanged)
+    Q_PROPERTY(int cropRight READ cropRight WRITE setCropRight NOTIFY settingsChanged)
     // Modo de calidad de vídeo: por bitrate (crfEnabled=false) o CRF (calidad constante).
     Q_PROPERTY(bool crfEnabled READ crfEnabled WRITE setCrfEnabled NOTIFY settingsChanged)
     Q_PROPERTY(int crf READ crf WRITE setCrf NOTIFY settingsChanged)
@@ -112,6 +129,14 @@ public:
     void setAudioKbps(int kbps);
     int audioChannels() const { return m_audioChannels; }
     void setAudioChannels(int ch);
+    int cropTop() const { return m_cropTop; }
+    void setCropTop(int pct);
+    int cropBottom() const { return m_cropBottom; }
+    void setCropBottom(int pct);
+    int cropLeft() const { return m_cropLeft; }
+    void setCropLeft(int pct);
+    int cropRight() const { return m_cropRight; }
+    void setCropRight(int pct);
     bool crfEnabled() const { return m_crfEnabled; }
     void setCrfEnabled(bool on);
     int crf() const { return m_crf; }
@@ -173,6 +198,7 @@ private:
         bool useCrf, twoPass;
         QString videoProfile;
         double fps;
+        int cropTop = 0, cropBottom = 0, cropLeft = 0, cropRight = 0;   // % de recorte de salida
         qint64 startUs = 0, durUs = 0;   // rango de exportación (marcas I/O)
         int status = 0;   // 0 pendiente · 1 en curso · 2 hecho · 3 error
     };
@@ -181,6 +207,10 @@ private:
     // exporta sin audio. Devuelve false si el rango está vacío.
     bool buildJob(const QString &path, int w, int h, double fps, int mbps, int audioKbps,
                   qint64 startUs, qint64 durUs, ExportJob &out);
+    // Prepara un trabajo de copia directa (stream copy) para el rango dado: localiza el
+    // clip de vídeo que lo cubre por completo (a velocidad normal) y mapea el rango a
+    // tiempo de origen. Devuelve false (con status) si el rango no es copiable así.
+    bool buildCopyJob(const QString &path, qint64 startUs, qint64 durUs, ExportJob &out);
     void renderNextInQueue();            // arranca el siguiente pendiente (o termina)
     QString absoluteOutputPath() const;  // outDir/outName.mp4 (o solo el nombre)
 
@@ -195,6 +225,7 @@ private:
     int m_mbps = 12;
     int m_audioKbps = 192;   // 0 = sin audio
     int m_audioChannels = 2;
+    int m_cropTop = 0, m_cropBottom = 0, m_cropLeft = 0, m_cropRight = 0;   // % de recorte
     bool m_crfEnabled = false;
     int m_crf = 20;
     bool m_twoPass = false;
@@ -220,6 +251,11 @@ int runDeliverSelfTestIfRequested();
 // Auto-test de códecs (PVS_CODEC_SELFTEST): renderiza un clip corto en cada formato
 // disponible (H.264/H.265/ProRes/DNxHR/VP9) y verifica el archivo. Devuelve 0/1/-1.
 int runCodecSelfTestIfRequested();
+
+// Auto-test de copia directa (PVS_COPY_SELFTEST): crea un MP4 H.264+AAC, ejercita
+// remuxStreamCopy sobre un sub-rango y verifica con libavformat que la salida es un MP4
+// válido, con vídeo H.264 sin recodificar, audio y duración correctas. Devuelve 0/1/-1.
+int runCopySelfTestIfRequested();
 
 // Escribe un MP4 de prueba de 2 s @ 24 fps, 320x180: primer segundo naranja
 // (#c06030) y segundo azul (#3060c0). Para los autotests de decodificación.

@@ -293,6 +293,49 @@ Rectangle {
                         }
                         Rectangle { Layout.fillWidth: true; Layout.leftMargin: 14; Layout.rightMargin: 14; implicitHeight: 1; color: Theme.lineSoft }
 
+                        // -- Recorte de salida (reencuadre) --
+                        ColumnLayout {
+                            id: cropSec
+                            Layout.fillWidth: true; Layout.leftMargin: 14; Layout.rightMargin: 14; spacing: 9
+                            readonly property bool cropOk: Export.format !== "copy"
+                            readonly property var pctOpts: ["0 %","5 %","10 %","15 %","20 %","25 %","30 %","35 %","40 %","45 %"]
+                            opacity: cropOk ? 1.0 : 0.4
+                            enabled: cropOk
+                            Text { text: "Recorte de salida"; color: Theme.textHi; font.pixelSize: 11; font.weight: Font.DemiBold; font.family: Theme.sans }
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: 8
+                                FLabel { text: "Superior" }
+                                Combo { current: Export.cropTop + " %"; options: cropSec.pctOpts
+                                        onPicked: (i) => Export.cropTop = parseInt(cropSec.pctOpts[i]) }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: 8
+                                FLabel { text: "Inferior" }
+                                Combo { current: Export.cropBottom + " %"; options: cropSec.pctOpts
+                                        onPicked: (i) => Export.cropBottom = parseInt(cropSec.pctOpts[i]) }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: 8
+                                FLabel { text: "Izquierda" }
+                                Combo { current: Export.cropLeft + " %"; options: cropSec.pctOpts
+                                        onPicked: (i) => Export.cropLeft = parseInt(cropSec.pctOpts[i]) }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: 8
+                                FLabel { text: "Derecha" }
+                                Combo { current: Export.cropRight + " %"; options: cropSec.pctOpts
+                                        onPicked: (i) => Export.cropRight = parseInt(cropSec.pctOpts[i]) }
+                            }
+                            Text {
+                                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                text: cropSec.cropOk
+                                      ? "Recorta los márgenes indicados y escala el resto a la resolución de salida (recodifica)."
+                                      : "La copia directa no puede recortar; usa un formato H.264/H.265."
+                                color: Theme.textFaint; font.pixelSize: 9; font.family: Theme.sans
+                            }
+                        }
+                        Rectangle { Layout.fillWidth: true; Layout.leftMargin: 14; Layout.rightMargin: 14; implicitHeight: 1; color: Theme.lineSoft }
+
                         // -- Rango de exportación (marcas I/O de la línea de tiempo) --
                         ColumnLayout {
                             Layout.fillWidth: true; Layout.leftMargin: 14; Layout.rightMargin: 14; spacing: 6
