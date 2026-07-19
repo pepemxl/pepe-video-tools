@@ -81,12 +81,18 @@ class Exporter : public QObject
     Q_PROPERTY(int audioKbps READ audioKbps WRITE setAudioKbps NOTIFY settingsChanged)
     // Canales de audio (1 = mono, 2 = estéreo).
     Q_PROPERTY(int audioChannels READ audioChannels WRITE setAudioChannels NOTIFY settingsChanged)
-    // Recorte de salida (reencuadre) en % de cada margen [0..45]. Recorta el fotograma
-    // compuesto y escala el resto a la resolución de salida. Recodifica (no en copia directa).
+    // Recorte de salida (reencuadre): cada margen puede fijarse en % [0..45] o en píxeles
+    // exactos (relativos a la resolución de salida; L/R usan el ancho, T/B el alto). Ambas
+    // vistas comparten la misma fracción interna. Recorta el fotograma compuesto y escala
+    // el resto a la resolución de salida. Recodifica (no aplica en copia directa).
     Q_PROPERTY(int cropTop READ cropTop WRITE setCropTop NOTIFY settingsChanged)
     Q_PROPERTY(int cropBottom READ cropBottom WRITE setCropBottom NOTIFY settingsChanged)
     Q_PROPERTY(int cropLeft READ cropLeft WRITE setCropLeft NOTIFY settingsChanged)
     Q_PROPERTY(int cropRight READ cropRight WRITE setCropRight NOTIFY settingsChanged)
+    Q_PROPERTY(int cropTopPx READ cropTopPx WRITE setCropTopPx NOTIFY settingsChanged)
+    Q_PROPERTY(int cropBottomPx READ cropBottomPx WRITE setCropBottomPx NOTIFY settingsChanged)
+    Q_PROPERTY(int cropLeftPx READ cropLeftPx WRITE setCropLeftPx NOTIFY settingsChanged)
+    Q_PROPERTY(int cropRightPx READ cropRightPx WRITE setCropRightPx NOTIFY settingsChanged)
     // Modo de calidad de vídeo: por bitrate (crfEnabled=false) o CRF (calidad constante).
     Q_PROPERTY(bool crfEnabled READ crfEnabled WRITE setCrfEnabled NOTIFY settingsChanged)
     Q_PROPERTY(int crf READ crf WRITE setCrf NOTIFY settingsChanged)
@@ -129,14 +135,24 @@ public:
     void setAudioKbps(int kbps);
     int audioChannels() const { return m_audioChannels; }
     void setAudioChannels(int ch);
-    int cropTop() const { return m_cropTop; }
+    // Vista en %: redondeo de la fracción interna.
+    int cropTop() const { return int(m_cropTopF * 100.0 + 0.5); }
     void setCropTop(int pct);
-    int cropBottom() const { return m_cropBottom; }
+    int cropBottom() const { return int(m_cropBottomF * 100.0 + 0.5); }
     void setCropBottom(int pct);
-    int cropLeft() const { return m_cropLeft; }
+    int cropLeft() const { return int(m_cropLeftF * 100.0 + 0.5); }
     void setCropLeft(int pct);
-    int cropRight() const { return m_cropRight; }
+    int cropRight() const { return int(m_cropRightF * 100.0 + 0.5); }
     void setCropRight(int pct);
+    // Vista en píxeles (relativa a la resolución de salida): L/R sobre el ancho, T/B sobre el alto.
+    int cropTopPx() const { return int(m_cropTopF * m_outH + 0.5); }
+    void setCropTopPx(int px);
+    int cropBottomPx() const { return int(m_cropBottomF * m_outH + 0.5); }
+    void setCropBottomPx(int px);
+    int cropLeftPx() const { return int(m_cropLeftF * m_outW + 0.5); }
+    void setCropLeftPx(int px);
+    int cropRightPx() const { return int(m_cropRightF * m_outW + 0.5); }
+    void setCropRightPx(int px);
     bool crfEnabled() const { return m_crfEnabled; }
     void setCrfEnabled(bool on);
     int crf() const { return m_crf; }
@@ -198,7 +214,7 @@ private:
         bool useCrf, twoPass;
         QString videoProfile;
         double fps;
-        int cropTop = 0, cropBottom = 0, cropLeft = 0, cropRight = 0;   // % de recorte de salida
+        double cropTop = 0, cropBottom = 0, cropLeft = 0, cropRight = 0;   // fracciones de recorte
         qint64 startUs = 0, durUs = 0;   // rango de exportación (marcas I/O)
         int status = 0;   // 0 pendiente · 1 en curso · 2 hecho · 3 error
     };
@@ -225,7 +241,9 @@ private:
     int m_mbps = 12;
     int m_audioKbps = 192;   // 0 = sin audio
     int m_audioChannels = 2;
-    int m_cropTop = 0, m_cropBottom = 0, m_cropLeft = 0, m_cropRight = 0;   // % de recorte
+    // Recorte de salida como fracción [0..0.45] de cada margen (fuente de verdad; las
+    // vistas % y px derivan de aquí).
+    double m_cropTopF = 0.0, m_cropBottomF = 0.0, m_cropLeftF = 0.0, m_cropRightF = 0.0;
     bool m_crfEnabled = false;
     int m_crf = 20;
     bool m_twoPass = false;

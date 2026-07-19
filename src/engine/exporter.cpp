@@ -681,31 +681,33 @@ void Exporter::setAudioChannels(int ch)
     emit settingsChanged();
 }
 
-// Recorte de salida: cada margen en [0..45] % (deja al menos ~10 % de imagen por eje).
+// Recorte de salida: fracción [0..0.45] por margen (deja al menos ~10 % de imagen por
+// eje). Cada margen se fija en % o en píxeles; ambas vistas comparten la fracción interna.
+namespace {
+bool setCropFrac(double &slot, double f)   // devuelve true si cambió
+{
+    f = qBound(0.0, f, 0.45);
+    if (qFuzzyCompare(f + 1.0, slot + 1.0)) return false;
+    slot = f; return true;
+}
+}
 void Exporter::setCropTop(int pct)
-{
-    pct = qBound(0, pct, 45);
-    if (pct == m_cropTop) return;
-    m_cropTop = pct; emit settingsChanged();
-}
+{ if (setCropFrac(m_cropTopF, qBound(0, pct, 45) / 100.0)) emit settingsChanged(); }
 void Exporter::setCropBottom(int pct)
-{
-    pct = qBound(0, pct, 45);
-    if (pct == m_cropBottom) return;
-    m_cropBottom = pct; emit settingsChanged();
-}
+{ if (setCropFrac(m_cropBottomF, qBound(0, pct, 45) / 100.0)) emit settingsChanged(); }
 void Exporter::setCropLeft(int pct)
-{
-    pct = qBound(0, pct, 45);
-    if (pct == m_cropLeft) return;
-    m_cropLeft = pct; emit settingsChanged();
-}
+{ if (setCropFrac(m_cropLeftF, qBound(0, pct, 45) / 100.0)) emit settingsChanged(); }
 void Exporter::setCropRight(int pct)
-{
-    pct = qBound(0, pct, 45);
-    if (pct == m_cropRight) return;
-    m_cropRight = pct; emit settingsChanged();
-}
+{ if (setCropFrac(m_cropRightF, qBound(0, pct, 45) / 100.0)) emit settingsChanged(); }
+// Píxeles exactos → fracción según la resolución de salida actual (L/R ancho, T/B alto).
+void Exporter::setCropTopPx(int px)
+{ if (m_outH > 0 && setCropFrac(m_cropTopF, double(qMax(0, px)) / m_outH)) emit settingsChanged(); }
+void Exporter::setCropBottomPx(int px)
+{ if (m_outH > 0 && setCropFrac(m_cropBottomF, double(qMax(0, px)) / m_outH)) emit settingsChanged(); }
+void Exporter::setCropLeftPx(int px)
+{ if (m_outW > 0 && setCropFrac(m_cropLeftF, double(qMax(0, px)) / m_outW)) emit settingsChanged(); }
+void Exporter::setCropRightPx(int px)
+{ if (m_outW > 0 && setCropFrac(m_cropRightF, double(qMax(0, px)) / m_outW)) emit settingsChanged(); }
 
 void Exporter::setCrfEnabled(bool on)
 {
@@ -884,8 +886,8 @@ void Exporter::exportTimeline(const QString &path, int width, int height,
         job.format = m_format;
         job.channels = m_audioChannels; job.useCrf = m_crfEnabled; job.crf = m_crf; job.twoPass = m_twoPass;
         job.videoProfile = m_videoProfile;
-        job.cropTop = m_cropTop / 100.0; job.cropBottom = m_cropBottom / 100.0;
-        job.cropLeft = m_cropLeft / 100.0; job.cropRight = m_cropRight / 100.0;
+        job.cropTop = m_cropTopF; job.cropBottom = m_cropBottomF;
+        job.cropLeft = m_cropLeftF; job.cropRight = m_cropRightF;
     }
 
     m_running = true; m_progress = 0.0;
@@ -1005,8 +1007,8 @@ void Exporter::enqueueCurrent()
     it.audioKbps = m_audioKbps;
     it.channels = m_audioChannels; it.useCrf = m_crfEnabled; it.crf = m_crf; it.twoPass = m_twoPass;
     it.videoProfile = m_videoProfile;
-    it.cropTop = m_cropTop; it.cropBottom = m_cropBottom;
-    it.cropLeft = m_cropLeft; it.cropRight = m_cropRight;
+    it.cropTop = m_cropTopF; it.cropBottom = m_cropBottomF;
+    it.cropLeft = m_cropLeftF; it.cropRight = m_cropRightF;
     it.startUs = m_timeline->exportStartUs();
     it.durUs = m_timeline->exportEndUs() - it.startUs;
     it.status = 0;
@@ -1065,8 +1067,8 @@ void Exporter::renderNextInQueue()
         job.format = it.format;
         job.channels = it.channels; job.useCrf = it.useCrf; job.crf = it.crf; job.twoPass = it.twoPass;
         job.videoProfile = it.videoProfile;
-        job.cropTop = it.cropTop / 100.0; job.cropBottom = it.cropBottom / 100.0;
-        job.cropLeft = it.cropLeft / 100.0; job.cropRight = it.cropRight / 100.0;
+        job.cropTop = it.cropTop; job.cropBottom = it.cropBottom;
+        job.cropLeft = it.cropLeft; job.cropRight = it.cropRight;
         built = true;
     }
     if (!built) {

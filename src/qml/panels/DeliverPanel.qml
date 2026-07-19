@@ -93,6 +93,27 @@ Rectangle {
         Layout.preferredWidth: 84; Layout.alignment: Qt.AlignVCenter
     }
 
+    // ---- Campo numérico en píxeles (sufijo "px") ----
+    component PxField: Rectangle {
+        id: px
+        property int value: 0
+        signal edited(int v)
+        Layout.preferredWidth: 66; implicitHeight: 28; radius: 5; color: Theme.sunken
+        border.color: pxIn.activeFocus ? Theme.amber : Theme.line; border.width: 1
+        TextInput {
+            id: pxIn; anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 20
+            verticalAlignment: Text.AlignVCenter; horizontalAlignment: Text.AlignRight
+            clip: true; selectByMouse: true
+            color: Theme.textHi; font.pixelSize: 11; font.family: Theme.mono
+            text: px.value; inputMethodHints: Qt.ImhDigitsOnly
+            validator: IntValidator { bottom: 0; top: 99999 }
+            onEditingFinished: px.edited(parseInt(text) || 0)
+            Keys.onReturnPressed: { px.edited(parseInt(text) || 0); focus = false }
+        }
+        Text { anchors.right: parent.right; anchors.rightMargin: 6; anchors.verticalCenter: parent.verticalCenter
+               text: "px"; color: Theme.textFaint; font.pixelSize: 9; font.family: Theme.sans }
+    }
+
     Rectangle { anchors.top: parent.top; width: parent.width; height: 1; color: Theme.line3 }
 
     ColumnLayout {
@@ -301,30 +322,34 @@ Rectangle {
                             readonly property var pctOpts: ["0 %","5 %","10 %","15 %","20 %","25 %","30 %","35 %","40 %","45 %"]
                             opacity: cropOk ? 1.0 : 0.4
                             enabled: cropOk
-                            Text { text: "Recorte de salida"; color: Theme.textHi; font.pixelSize: 11; font.weight: Font.DemiBold; font.family: Theme.sans }
+            Text { text: "Recorte de salida"; color: Theme.textHi; font.pixelSize: 11; font.weight: Font.DemiBold; font.family: Theme.sans }
                             RowLayout {
                                 Layout.fillWidth: true; spacing: 8
                                 FLabel { text: "Superior" }
                                 Combo { current: Export.cropTop + " %"; options: cropSec.pctOpts
                                         onPicked: (i) => Export.cropTop = parseInt(cropSec.pctOpts[i]) }
+                                PxField { value: Export.cropTopPx; onEdited: (v) => Export.cropTopPx = v }
                             }
                             RowLayout {
                                 Layout.fillWidth: true; spacing: 8
                                 FLabel { text: "Inferior" }
                                 Combo { current: Export.cropBottom + " %"; options: cropSec.pctOpts
                                         onPicked: (i) => Export.cropBottom = parseInt(cropSec.pctOpts[i]) }
+                                PxField { value: Export.cropBottomPx; onEdited: (v) => Export.cropBottomPx = v }
                             }
                             RowLayout {
                                 Layout.fillWidth: true; spacing: 8
                                 FLabel { text: "Izquierda" }
                                 Combo { current: Export.cropLeft + " %"; options: cropSec.pctOpts
                                         onPicked: (i) => Export.cropLeft = parseInt(cropSec.pctOpts[i]) }
+                                PxField { value: Export.cropLeftPx; onEdited: (v) => Export.cropLeftPx = v }
                             }
                             RowLayout {
                                 Layout.fillWidth: true; spacing: 8
                                 FLabel { text: "Derecha" }
                                 Combo { current: Export.cropRight + " %"; options: cropSec.pctOpts
                                         onPicked: (i) => Export.cropRight = parseInt(cropSec.pctOpts[i]) }
+                                PxField { value: Export.cropRightPx; onEdited: (v) => Export.cropRightPx = v }
                             }
                             Text {
                                 Layout.fillWidth: true; wrapMode: Text.WordWrap
@@ -383,13 +408,47 @@ Rectangle {
                 Rectangle {
                     Layout.fillWidth: true; Layout.preferredHeight: Math.round(root.height * 0.38); color: "#000000"
                     Rectangle {
+                        id: previewBox
                         anchors.centerIn: parent
                         width: Math.min(parent.width - 32, (parent.height - 24) * 16 / 9)
                         height: width * 9 / 16
                         color: "#111318"; border.color: Theme.line; border.width: 1; clip: true
+                        // Fracciones de recorte (píxeles / resolución de salida). El overlay
+                        // supone que el fotograma llena la caja 16:9 (todas las resoluciones lo son).
+                        readonly property real fT: Export.outHeight > 0 ? Export.cropTopPx / Export.outHeight : 0
+                        readonly property real fB: Export.outHeight > 0 ? Export.cropBottomPx / Export.outHeight : 0
+                        readonly property real fL: Export.outWidth  > 0 ? Export.cropLeftPx / Export.outWidth : 0
+                        readonly property real fR: Export.outWidth  > 0 ? Export.cropRightPx / Export.outWidth : 0
                         VideoSurface { anchors.fill: parent; visible: Compositor.hasContent; source: Compositor; zoom: 0 }
                         Text { visible: !Compositor.hasContent; anchors.centerIn: parent
                                text: "SIN CONTENIDO"; color: Theme.textFaint; font.pixelSize: 11; font.family: Theme.mono; font.letterSpacing: 1 }
+
+                        // Overlay de recorte: oscurece los márgenes descartados y enmarca la
+                        // región que se conservará (reencuadre). Oculto en copia directa.
+                        Item {
+                            anchors.fill: parent
+                            visible: Compositor.hasContent && Export.format !== "copy"
+                                     && (previewBox.fT > 0 || previewBox.fB > 0 || previewBox.fL > 0 || previewBox.fR > 0)
+                            readonly property color dim: "#99000000"
+                            // Franjas oscuras: superior, inferior, y los laterales de la banda central.
+                            Rectangle { color: parent.dim; anchors.left: parent.left; anchors.right: parent.right
+                                        anchors.top: parent.top; height: parent.height * previewBox.fT }
+                            Rectangle { color: parent.dim; anchors.left: parent.left; anchors.right: parent.right
+                                        anchors.bottom: parent.bottom; height: parent.height * previewBox.fB }
+                            Rectangle { color: parent.dim; anchors.left: parent.left
+                                        y: parent.height * previewBox.fT; width: parent.width * previewBox.fL
+                                        height: parent.height * (1 - previewBox.fT - previewBox.fB) }
+                            Rectangle { color: parent.dim; anchors.right: parent.right
+                                        y: parent.height * previewBox.fT; width: parent.width * previewBox.fR
+                                        height: parent.height * (1 - previewBox.fT - previewBox.fB) }
+                            // Marco de la región conservada.
+                            Rectangle {
+                                x: parent.width * previewBox.fL; y: parent.height * previewBox.fT
+                                width: parent.width * (1 - previewBox.fL - previewBox.fR)
+                                height: parent.height * (1 - previewBox.fT - previewBox.fB)
+                                color: "transparent"; border.color: Theme.amber; border.width: 1
+                            }
+                        }
                     }
                 }
 
